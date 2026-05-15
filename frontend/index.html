@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TuckScout</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 2rem;
+        max-width: 720px;
+      }
+      button {
+        margin-top: 0.5rem;
+        margin-right: 0.5rem;
+      }
+      #answer {
+        margin-top: 1rem;
+        padding: 0.75rem;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>TuckScout</h1>
+    <p>Enrich alumni data, then ask a question.</p>
+
+    <button id="enrichBtn">Run Enrichment</button>
+
+    <div>
+      <label for="question">Question</label><br />
+      <input id="question" type="text" size="60" placeholder="Who works at Acme Corp?" />
+      <br />
+      <button id="queryBtn">Ask</button>
+    </div>
+
+    <div id="answer">Answer will appear here.</div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
