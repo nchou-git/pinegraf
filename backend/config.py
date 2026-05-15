@@ -20,9 +20,11 @@ class Settings(BaseModel):
     openai_api_key: str = Field(default="")
     serpapi_api_key: str = Field(default="")
     database_url: str = Field(default="sqlite:///./tuckscout.db")
-    use_mock_apis: bool = Field(default=True)
+    use_mock_search: bool = Field(default=True)
+    use_mock_extract: bool = Field(default=True)
+    use_mock_query: bool = Field(default=True)
 
-    @field_validator("use_mock_apis", mode="before")
+    @field_validator("use_mock_search", "use_mock_extract", "use_mock_query", mode="before")
     @classmethod
     def parse_bool(cls, value: object) -> bool:
         if isinstance(value, bool):
@@ -39,7 +41,9 @@ def get_settings() -> Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             serpapi_api_key=os.getenv("SERPAPI_API_KEY", ""),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./tuckscout.db"),
-            use_mock_apis=os.getenv("USE_MOCK_APIS", "true"),
+            use_mock_search=os.getenv("USE_MOCK_SEARCH", "true"),
+            use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
+            use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
         )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc

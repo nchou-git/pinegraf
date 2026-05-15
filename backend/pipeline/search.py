@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from serpapi import GoogleSearch
+import serpapi
 
 
 @dataclass
@@ -39,11 +39,11 @@ class SerpApiSearchClient(SearchClient):
 
     def search_person(self, name: str, class_year: str) -> list[SearchResult]:
         params = {
-            "q": f'"{name}" "{class_year}" Tuck alumni current role',
+            "q": f'"{name}" Tuck {class_year} (LinkedIn OR Crunchbase OR company)',
             "api_key": self.api_key,
             "engine": "google",
         }
-        response = GoogleSearch(params).get_dict()
+        response = serpapi.GoogleSearch(params).get_dict()
         organic_results = response.get("organic_results", [])
         return [
             SearchResult(
@@ -53,3 +53,7 @@ class SerpApiSearchClient(SearchClient):
             )
             for item in organic_results[:5]
         ]
+
+
+class SerpAPISearchClient(SerpApiSearchClient):
+    """Alias with requested naming."""

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
-from pydantic import Field
-from openai import OpenAI
+import openai
+from pydantic import BaseModel, Field
 
 from backend.pipeline.search import SearchResult
 
@@ -32,36 +31,70 @@ class MockExtractClient(ExtractClient):
         )
 
 
+class OpenAIExtractedProfile(BaseModel):
+    current_company: str | None
+    current_title: str | None
+    past_companies: list[str] | None
+
+
+def _clean_string(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _clean_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [cleaned for item in value if (cleaned := _clean_string(item))]
+
+
 class OpenAIExtractClient(ExtractClient):
-    def __init__(self, api_key: str, model: str = "gpt-5.3") -> None:
-        self.client = OpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str = "gpt-5.4-mini") -> None:
+        self.client = openai.OpenAI(api_key=api_key)
         self.model = model
 
     def extract_profile(self, name: str, results: list[SearchResult]) -> ExtractedProfile:
-        context = "\n".join(
-            [f"Title: {r.title}\nSnippet: {r.snippet}\nLink: {r.link}" for r in results]
-        )
-        prompt = (
-            "Extract structured alumni profile JSON with keys: "
-            "name, current_company, current_title, past_companies (array).\n"
-            f"Person name: {name}\n"
-            f"Search context:\n{context}"
+        context = "\n\n".join(
+            [
+                "\n".join(
+                    [
+                        f"Result {index}",
+                        f"Title: {_clean_string(result.title)}",
+                        f"Snippet: {_clean_string(result.snippet)}",
+                        f"Link: {_clean_string(result.link)}",
+                    ]
+                )
+                for index, result in enumerate(results, start=1)
+            ]
         )
 
-        response = self.client.responses.create(
+        response = self.client.responses.parse(
             model=self.model,
-            input=prompt,
-            text={"format": {"type": "json_schema", "name": "profile", "schema": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "current_company": {"type": "string"},
-                    "current_title": {"type": "string"},
-                    "past_companies": {"type": "array", "items": {"type": "string"}},
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract an alumni career profile from public search-result text. "
+                        "Use only the supplied evidence. If a string field is unknown, "
+                        "return null. If no past companies are supported, return an empty list."
+                    ),
                 },
-                "required": ["name", "current_company", "current_title", "past_companies"],
-                "additionalProperties": False,
-            }}},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Alumnus name: {name}\n\n"
+                        f"Search results:\n{context or 'No search results provided.'}"
+                    ),
+                },
+            ],
+            text_format=OpenAIExtractedProfile,
         )
-        output_text = response.output_text
-        return ExtractedProfile.model_validate_json(output_text)
+        parsed = response.output_parsed
+
+        return ExtractedProfile(
+            name=name,
+            current_company=_clean_string(getattr(parsed, "current_company", None)),
+            current_title=_clean_string(getattr(parsed, "current_title", None)),
+            past_companies=_clean_string_list(getattr(parsed, "past_companies", None)),
+        )

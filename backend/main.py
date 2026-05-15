@@ -17,7 +17,7 @@ from backend.pipeline.query import OpenAIQueryClient
 from backend.pipeline.query import QueryClient
 from backend.pipeline.search import MockSearchClient
 from backend.pipeline.search import SearchClient
-from backend.pipeline.search import SerpApiSearchClient
+from backend.pipeline.search import SerpAPISearchClient
 
 
 class QueryRequest(BaseModel):
@@ -32,13 +32,22 @@ def load_alumni_csv(path: Path) -> list[dict[str, str]]:
 
 def build_clients() -> tuple[SearchClient, ExtractClient, QueryClient]:
     settings = get_settings()
-    if settings.use_mock_apis:
-        return MockSearchClient(), MockExtractClient(), MockQueryClient()
-    return (
-        SerpApiSearchClient(api_key=settings.serpapi_api_key),
-        OpenAIExtractClient(api_key=settings.openai_api_key),
-        OpenAIQueryClient(api_key=settings.openai_api_key),
+    search: SearchClient = (
+        MockSearchClient()
+        if settings.use_mock_search
+        else SerpAPISearchClient(api_key=settings.serpapi_api_key)
     )
+    extract: ExtractClient = (
+        MockExtractClient()
+        if settings.use_mock_extract
+        else OpenAIExtractClient(api_key=settings.openai_api_key)
+    )
+    query: QueryClient = (
+        MockQueryClient()
+        if settings.use_mock_query
+        else OpenAIQueryClient(api_key=settings.openai_api_key)
+    )
+    return search, extract, query
 
 
 app = FastAPI(title="TuckScout")
