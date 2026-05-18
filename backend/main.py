@@ -290,3 +290,11 @@ async def frontend_app() -> Response:
         Path("frontend/app.js").read_text(encoding="utf-8"),
         media_type="application/javascript",
     )
+
+
+@app.get("/favicon.svg")
+async def frontend_favicon() -> Response:
+    return Response(
+        Path("frontend/favicon.svg").read_text(encoding="utf-8"),
+        media_type="image/svg+xml",
+    )

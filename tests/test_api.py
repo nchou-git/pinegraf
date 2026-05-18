@@ -84,3 +84,18 @@ def test_alumni_count_endpoint(monkeypatch, tmp_path) -> None:
         assert response.json() == {"count": len(main.load_alumni_csv(Path("data/alumni.csv")))}
 
     asyncio.run(run_flow())
+
+
+def test_favicon_endpoint(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+
+    async def run_flow() -> None:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/favicon.svg")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert 'aria-label="Pinegraf logo"' in response.text
+
+    asyncio.run(run_flow())
