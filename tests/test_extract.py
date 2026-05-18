@@ -50,7 +50,7 @@ def test_openai_extract_uses_responses_api_with_pydantic_format(
     fake_openai.assert_called_once_with(api_key="test-key")
     fake_parse.assert_called_once()
     kwargs = fake_parse.call_args.kwargs
-    assert kwargs["model"] == "gpt-5.3-mini"
+    assert kwargs["model"] == "gpt-5.5"
     assert issubclass(kwargs["text_format"], BaseModel)
     assert "Jane Doe" in str(kwargs["input"])
     assert "Waystar Royco" in str(kwargs["input"])

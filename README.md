@@ -1,6 +1,6 @@
-# TuckScout
+# Pinegraf
 
-Pipeline: take alumni input, enrich with structured profile data, store it in SQLite, and answer natural-language queries from stored data.
+Pinegraf maps the people behind any network. Starting with Tuck alumni - extracts profiles, projects, and relationships from public web data, then answers natural-language questions about the graph it builds.
 
 ## Setup
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import openai
 from pydantic import BaseModel, Field
 
+from backend.pipeline.openai_retry import retry_openai_call
 from backend.pipeline.search import SearchResult
 
 
@@ -50,7 +51,7 @@ def _clean_string_list(value: object) -> list[str]:
 
 
 class OpenAIExtractClient(ExtractClient):
-    def __init__(self, api_key: str, model: str = "gpt-5.4-mini") -> None:
+    def __init__(self, api_key: str, model: str = "gpt-5.5") -> None:
         self.client = openai.OpenAI(api_key=api_key)
         self.model = model
 
@@ -69,26 +70,28 @@ class OpenAIExtractClient(ExtractClient):
             ]
         )
 
-        response = self.client.responses.parse(
-            model=self.model,
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract an alumni career profile from public search-result text. "
-                        "Use only the supplied evidence. If a string field is unknown, "
-                        "return null. If no past companies are supported, return an empty list."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Alumnus name: {name}\n\n"
-                        f"Search results:\n{context or 'No search results provided.'}"
-                    ),
-                },
-            ],
-            text_format=OpenAIExtractedProfile,
+        response = retry_openai_call(
+            lambda: self.client.responses.parse(
+                model=self.model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract an alumni career profile from public search-result text. "
+                            "Use only the supplied evidence. If a string field is unknown, "
+                            "return null. If no past companies are supported, return an empty list."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Alumnus name: {name}\n\n"
+                            f"Search results:\n{context or 'No search results provided.'}"
+                        ),
+                    },
+                ],
+                text_format=OpenAIExtractedProfile,
+            )
         )
         parsed = response.output_parsed
 

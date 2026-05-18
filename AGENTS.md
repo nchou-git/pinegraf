@@ -1,4 +1,4 @@
-# TuckScout
+# Pinegraf
 
 Pipeline: take a list of alumni → enrich each one with structured data from web search → store in DB → expose a query interface where a user asks natural-language questions and a cheap LLM answers from the DB.
 

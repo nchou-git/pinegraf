@@ -14,6 +14,9 @@ dependencies = [
   "pytest",
   "pytest-mock",
   "ruff",
+  "httpx",
+  "beautifulsoup4",
+  "lxml",
 ]
 
 [build-system]
