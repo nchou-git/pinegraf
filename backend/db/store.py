@@ -186,6 +186,33 @@ class Store:
                 )
             session.commit()
 
+    def delete_fact(self, fact_id: int) -> bool:
+        with self._session_factory() as session:
+            fact = session.get(Fact, fact_id)
+            if fact is None:
+                return False
+            session.delete(fact)
+            session.commit()
+            return True
+
+    def delete_connection(self, connection_id: int) -> bool:
+        with self._session_factory() as session:
+            connection = session.get(Connection, connection_id)
+            if connection is None:
+                return False
+            session.delete(connection)
+            session.commit()
+            return True
+
+    def delete_project(self, project_id: int) -> bool:
+        with self._session_factory() as session:
+            project = session.get(Project, project_id)
+            if project is None:
+                return False
+            session.delete(project)
+            session.commit()
+            return True
+
     def enqueue_crawl(
         self, name: str, class_year: str, depth: int, discovered_via: str = ""
     ) -> bool:

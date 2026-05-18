@@ -62,6 +62,20 @@ class PageExtraction(BaseModel):
     facts: list[ExtractedFact] = Field(default_factory=list)
 
 
+class AttributionDrop(BaseModel):
+    category: str
+    index: int
+    item: str = ""
+    reason: str = ""
+
+
+class AttributionValidationResult(BaseModel):
+    keep_project_indices: list[int]
+    keep_connection_indices: list[int]
+    keep_fact_indices: list[int]
+    drops: list[AttributionDrop] = Field(default_factory=list)
+
+
 class SynthesizedProfile(BaseModel):
     current_company: str = ""
     current_title: str = ""
@@ -178,16 +192,27 @@ class EntityExtractor:
                             "Extract structured information about the named alumnus from this "
                             "page. Only include facts supported by the page. Only include facts "
                             "directly stated or strongly implied by this page. Do not infer from "
-                            "outside knowledge. For connections, only list real people associated "
-                            "with the alumnus (colleagues, co-founders, classmates, project "
-                            "partners), not the alumnus themself. For connections: list named "
-                            "people who appear in a professional or educational context alongside "
-                            "the alumnus. This includes: co-workers, classmates, co-founders, "
-                            "board co-members, project collaborators, mentors, mentees, or people "
-                            "the alumnus is described as working/serving with. Use the context "
-                            "field to capture how they're related. Skip generic mentions (e.g. "
-                            "someone quoted in the same article about an unrelated topic). When "
-                            "in doubt, include it with a brief context note and 'low' confidence. "
+                            "outside knowledge. For PROJECTS: Only include a project if the page "
+                            "EXPLICITLY states that the named alumnus (the specific person "
+                            "identified in the user message) personally worked on it, founded it, "
+                            "led it, or had a direct role in it. If the page merely mentions a "
+                            "project as a historical example, as context, as someone else's work, "
+                            "or as something the alumnus referenced or commented on but did not "
+                            "personally work on, DO NOT include it. The test: 'Does this page "
+                            "directly attribute this project to THIS alumnus's own activity?' If "
+                            "no, omit. Specifically: if the page says 'X and Y worked on project "
+                            "Z' and THIS alumnus is not X or Y, DO NOT include the project. For "
+                            "CONNECTIONS: Only include a person as a connection if the page "
+                            "describes a direct relationship between THIS alumnus and that person "
+                            "(coworker, classmate, co-founder, collaborator, mentor, family, "
+                            "board co-member). If the page describes a relationship between two "
+                            "OTHER people that does not involve this alumnus, DO NOT save those "
+                            "people as connections of this alumnus. Test: 'Is THIS alumnus "
+                            "directly described as related to this person?' If no, omit. For "
+                            "FACTS: Each fact must be a claim about THIS alumnus personally. Do "
+                            "not record facts about other people on the page. If a sentence is "
+                            "about someone else, skip it even if interesting. Do not list the "
+                            "alumnus themself as a connection. "
                             "If the page appears to be about a "
                             "different person with the same name as the alumnus (different "
                             "industry, era, or biography), return all fields empty and add a "
@@ -218,6 +243,203 @@ class EntityExtractor:
         return extraction
 
 
+class AttributionValidator:
+    def __init__(self, api_key: str, model: str = "gpt-5.4-mini") -> None:
+        self.client = OpenAI(api_key=api_key)
+        self.model = model
+        self.last_drops: list[AttributionDrop] = []
+
+    def validate(
+        self, alum_name: str, page_text: str, extraction: PageExtraction
+    ) -> PageExtraction:
+        self.last_drops = []
+        if not extraction.projects and not extraction.connections and not extraction.facts:
+            return extraction
+
+        payload = {
+            "projects": [
+                {
+                    "index": idx,
+                    "name": project.name,
+                    "description": project.description,
+                    "source_url": project.source_url,
+                }
+                for idx, project in enumerate(extraction.projects)
+            ],
+            "connections": [
+                {
+                    "index": idx,
+                    "name": connection.name,
+                    "context": connection.context,
+                    "relationship_type": connection.relationship_type,
+                    "source_url": connection.source_url,
+                }
+                for idx, connection in enumerate(extraction.connections)
+            ],
+            "facts": [
+                {
+                    "index": idx,
+                    "category": fact.category,
+                    "content": fact.content,
+                    "source_url": fact.source_url,
+                }
+                for idx, fact in enumerate(extraction.facts)
+            ],
+        }
+
+        try:
+            response = retry_openai_call(
+                lambda: self.client.responses.parse(
+                    model=self.model,
+                    input=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an attribution validator. For each item below, answer "
+                                "keep or drop based on whether the page directly attributes this "
+                                f"to {alum_name}. Drop items that are about other people or are "
+                                "merely mentioned in passing on the page. Return a JSON object "
+                                "with arrays of indices to keep for each category: "
+                                "keep_project_indices, keep_connection_indices, and "
+                                "keep_fact_indices. Also include a drops array with objects "
+                                "containing category ('projects', 'connections', or 'facts'), "
+                                "index, item, and a one-line reason for each dropped item."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Alumnus: {alum_name}\n\n"
+                                f"Source page text:\n{page_text[:MAX_PAGE_CHARS]}\n\n"
+                                f"Extracted items:\n{json.dumps(payload, indent=2)}"
+                            ),
+                        },
+                    ],
+                    text_format=AttributionValidationResult,
+                )
+            )
+            verdict = response.output_parsed
+        except Exception:
+            return extraction
+
+        if verdict is None:
+            return extraction
+
+        return self._apply_verdict(extraction, verdict)
+
+    def _apply_verdict(
+        self, extraction: PageExtraction, verdict: AttributionValidationResult
+    ) -> PageExtraction:
+        keep_projects = self._valid_indices(verdict.keep_project_indices, len(extraction.projects))
+        keep_connections = self._valid_indices(
+            verdict.keep_connection_indices,
+            len(extraction.connections),
+        )
+        keep_facts = self._valid_indices(verdict.keep_fact_indices, len(extraction.facts))
+        reasons = {
+            (drop.category, drop.index): drop.reason.strip()
+            for drop in verdict.drops
+            if drop.reason.strip()
+        }
+
+        filtered = extraction.model_copy(deep=True)
+        filtered.projects = [
+            project for idx, project in enumerate(extraction.projects) if idx in keep_projects
+        ]
+        filtered.connections = [
+            connection
+            for idx, connection in enumerate(extraction.connections)
+            if idx in keep_connections
+        ]
+        filtered.facts = [fact for idx, fact in enumerate(extraction.facts) if idx in keep_facts]
+
+        self.last_drops = []
+        self._record_project_drops(extraction, keep_projects, reasons)
+        self._record_connection_drops(extraction, keep_connections, reasons)
+        self._record_fact_drops(extraction, keep_facts, reasons)
+        return filtered
+
+    @staticmethod
+    def _valid_indices(indices: list[int], length: int) -> set[int]:
+        return {idx for idx in indices if 0 <= idx < length}
+
+    def _record_project_drops(
+        self,
+        extraction: PageExtraction,
+        keep_indices: set[int],
+        reasons: dict[tuple[str, int], str],
+    ) -> None:
+        for idx, project in enumerate(extraction.projects):
+            if idx in keep_indices:
+                continue
+            self.last_drops.append(
+                AttributionDrop(
+                    category="projects",
+                    index=idx,
+                    item=project.name,
+                    reason=reasons.get(
+                        ("projects", idx),
+                        "Validator did not keep this project for the alumnus.",
+                    ),
+                )
+            )
+
+    def _record_connection_drops(
+        self,
+        extraction: PageExtraction,
+        keep_indices: set[int],
+        reasons: dict[tuple[str, int], str],
+    ) -> None:
+        for idx, connection in enumerate(extraction.connections):
+            if idx in keep_indices:
+                continue
+            self.last_drops.append(
+                AttributionDrop(
+                    category="connections",
+                    index=idx,
+                    item=connection.name,
+                    reason=reasons.get(
+                        ("connections", idx),
+                        "Validator did not keep this connection for the alumnus.",
+                    ),
+                )
+            )
+
+    def _record_fact_drops(
+        self,
+        extraction: PageExtraction,
+        keep_indices: set[int],
+        reasons: dict[tuple[str, int], str],
+    ) -> None:
+        for idx, fact in enumerate(extraction.facts):
+            if idx in keep_indices:
+                continue
+            self.last_drops.append(
+                AttributionDrop(
+                    category="facts",
+                    index=idx,
+                    item=fact.content[:120],
+                    reason=reasons.get(
+                        ("facts", idx),
+                        "Validator did not keep this fact for the alumnus.",
+                    ),
+                )
+            )
+
+
+class MockAttributionValidator(AttributionValidator):
+    def __init__(self) -> None:
+        self.model = "mock"
+        self.last_drops: list[AttributionDrop] = []
+
+    def validate(
+        self, alum_name: str, page_text: str, extraction: PageExtraction
+    ) -> PageExtraction:
+        del alum_name, page_text
+        self.last_drops = []
+        return extraction
+
+
 class MockEntityExtractor(EntityExtractor):
     def __init__(self) -> None:
         self.model = "mock"
@@ -240,9 +462,11 @@ class MockEntityExtractor(EntityExtractor):
                 source_url=page.url,
             ),
         ]
-        if "gyrobike" in lower:
+        first_name = alum_name.split()[0].strip().lower()
+        direct_gyrobike_participant = first_name in {"errik", "daniella"}
+        if "gyrobike" in lower and direct_gyrobike_participant:
             connected_name = "Daniella Reichstetter"
-            if alum_name.lower() == connected_name.lower():
+            if first_name == "daniella":
                 connected_name = "Errik Anderson"
             connections.append(
                 ExtractedConnection(
@@ -433,6 +657,7 @@ class ResearchOrchestrator:
         fetcher: PageFetcher,
         extractor: EntityExtractor,
         synthesizer: ProfileSynthesizer,
+        validator: AttributionValidator | None = None,
         max_depth: int = 2,
         pages_per_alum: int = 4,
     ) -> None:
@@ -441,6 +666,7 @@ class ResearchOrchestrator:
         self.fetcher = fetcher
         self.extractor = extractor
         self.synthesizer = synthesizer
+        self.validator = validator or MockAttributionValidator()
         self.max_depth = max_depth
         self.pages_per_alum = pages_per_alum
         self.consecutive_insufficient_quota_errors = 0
@@ -511,6 +737,25 @@ class ResearchOrchestrator:
                 for c in ext.connections:
                     c.context = c.context or page.title
                 tag_source_urls(ext, page.url)
+                ext = self.validator.validate(name, page.text, ext)
+                if self.validator.last_drops:
+                    reasons = "; ".join(
+                        f"{drop.category}[{drop.index}] {drop.item}: {drop.reason}"
+                        for drop in self.validator.last_drops
+                    )
+                    emit(
+                        ProgressEvent(
+                            "stage",
+                            {
+                                "name": name,
+                                "stage": (
+                                    f"validator dropped {len(self.validator.last_drops)} items "
+                                    f"for {name}: {reasons}"
+                                ),
+                                "url": page.url,
+                            },
+                        )
+                    )
                 extractions.append(ext)
             except Exception as exc:
                 try:

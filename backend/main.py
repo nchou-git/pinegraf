@@ -25,7 +25,9 @@ from backend.pipeline.query import (
     QueryClient,
 )
 from backend.pipeline.research import (
+    AttributionValidator,
     EntityExtractor,
+    MockAttributionValidator,
     MockEntityExtractor,
     MockPageFetcher,
     MockProfileSynthesizer,
@@ -78,7 +80,12 @@ def build_clients() -> tuple[SearchClient, ExtractClient, QueryClient]:
     return search, extract, query
 
 
-def build_research_components() -> tuple[PageFetcher, EntityExtractor, ProfileSynthesizer]:
+def build_research_components() -> tuple[
+    PageFetcher,
+    EntityExtractor,
+    ProfileSynthesizer,
+    AttributionValidator,
+]:
     settings = get_settings()
     fetcher: PageFetcher = MockPageFetcher() if settings.use_mock_fetch else PageFetcher()
     extractor: EntityExtractor = (
@@ -91,7 +98,12 @@ def build_research_components() -> tuple[PageFetcher, EntityExtractor, ProfileSy
         if settings.use_mock_extract
         else ProfileSynthesizer(api_key=settings.openai_api_key, model="gpt-5.4")
     )
-    return fetcher, extractor, synthesizer
+    validator: AttributionValidator = (
+        MockAttributionValidator()
+        if settings.use_mock_extract
+        else AttributionValidator(api_key=settings.openai_api_key, model="gpt-5.4-mini")
+    )
+    return fetcher, extractor, synthesizer, validator
 
 
 app = FastAPI(title="Pinegraf")
@@ -128,13 +140,14 @@ async def alumni_count() -> dict[str, int]:
 @app.get("/research/stream")
 async def research_stream() -> StreamingResponse:
     alumni = load_alumni_csv(Path("data/alumni.csv"))
-    fetcher, extractor, synthesizer = build_research_components()
+    fetcher, extractor, synthesizer, validator = build_research_components()
     orchestrator = ResearchOrchestrator(
         store=store,
         search_client=search_client,
         fetcher=fetcher,
         extractor=extractor,
         synthesizer=synthesizer,
+        validator=validator,
         max_depth=0,
         pages_per_alum=5,
     )
