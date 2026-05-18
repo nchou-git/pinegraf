@@ -135,8 +135,8 @@ async def research_stream() -> StreamingResponse:
         fetcher=fetcher,
         extractor=extractor,
         synthesizer=synthesizer,
-        max_depth=1,
-        pages_per_alum=3,
+        max_depth=0,
+        pages_per_alum=5,
     )
 
     event_queue: queue.Queue[ProgressEvent | str] = queue.Queue()

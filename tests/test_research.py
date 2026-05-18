@@ -42,7 +42,11 @@ def test_entity_extractor_allows_disambiguation_warning(
     assert kwargs["model"] == "gpt-5.4-mini"
     system_prompt = kwargs["input"][0]["content"]
     assert "different person with the same name" in system_prompt
-    assert "Mere co-occurrence of two names on a page is NOT a connection" in system_prompt
+    assert "professional or educational context alongside the alumnus" in system_prompt
+    assert (
+        "When in doubt, include it with a brief context note and 'low' confidence"
+        in system_prompt
+    )
     assert result.current_company is None
     assert result.current_title is None
     assert result.past_companies == []
