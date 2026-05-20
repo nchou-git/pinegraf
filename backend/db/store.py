@@ -5,6 +5,7 @@ import logging
 import re
 from collections.abc import Iterable
 from datetime import date, datetime, timezone
+from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from backend.db.models import (
     Project,
     RawPage,
 )
-from backend.pipeline.position_dates import parse_position_date
+from backend.pipeline.position_dates import date_ranges_overlap, parse_position_date
 
 logger = logging.getLogger(__name__)
 
@@ -582,8 +583,11 @@ class Store:
                 "position_type": payload.get("position_type", "other"),
                 "is_current": payload.get("end_date") is None,
                 "source_url": row.raw_page.source_url if row.raw_page else "",
+                "merge_group_id": None,
             }
             positions.append(position)
+
+        _assign_merge_group_ids(positions)
 
         positions.sort(
             key=lambda position: (
@@ -759,6 +763,68 @@ def _as_str_or_none(value: object) -> str | None:
         return None
     cleaned = str(value).strip()
     return cleaned or None
+
+
+def _assign_merge_group_ids(positions: list[dict[str, object]]) -> None:
+    company_groups: dict[str, list[int]] = {}
+    for index, position in enumerate(positions):
+        company_key = _normalize_position_token(position.get("company"))
+        if not company_key:
+            continue
+        company_groups.setdefault(company_key, []).append(index)
+
+    for company_key, indices in company_groups.items():
+        if len(indices) < 2:
+            continue
+        overlaps: dict[int, set[int]] = {index: set() for index in indices}
+        for idx, left in enumerate(indices):
+            for right in indices[idx + 1 :]:
+                if _positions_overlap(positions[left], positions[right]):
+                    overlaps[left].add(right)
+                    overlaps[right].add(left)
+
+        visited: set[int] = set()
+        for start_index in indices:
+            if start_index in visited:
+                continue
+            stack = [start_index]
+            component: list[int] = []
+            visited.add(start_index)
+            while stack:
+                node = stack.pop()
+                component.append(node)
+                for neighbor in overlaps[node]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        stack.append(neighbor)
+
+            if len(component) < 2:
+                continue
+
+            earliest_start = min(
+                (
+                    parse_position_date(
+                        _as_str_or_none(positions[index].get("start_date")),
+                        is_end_date=False,
+                    )
+                    or date.min
+                )
+                for index in component
+            )
+            merge_group_id = sha1(
+                f"{company_key}:{earliest_start.isoformat()}".encode("utf-8")
+            ).hexdigest()[:12]
+            for index in component:
+                positions[index]["merge_group_id"] = merge_group_id
+
+
+def _positions_overlap(left: dict[str, object], right: dict[str, object]) -> bool:
+    return date_ranges_overlap(
+        start_a=parse_position_date(_as_str_or_none(left.get("start_date")), is_end_date=False),
+        end_a=parse_position_date(_as_str_or_none(left.get("end_date")), is_end_date=True),
+        start_b=parse_position_date(_as_str_or_none(right.get("start_date")), is_end_date=False),
+        end_b=parse_position_date(_as_str_or_none(right.get("end_date")), is_end_date=True),
+    )
 
 
 def fact_to_dict(fact: Fact) -> dict[str, object]:

@@ -257,3 +257,219 @@ def test_position_date_sort_year_vs_year_month(tmp_path) -> None:
 
     positions = store.get_positions_for_alum("Jane Doe")
     assert positions[0]["company"] == "Year Month"
+
+
+def test_merge_group_same_company_overlapping_dates(tmp_path) -> None:
+    store = make_store(tmp_path)
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/overlap",
+        page_title="Overlap",
+        page_text="Profile text",
+    )
+    store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        facts=[
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"Director","location":null,'
+                    '"start_date":"2022-01","end_date":"2024-01","position_type":"board","is_current":false}'
+                ),
+            },
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"Advisor","location":null,'
+                    '"start_date":"2023-06","end_date":null,"position_type":"advisor","is_current":true}'
+                ),
+            },
+        ],
+        connections=[],
+        projects=[],
+    )
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    assert positions[0]["merge_group_id"] is not None
+    assert positions[0]["merge_group_id"] == positions[1]["merge_group_id"]
+
+
+def test_merge_group_same_company_non_overlapping_dates_is_null(tmp_path) -> None:
+    store = make_store(tmp_path)
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/non-overlap",
+        page_title="Non-overlap",
+        page_text="Profile text",
+    )
+    store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        facts=[
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"Role 1","location":null,'
+                    '"start_date":"2020-01","end_date":"2021-01","position_type":"full_time","is_current":false}'
+                ),
+            },
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"Role 2","location":null,'
+                    '"start_date":"2021-02","end_date":"2022-01","position_type":"full_time","is_current":false}'
+                ),
+            },
+        ],
+        connections=[],
+        projects=[],
+    )
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    assert positions[0]["merge_group_id"] is None
+    assert positions[1]["merge_group_id"] is None
+
+
+def test_merge_group_different_companies_is_null(tmp_path) -> None:
+    store = make_store(tmp_path)
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/multi-company",
+        page_title="Multi Company",
+        page_text="Profile text",
+    )
+    store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        facts=[
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"Role 1","location":null,'
+                    '"start_date":"2020","end_date":"2023","position_type":"full_time","is_current":false}'
+                ),
+            },
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Beta LLC","title":"Role 2","location":null,'
+                    '"start_date":"2021","end_date":null,"position_type":"advisor","is_current":true}'
+                ),
+            },
+        ],
+        connections=[],
+        projects=[],
+    )
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    assert all(position["merge_group_id"] is None for position in positions)
+
+
+def test_merge_group_single_position_is_null(tmp_path) -> None:
+    store = make_store(tmp_path)
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/single",
+        page_title="Single",
+        page_text="Profile text",
+    )
+    store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        facts=[
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"Role 1","location":null,'
+                    '"start_date":"2020","end_date":null,"position_type":"full_time","is_current":true}'
+                ),
+            }
+        ],
+        connections=[],
+        projects=[],
+    )
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    assert len(positions) == 1
+    assert positions[0]["merge_group_id"] is None
+
+
+def test_merge_group_transitive_overlap_same_id(tmp_path) -> None:
+    store = make_store(tmp_path)
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/transitive",
+        page_title="Transitive",
+        page_text="Profile text",
+    )
+    store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        facts=[
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"A","location":null,'
+                    '"start_date":"2020-01","end_date":"2020-12","position_type":"board","is_current":false}'
+                ),
+            },
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"B","location":null,'
+                    '"start_date":"2020-06","end_date":"2021-06","position_type":"board","is_current":false}'
+                ),
+            },
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"Acme Corp","title":"C","location":null,'
+                    '"start_date":"2021-01","end_date":"2022-01","position_type":"board","is_current":false}'
+                ),
+            },
+        ],
+        connections=[],
+        projects=[],
+    )
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    merge_ids = {position["merge_group_id"] for position in positions}
+    assert len(merge_ids) == 1
+    assert None not in merge_ids
+
+
+def test_merge_group_company_normalization_whitespace_case(tmp_path) -> None:
+    store = make_store(tmp_path)
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/normalize",
+        page_title="Normalize",
+        page_text="Profile text",
+    )
+    store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        facts=[
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"  ACME   corp ","title":"Role 1","location":null,'
+                    '"start_date":"2020","end_date":"2022","position_type":"full_time","is_current":false}'
+                ),
+            },
+            {
+                "category": "position",
+                "content": (
+                    '{"company":"acme corp","title":"Role 2","location":null,'
+                    '"start_date":"2021","end_date":"2023","position_type":"full_time","is_current":false}'
+                ),
+            },
+        ],
+        connections=[],
+        projects=[],
+    )
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    assert positions[0]["merge_group_id"] is not None
+    assert positions[0]["merge_group_id"] == positions[1]["merge_group_id"]

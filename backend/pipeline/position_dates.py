@@ -39,6 +39,20 @@ def parse_position_date(value: str | None, *, is_end_date: bool) -> date | None:
     return None
 
 
+def date_ranges_overlap(
+    *,
+    start_a: date | None,
+    end_a: date | None,
+    start_b: date | None,
+    end_b: date | None,
+) -> bool:
+    normalized_start_a = start_a or date.min
+    normalized_end_a = end_a or date.max
+    normalized_start_b = start_b or date.min
+    normalized_end_b = end_b or date.max
+    return normalized_start_a <= normalized_end_b and normalized_start_b <= normalized_end_a
+
+
 def _parse_part(value: str, min_value: int, max_value: int) -> int | None:
     if not value.isdigit():
         return None
