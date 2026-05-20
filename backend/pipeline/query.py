@@ -58,7 +58,7 @@ class MockQueryClient(QueryClient):
 
 
 class OpenAIQueryClient(QueryClient):
-    def __init__(self, *, store: Store, api_key: str, model: str = "gpt-5.3-mini") -> None:
+    def __init__(self, *, store: Store, api_key: str, model: str = "gpt-5.4-mini") -> None:
         self.store = store
         self.client = OpenAI(api_key=api_key)
         self.model = model

@@ -108,7 +108,7 @@ def build_query_client(mode: Literal["strict", "deep"]) -> QueryClient:
 
     if settings.use_mock_query:
         return MockQueryClient(store)
-    return OpenAIQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.3-mini")
+    return OpenAIQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.4-mini")
 
 
 app = FastAPI(title="Pinegraf")
