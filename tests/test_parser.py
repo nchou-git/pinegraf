@@ -6,6 +6,7 @@ from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.parser import (
     ExtractedConnection,
     ExtractedFact,
+    ExtractedPosition,
     ExtractedProfile,
     ExtractedProject,
     ExtractionClient,
@@ -47,6 +48,32 @@ class FakeExtractionClient(ExtractionClient):
                     confidence="high",
                 )
             ],
+            positions=[
+                ExtractedPosition(
+                    company="Acme Corp",
+                    title="COO",
+                    location="Boston, MA",
+                    start_date="2024-06",
+                    end_date=None,
+                    position_type="full_time",
+                ),
+                ExtractedPosition(
+                    company="River Ventures",
+                    title="Board Member",
+                    location=None,
+                    start_date="2023",
+                    end_date=None,
+                    position_type="board",
+                ),
+                ExtractedPosition(
+                    company="Beta Inc",
+                    title="VP Strategy",
+                    location=None,
+                    start_date="2021-01",
+                    end_date="2024-05",
+                    position_type="full_time",
+                ),
+            ],
         )
 
 
@@ -57,6 +84,11 @@ class FakeValidationClient(ValidationClient):
             connection_verdicts=[ItemVerdict(index=0, verdict="keep")],
             project_verdicts=[ItemVerdict(index=0, verdict="uncertain")],
             fact_verdicts=[ItemVerdict(index=0, verdict="drop")],
+            position_verdicts=[
+                ItemVerdict(index=0, verdict="keep"),
+                ItemVerdict(index=1, verdict="keep"),
+                ItemVerdict(index=2, verdict="keep"),
+            ],
         )
 
 
@@ -127,7 +159,9 @@ def test_parser_writes_structured_rows_marks_parsed_and_is_idempotent(tmp_path) 
 
     assert extractor.calls == 1
     assert synthesizer.calls == 1
-    assert len(store.list_facts()) == 1
+    facts = store.list_facts()
+    assert len([fact for fact in facts if fact.category == "career"]) == 1
+    assert len([fact for fact in facts if fact.category == "position"]) == 3
 
 
 def test_parser_force_reparses_without_duplicate_rows(tmp_path) -> None:
@@ -138,6 +172,25 @@ def test_parser_force_reparses_without_duplicate_rows(tmp_path) -> None:
 
     assert extractor.calls == 2
     assert synthesizer.calls == 2
-    assert len(store.list_facts()) == 1
+    facts = store.list_facts()
+    assert len([fact for fact in facts if fact.category == "career"]) == 1
+    assert len([fact for fact in facts if fact.category == "position"]) == 3
     assert len(store.list_connections()) == 1
     assert len(store.list_projects()) == 1
+
+
+def test_parser_returns_multiple_positions_with_correct_type_and_currentness(tmp_path) -> None:
+    store, _, _, parser = make_parser(tmp_path)
+
+    parser.run(lambda event: None)
+
+    positions = store.get_positions_for_alum("Jane Doe")
+    assert len(positions) == 3
+    assert positions[0]["position_type"] in {"full_time", "board"}
+    assert positions[0]["is_current"] is True
+    assert sorted(position["position_type"] for position in positions) == [
+        "board",
+        "full_time",
+        "full_time",
+    ]
+    assert [position["is_current"] for position in positions].count(True) == 2

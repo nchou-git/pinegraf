@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from backend.db.models import (
     Project,
     RawPage,
 )
+from backend.pipeline.position_dates import parse_position_date
 
 logger = logging.getLogger(__name__)
 
@@ -289,11 +292,25 @@ class Store:
         projects: Iterable[dict[str, object]],
     ) -> None:
         with self._session_factory() as session:
-            session.query(Fact).filter(Fact.source_raw_page_id == raw_page_id).delete()
+            position_facts = [
+                fact
+                for fact in facts
+                if str(fact.get("category", "general")).strip().lower() == "position"
+            ]
+            non_position_facts = [
+                fact
+                for fact in facts
+                if str(fact.get("category", "general")).strip().lower() != "position"
+            ]
+
+            session.query(Fact).filter(
+                Fact.source_raw_page_id == raw_page_id,
+                Fact.category != "position",
+            ).delete()
             session.query(Connection).filter(Connection.source_raw_page_id == raw_page_id).delete()
             session.query(Project).filter(Project.source_raw_page_id == raw_page_id).delete()
 
-            for fact in facts:
+            for fact in non_position_facts:
                 content = str(fact.get("content", "")).strip()
                 if not content:
                     continue
@@ -307,6 +324,12 @@ class Store:
                         validation_verdict=_clean_verdict(fact.get("validation_verdict")),
                     )
                 )
+            self._upsert_position_facts(
+                session=session,
+                alum_name=alum_name,
+                source_raw_page_id=raw_page_id,
+                position_facts=position_facts,
+            )
             for connection in connections:
                 connected_name = str(connection.get("connected_name", "")).strip()
                 if not connected_name:
@@ -338,6 +361,78 @@ class Store:
                     )
                 )
             session.commit()
+
+    def _upsert_position_facts(
+        self,
+        *,
+        session: Session,
+        alum_name: str,
+        source_raw_page_id: int,
+        position_facts: Iterable[dict[str, object]],
+    ) -> None:
+        existing_rows = list(
+            session.execute(
+                select(Fact).where(
+                    Fact.alum_name == alum_name,
+                    Fact.source_raw_page_id == source_raw_page_id,
+                    Fact.category == "position",
+                )
+            ).scalars()
+        )
+        by_key: dict[tuple[str, str], Fact] = {}
+        for row in existing_rows:
+            payload = _parse_position_content(row.content)
+            key = (
+                _normalize_position_token(payload.get("company")),
+                _normalize_position_token(payload.get("title")),
+            )
+            by_key[key] = row
+
+        seen_keys: set[tuple[str, str]] = set()
+        for fact in position_facts:
+            content = str(fact.get("content", "")).strip()
+            payload = _parse_position_content(content)
+            company = str(payload.get("company", "")).strip()
+            title = str(payload.get("title", "")).strip()
+            if not company or not title:
+                continue
+            key = (_normalize_position_token(company), _normalize_position_token(title))
+            seen_keys.add(key)
+            normalized_payload = {
+                "company": company,
+                "title": title,
+                "location": payload.get("location"),
+                "start_date": payload.get("start_date"),
+                "end_date": payload.get("end_date"),
+                "position_type": payload.get("position_type", "other"),
+                "is_current": payload.get("end_date") is None,
+            }
+            existing = by_key.get(key)
+            if existing is None:
+                session.add(
+                    Fact(
+                        alum_name=alum_name,
+                        source_raw_page_id=source_raw_page_id,
+                        category="position",
+                        content=json.dumps(normalized_payload),
+                        confidence=str(fact.get("confidence", "low")).strip() or "low",
+                        validation_verdict=_clean_verdict(fact.get("validation_verdict")),
+                    )
+                )
+                continue
+
+            existing.content = json.dumps(normalized_payload)
+            existing.confidence = str(fact.get("confidence", "low")).strip() or "low"
+            existing.validation_verdict = _clean_verdict(fact.get("validation_verdict"))
+
+        for row in existing_rows:
+            payload = _parse_position_content(row.content)
+            key = (
+                _normalize_position_token(payload.get("company")),
+                _normalize_position_token(payload.get("title")),
+            )
+            if key not in seen_keys:
+                session.delete(row)
 
     def add_facts(
         self,
@@ -458,6 +553,54 @@ class Store:
             if verdicts:
                 stmt = stmt.where(Project.validation_verdict.in_(verdicts))
             return list(session.execute(stmt).scalars())
+
+    def get_positions_for_alum(
+        self,
+        alum_name: str,
+        verdicts: frozenset[str] = frozenset(KEEP_VERDICTS),
+    ) -> list[dict[str, object]]:
+        with self._session_factory() as session:
+            stmt = (
+                select(Fact)
+                .options(joinedload(Fact.raw_page))
+                .where(Fact.alum_name == alum_name, Fact.category == "position")
+                .order_by(Fact.id.asc())
+            )
+            if verdicts:
+                stmt = stmt.where(Fact.validation_verdict.in_(verdicts))
+            rows = list(session.execute(stmt).scalars())
+
+        positions: list[dict[str, object]] = []
+        for row in rows:
+            payload = _parse_position_content(row.content)
+            position = {
+                "company": payload.get("company", ""),
+                "title": payload.get("title", ""),
+                "location": payload.get("location"),
+                "start_date": payload.get("start_date"),
+                "end_date": payload.get("end_date"),
+                "position_type": payload.get("position_type", "other"),
+                "is_current": payload.get("end_date") is None,
+                "source_url": row.raw_page.source_url if row.raw_page else "",
+            }
+            positions.append(position)
+
+        positions.sort(
+            key=lambda position: (
+                bool(position.get("is_current")),
+                _date_ordinal(
+                    parse_position_date(_as_str_or_none(position.get("end_date")), is_end_date=True)
+                ),
+                _date_ordinal(
+                    parse_position_date(
+                        _as_str_or_none(position.get("start_date")),
+                        is_end_date=False,
+                    )
+                ),
+            ),
+            reverse=True,
+        )
+        return positions
 
     def database_context(self, *, verdicts: tuple[str, ...] = KEEP_VERDICTS) -> dict[str, object]:
         return {
@@ -589,6 +732,33 @@ def _clean_verdict(value: object) -> str:
     if verdict not in {"keep", "uncertain", "drop"}:
         return "uncertain"
     return verdict
+
+
+def _normalize_position_token(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _parse_position_content(content: str) -> dict[str, object]:
+    try:
+        loaded = json.loads(content)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
+def _date_ordinal(value: date | None) -> int:
+    if value is None:
+        return -1
+    return value.toordinal()
+
+
+def _as_str_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def fact_to_dict(fact: Fact) -> dict[str, object]:

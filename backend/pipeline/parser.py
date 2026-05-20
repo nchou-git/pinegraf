@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.db.models import RawPage
 from backend.db.store import SYNTHESIS_VERDICTS, Store
@@ -46,11 +46,32 @@ class ExtractedFact(BaseModel):
     validation_verdict: ValidationVerdict = "keep"
 
 
+PositionType = Literal["full_time", "advisor", "board", "founder", "consultant", "other"]
+
+
+class ExtractedPosition(BaseModel):
+    company: str
+    title: str
+    location: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    position_type: PositionType = "other"
+    is_current: bool = True
+    confidence: str = "low"
+    validation_verdict: ValidationVerdict = "keep"
+
+    @model_validator(mode="after")
+    def _derive_current_from_end_date(self) -> "ExtractedPosition":
+        self.is_current = self.end_date is None
+        return self
+
+
 class PageExtraction(BaseModel):
     profile: ExtractedProfile = Field(default_factory=ExtractedProfile)
     connections: list[ExtractedConnection] = Field(default_factory=list)
     projects: list[ExtractedProject] = Field(default_factory=list)
     facts: list[ExtractedFact] = Field(default_factory=list)
+    positions: list[ExtractedPosition] = Field(default_factory=list)
 
 
 class ItemVerdict(BaseModel):
@@ -63,6 +84,7 @@ class ValidationResult(BaseModel):
     connection_verdicts: list[ItemVerdict] = Field(default_factory=list)
     project_verdicts: list[ItemVerdict] = Field(default_factory=list)
     fact_verdicts: list[ItemVerdict] = Field(default_factory=list)
+    position_verdicts: list[ItemVerdict] = Field(default_factory=list)
 
 
 class SynthesizedProfile(BaseModel):
@@ -111,8 +133,12 @@ class OpenAIExtractionClient(ExtractionClient):
                             "for unsupported profile data. Connections must be direct "
                             "relationships involving this alumnus. Projects must be directly "
                             "attributed to this alumnus. Facts must be claims about this "
-                            "alumnus personally. Do not include data about unrelated people with "
-                            "the same name."
+                            "alumnus personally. Positions must include all supported roles for "
+                            "this alumnus, including concurrent roles (for example board seats "
+                            "alongside a day job, advisor roles, or founder plus employment). "
+                            "Use one position object per role. Set is_current=true iff end_date "
+                            "is null. Do not include data about unrelated people with the same "
+                            "name."
                         ),
                     },
                     {
@@ -147,8 +173,17 @@ class OpenAIValidationClient(ValidationClient):
                 for project in extraction.projects
             ],
             "facts": [fact.model_dump(exclude={"validation_verdict"}) for fact in extraction.facts],
+            "positions": [
+                position.model_dump(exclude={"validation_verdict"})
+                for position in extraction.positions
+            ],
         }
-        if not payload["connections"] and not payload["projects"] and not payload["facts"]:
+        if (
+            not payload["connections"]
+            and not payload["projects"]
+            and not payload["facts"]
+            and not payload["positions"]
+        ):
             return ValidationResult()
 
         response = retry_openai_call(
@@ -264,6 +299,7 @@ class MockExtractionClient(ExtractionClient):
                     confidence="medium",
                 )
             ],
+            positions=[],
         )
 
 
@@ -357,7 +393,28 @@ class Parser:
                 self.store.replace_structured_items(
                     raw_page_id=raw_page.id,
                     alum_name=raw_page.alum_name,
-                    facts=[fact.model_dump() for fact in extraction.facts],
+                    facts=[
+                        *[fact.model_dump() for fact in extraction.facts],
+                        *[
+                            {
+                                "category": "position",
+                                "content": json.dumps(
+                                    {
+                                        "company": position.company,
+                                        "title": position.title,
+                                        "location": position.location,
+                                        "start_date": position.start_date,
+                                        "end_date": position.end_date,
+                                        "position_type": position.position_type,
+                                        "is_current": position.is_current,
+                                    }
+                                ),
+                                "confidence": position.confidence,
+                                "validation_verdict": position.validation_verdict,
+                            }
+                            for position in extraction.positions
+                        ],
+                    ],
                     connections=[connection.model_dump() for connection in extraction.connections],
                     projects=[project.model_dump() for project in extraction.projects],
                 )
@@ -403,8 +460,10 @@ class Parser:
         page_profiles: list[ExtractedProfile],
     ) -> SynthesizedProfile:
         class_year = self.store.get_class_year_for_alum(alum_name)
+        positions = self.store.get_positions_for_alum(alum_name, set(SYNTHESIS_VERDICTS))
         evidence = {
             "page_profiles": [profile.model_dump() for profile in page_profiles],
+            "positions": positions,
             "facts": [
                 {
                     "category": fact.category,
@@ -439,11 +498,17 @@ class Parser:
             ],
         }
         profile = self.synthesizer.synthesize(alum_name, class_year, evidence)
+        first_current = next(
+            (position for position in positions if position.get("is_current")),
+            None,
+        )
         self.store.upsert_profile(
             name=alum_name,
             class_year=class_year,
-            current_company=profile.current_company,
-            current_title=profile.current_title,
+            current_company=str((first_current or {}).get("company", "")).strip()
+            or profile.current_company,
+            current_title=str((first_current or {}).get("title", "")).strip()
+            or profile.current_title,
             past_companies=profile.past_companies,
             education=profile.education,
             bio_summary=profile.bio_summary,
@@ -456,10 +521,14 @@ def apply_validation(extraction: PageExtraction, validation: ValidationResult) -
     _apply_item_verdicts(extraction.connections, validation.connection_verdicts)
     _apply_item_verdicts(extraction.projects, validation.project_verdicts)
     _apply_item_verdicts(extraction.facts, validation.fact_verdicts)
+    _apply_item_verdicts(extraction.positions, validation.position_verdicts)
 
 
 def _apply_item_verdicts(
-    items: list[ExtractedConnection] | list[ExtractedProject] | list[ExtractedFact],
+    items: list[ExtractedConnection]
+    | list[ExtractedProject]
+    | list[ExtractedFact]
+    | list[ExtractedPosition],
     verdicts: list[ItemVerdict],
 ) -> None:
     by_index = {verdict.index: verdict.verdict for verdict in verdicts}
@@ -475,7 +544,12 @@ def verdict_counts(extraction: PageExtraction) -> dict[str, int]:
 
 
 def _iter_verdicts(extraction: PageExtraction) -> Iterable[ValidationVerdict]:
-    for item in [*extraction.connections, *extraction.projects, *extraction.facts]:
+    for item in [
+        *extraction.connections,
+        *extraction.projects,
+        *extraction.facts,
+        *extraction.positions,
+    ]:
         yield item.validation_verdict
 
 
