@@ -69,9 +69,20 @@ class OpenAIQueryClient(QueryClient):
         prompt = (
             "You answer questions strictly from structured alumni database records. "
             "The records include profiles, facts, connections, and projects. Use only "
-            "rows with validation_verdict='keep'. Surface relationships when the stored "
-            "evidence supports them, cite source URLs when available, and say when the "
-            "database does not contain enough information.\n\n"
+            "rows with validation_verdict='keep'.\n"
+            "Each profile may include a structured positions list with entries like "
+            "company, title, location, start_date, end_date, position_type, is_current, "
+            "source_url, and merge_group_id.\n"
+            "An alumnus can have multiple concurrent current positions (for example board + "
+            "day job, or advisor + employment). Do not assume only one current role.\n"
+            "Positions sharing the same merge_group_id are the same role observed in multiple "
+            "sources; collapse those duplicates when presenting results, but you can rely on "
+            "any one of them as evidence.\n"
+            "For current-role or current-company questions, prefer structured positions over "
+            "older profile.current_company/profile.current_title strings because positions are "
+            "more detailed and source-attributed.\n"
+            "Surface relationships when the stored evidence supports them, cite source URLs "
+            "when available, and say when the database does not contain enough information.\n\n"
             f"Question: {question}\n\nDatabase records:\n{payload}"
         )
         response = retry_openai_call(

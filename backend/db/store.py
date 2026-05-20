@@ -607,6 +607,7 @@ class Store:
         return positions
 
     def database_context(self, *, verdicts: tuple[str, ...] = KEEP_VERDICTS) -> dict[str, object]:
+        verdict_set = frozenset(verdicts)
         return {
             "profiles": [
                 {
@@ -620,6 +621,10 @@ class Store:
                     "discovered_via": profile.discovered_via,
                     "last_parsed_at": (
                         profile.last_parsed_at.isoformat() if profile.last_parsed_at else None
+                    ),
+                    "positions": self.get_positions_for_alum(
+                        profile.name,
+                        verdicts=verdict_set,
                     ),
                 }
                 for profile in self.list_profiles()
