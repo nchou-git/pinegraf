@@ -45,7 +45,7 @@ def test_strict_query_reads_keep_rows_only(tmp_path, mocker: MockerFixture) -> N
     )
 
     fake_openai.assert_called_once_with(api_key="test-key")
-    assert fake_create.call_args.kwargs["model"] == "gpt-5.3-mini"
+    assert fake_create.call_args.kwargs["model"] == "gpt-5.4-mini"
     prompt = fake_create.call_args.kwargs["input"]
     assert "Keep fact." in prompt
     assert "Drop fact." not in prompt
