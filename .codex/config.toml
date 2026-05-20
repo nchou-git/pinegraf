@@ -1,0 +1,16 @@
+# Pinegraf Codex configuration
+
+[agents]
+# Three agents max: backend-engineer, frontend-engineer, reviewer.
+# Only backend + frontend run concurrently; reviewer is sequential after.
+max_threads = 3
+
+# Workers cannot spawn their own subagents. This is a small repo; deeper
+# trees would just burn tokens with no parallelism benefit.
+max_depth = 1
+
+# 30 minutes max per subagent. Plenty for changes in this codebase.
+job_max_runtime_seconds = 1800
+
+[model]
+default = "gpt-5.3"

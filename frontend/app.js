@@ -1,17 +1,14 @@
 let evtSource = null;
 let queuedAlumni = 0;
-let totalAlumKnown = 0;
-let alumDoneOverall = 0;
-let currentClass = null;
-let currentClassTotal = 0;
-let currentClassDone = 0;
-let currentAlumStages = 0;
+let activeStage = null;
 let streamFinished = false;
-let classesSeen = new Set();
+let queryTimer = null;
+let queryStartedAt = 0;
+let queryExpectedMs = 5000;
 
-const STAGES_PER_ALUM = 10; // rough estimate for the alum bar
 const log = document.getElementById("log");
-const researchBtn = document.getElementById("researchBtn");
+const crawlBtn = document.getElementById("crawlBtn");
+const parseBtn = document.getElementById("parseBtn");
 const stopBtn = document.getElementById("stopBtn");
 const summaryCard = document.getElementById("summaryCard");
 
@@ -19,7 +16,14 @@ function formatNumber(value) {
   return Number(value || 0).toLocaleString();
 }
 
-function appendLog(text, cls = "stage") {
+function formatClassYear(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^T'?(\d{2})$/i);
+  if (match) return `T'${match[1]}`;
+  return text;
+}
+
+function appendLog(text, cls = "log-event") {
   const div = document.createElement("div");
   div.className = cls;
   div.textContent = text;
@@ -38,225 +42,245 @@ function setProgress(barId, pctId, pct) {
   document.getElementById(pctId).textContent = `${Math.round(safePct)}%`;
 }
 
-function setOverallProgress(done, total) {
-  alumDoneOverall = Number.isFinite(Number(done)) ? Number(done) : alumDoneOverall;
-  totalAlumKnown = Number.isFinite(Number(total)) ? Number(total) : totalAlumKnown;
-  const pct = totalAlumKnown ? (alumDoneOverall / totalAlumKnown) * 100 : 0;
-  setProgress("overallBar", "overallPct", pct);
-  document.getElementById("overallMeta").textContent =
-    `${formatNumber(alumDoneOverall)}/${formatNumber(totalAlumKnown)} alumni`;
-}
-
-function setClassProgress(done, total) {
-  currentClassDone = Number.isFinite(Number(done)) ? Number(done) : currentClassDone;
-  currentClassTotal = Number.isFinite(Number(total)) ? Number(total) : currentClassTotal;
-  const pct = currentClassTotal ? (currentClassDone / currentClassTotal) * 100 : 0;
-  setProgress("classBar", "classPct", pct);
-  document.getElementById("classMeta").textContent = currentClass
-    ? `Current class: ${currentClass} (${formatNumber(currentClassDone)}/${formatNumber(currentClassTotal)})`
-    : "Current class: none";
-}
-
-function setAlumProgress(pct) {
-  setProgress("alumBar", "alumPct", pct);
-}
-
-function resetProgress() {
-  totalAlumKnown = queuedAlumni;
-  alumDoneOverall = 0;
-  currentClass = null;
-  currentClassTotal = 0;
-  currentClassDone = 0;
-  currentAlumStages = 0;
-  classesSeen = new Set();
-  setOverallProgress(0, queuedAlumni);
-  setClassProgress(0, 0);
-  setAlumProgress(0);
+function resetProgress(stageName) {
+  setProgress("overallBar", "overallPct", 0);
+  setProgress("alumBar", "alumPct", 0);
+  setProgress("pageBar", "pagePct", 0);
+  document.getElementById("overallMeta").textContent = `${stageName} idle`;
   document.getElementById("alumMeta").textContent = "Current alum: none";
+  document.getElementById("pageMeta").textContent = "Current page: none";
   summaryCard.hidden = true;
   summaryCard.textContent = "";
 }
 
+function setButtons(running) {
+  crawlBtn.disabled = running;
+  parseBtn.disabled = running;
+  stopBtn.disabled = !running;
+}
+
 async function loadAlumniCount() {
   const queueCount = document.getElementById("queueCount");
-
   try {
     const response = await fetch("/alumni-count");
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     queuedAlumni = Number(data.count) || 0;
-    totalAlumKnown = queuedAlumni;
     queueCount.textContent = `${formatNumber(queuedAlumni)} alumni queued`;
-    setOverallProgress(0, queuedAlumni);
+    document.getElementById("overallMeta").textContent =
+      `Idle - ${formatNumber(queuedAlumni)} seed alumni`;
   } catch (error) {
     queueCount.textContent = "Alumni queue unavailable";
-    document.getElementById("overallMeta").textContent = "Queue count unavailable";
-    appendLog(`Could not load alumni count: ${error.message}`, "error");
+    appendLog(`Could not load alumni count: ${error.message}`, "log-error");
   } finally {
-    researchBtn.disabled = false;
+    crawlBtn.disabled = false;
+    parseBtn.disabled = false;
   }
 }
 
-function updateOverallFromEvent(ev) {
-  const done = ev.overall_done ?? alumDoneOverall;
-  const total = ev.overall_total ?? totalAlumKnown;
-  setOverallProgress(done, total);
-}
-
-function formatAlumMeta(ev) {
-  const depth = Number.isFinite(Number(ev.depth)) ? Number(ev.depth) : 0;
-  const via = ev.discovered_via ? `, via ${ev.discovered_via}` : "";
-  return `Current alum: ${ev.name} (depth ${depth}${via})`;
-}
-
-function startResearch() {
+async function startStage(stage) {
   if (evtSource) evtSource.close();
-  log.innerHTML = "";
+  activeStage = stage;
   streamFinished = false;
-  resetProgress();
-  document.getElementById("overallMeta").textContent =
-    `Starting... 0/${formatNumber(totalAlumKnown)} alumni`;
-  researchBtn.disabled = true;
-  stopBtn.disabled = false;
+  log.innerHTML = "";
+  resetProgress(stage === "crawl" ? "Crawl" : "Parse");
+  setButtons(true);
 
-  evtSource = new EventSource("/research/stream");
+  const response = await fetch(`/${stage}/start`, { method: "POST" });
+  if (!response.ok) {
+    appendLog(`${stage} start failed: HTTP ${response.status}`, "log-error");
+    stopStage();
+    return;
+  }
 
-  evtSource.onmessage = (e) => {
-    const ev = JSON.parse(e.data);
-    handleEvent(ev);
+  const startData = await response.json();
+  appendLog(`${stage} ${startData.status}`, "log-ok");
+  evtSource = new EventSource(`/${stage}/stream`);
+  evtSource.onmessage = (event) => {
+    const ev = JSON.parse(event.data);
+    handleStageEvent(ev);
   };
   evtSource.onerror = () => {
-    if (!streamFinished) {
-      appendLog("[stream closed]", "error");
-    }
-    stopResearch();
+    if (!streamFinished) appendLog("[stream closed]", "log-error");
+    stopStage();
   };
 }
 
-async function showSummary() {
-  summaryCard.hidden = false;
-  summaryCard.textContent = "Building summary...";
-
-  try {
-    const [connectionsResponse, projectsResponse] = await Promise.all([
-      fetch("/connections"),
-      fetch("/projects"),
-    ]);
-    const connectionsData = connectionsResponse.ok
-      ? await connectionsResponse.json()
-      : { connections: [] };
-    const projectsData = projectsResponse.ok ? await projectsResponse.json() : { projects: [] };
-    const connections = Array.isArray(connectionsData.connections)
-      ? connectionsData.connections.length
-      : 0;
-    const projects = Array.isArray(projectsData.projects) ? projectsData.projects.length : 0;
-
-    summaryCard.textContent =
-      `✓ Researched ${formatNumber(alumDoneOverall)} alumni across ` +
-      `${formatNumber(classesSeen.size)} classes. Found ${formatNumber(connections)} ` +
-      `connections, ${formatNumber(projects)} projects.`;
-  } catch (error) {
-    summaryCard.textContent =
-      `✓ Researched ${formatNumber(alumDoneOverall)} alumni across ` +
-      `${formatNumber(classesSeen.size)} classes. Summary counts unavailable.`;
-    appendLog(`Could not load summary counts: ${error.message}`, "error");
+function handleStageEvent(ev) {
+  if (activeStage === "crawl") {
+    handleCrawlEvent(ev);
+    return;
   }
+  handleParseEvent(ev);
 }
 
-function handleEvent(ev) {
+function setOverallFromEvent(ev, noun) {
+  const done = Number(ev.overall_done ?? ev.page_done ?? 0);
+  const total = Number(ev.overall_total ?? ev.page_total ?? 0);
+  setProgress("overallBar", "overallPct", total ? (done / total) * 100 : 0);
+  document.getElementById("overallMeta").textContent =
+    `${formatNumber(done)}/${formatNumber(total)} ${noun}`;
+}
+
+function setPageFromEvent(ev) {
+  const pageIndex = Number(ev.page_index ?? 0);
+  const pageTotal = Number(ev.page_total ?? 0);
+  setProgress("pageBar", "pagePct", pageTotal ? (pageIndex / pageTotal) * 100 : 0);
+  document.getElementById("pageMeta").textContent = ev.url
+    ? `${formatNumber(pageIndex)}/${formatNumber(pageTotal)} - ${ev.url}`
+    : `${formatNumber(pageIndex)}/${formatNumber(pageTotal)} pages`;
+}
+
+function handleCrawlEvent(ev) {
   switch (ev.kind) {
-    case "class_start":
-      currentClass = ev.class_year;
-      classesSeen.add(ev.class_year);
-      currentClassTotal = ev.count;
-      currentClassDone = ev.done || 0;
-      setClassProgress(currentClassDone, currentClassTotal);
-      updateOverallFromEvent(ev);
-      appendLog(`> class ${ev.class_year}: ${ev.count} alumni`, "class-start");
+    case "crawl_start":
+      setOverallFromEvent(ev, "alumni");
+      appendLog(`crawl started for ${formatNumber(ev.overall_total)} alumni`, "log-ok");
       break;
     case "alum_start":
-      currentAlumStages = 0;
-      setAlumProgress(0);
-      document.getElementById("alumMeta").textContent = formatAlumMeta(ev);
-      appendLog(`  - ${formatAlumMeta(ev).replace("Current alum: ", "")}`, "stage");
+      setProgress("alumBar", "alumPct", 0);
+      setProgress("pageBar", "pagePct", 0);
+      document.getElementById("alumMeta").textContent =
+        `${ev.name} ${formatClassYear(ev.class_year)}`;
+      appendLog(`> ${ev.name} ${formatClassYear(ev.class_year)}`, "log-event");
       break;
-    case "discovered":
-      updateOverallFromEvent(ev);
-      if (ev.class_year === currentClass) {
-        currentClassTotal = ev.total_in_class || currentClassTotal + 1;
-        setClassProgress(currentClassDone, currentClassTotal);
-      }
-      appendLog(
-        `    discovered ${ev.name} (${ev.class_year}) via ${ev.discovered_via}`,
-        "stage",
-      );
+    case "page_fetched":
+      setProgress("alumBar", "alumPct", 70);
+      setPageFromEvent(ev);
+      appendLog(`  fetched ${ev.url}`, "log-event");
       break;
-    case "stage":
-      currentAlumStages++;
-      setAlumProgress(Math.min(95, (currentAlumStages / STAGES_PER_ALUM) * 100));
-      appendLog(`    ${ev.name}: ${ev.stage}${ev.url ? " - " + ev.url : ""}`, "stage");
+    case "page_skipped":
+      setPageFromEvent(ev);
+      appendLog(`  skipped ${ev.url} (${ev.reason})`, "log-event");
+      break;
+    case "page_failed":
+      setPageFromEvent(ev);
+      appendLog(`  failed ${ev.url}`, "log-error");
       break;
     case "alum_done":
-      setAlumProgress(100);
-      setClassProgress(ev.done_in_class ?? currentClassDone + 1, ev.total_in_class);
-      updateOverallFromEvent(ev);
-      appendLog(`  done ${ev.name}`, "alum-done");
-      break;
-    case "class_done":
-      if (ev.total_in_class) {
-        currentClassTotal = ev.total_in_class;
-      }
-      currentClassDone = ev.total_done ?? currentClassDone;
-      currentClass = ev.class_year;
-      classesSeen.add(ev.class_year);
-      setClassProgress(currentClassDone, currentClassTotal);
-      updateOverallFromEvent(ev);
-      appendLog(`< class ${ev.class_year} done (${ev.total_done} alumni)`, "class-done");
+      setProgress("alumBar", "alumPct", 100);
+      setOverallFromEvent(ev, "alumni");
+      appendLog(`done ${ev.name} (${formatNumber(ev.pages_fetched)} new pages)`, "log-ok");
       break;
     case "done":
-      if (ev.error) appendLog(`ERROR: ${ev.error}`, "error");
-      updateOverallFromEvent(ev);
-      appendLog("research complete", "alum-done");
-      document.getElementById("overallMeta").textContent =
-        `Done - ${formatNumber(alumDoneOverall)}/${formatNumber(totalAlumKnown)} alumni`;
-      streamFinished = true;
-      showSummary();
-      stopResearch();
+      finishStage(ev, "crawl complete", "alumni");
       break;
   }
 }
 
-function stopResearch() {
+function handleParseEvent(ev) {
+  switch (ev.kind) {
+    case "parse_start":
+      setOverallFromEvent(ev, "pages");
+      appendLog(`parse started for ${formatNumber(ev.page_total)} pages`, "log-ok");
+      break;
+    case "alum_start":
+      setProgress("alumBar", "alumPct", 0);
+      setProgress("pageBar", "pagePct", 0);
+      document.getElementById("alumMeta").textContent = ev.name;
+      appendLog(`> ${ev.name}`, "log-event");
+      break;
+    case "page_parsed":
+      setPageFromEvent(ev);
+      setProgress("alumBar", "alumPct", ev.page_total ? (ev.page_index / ev.page_total) * 100 : 0);
+      setOverallFromEvent(ev, "pages");
+      appendLog(
+        `  parsed ${ev.url} keep=${ev.verdict_counts.keep} uncertain=${ev.verdict_counts.uncertain} drop=${ev.verdict_counts.drop}`,
+        "log-event",
+      );
+      break;
+    case "alum_done":
+      setProgress("alumBar", "alumPct", 100);
+      setOverallFromEvent(ev, "pages");
+      appendLog(`done ${ev.name}`, "log-ok");
+      break;
+    case "done":
+      finishStage(ev, "parse complete", "pages");
+      break;
+  }
+}
+
+function finishStage(ev, label, noun) {
+  if (ev.error) appendLog(`ERROR: ${ev.error}`, "log-error");
+  setOverallFromEvent(ev, noun);
+  setProgress("alumBar", "alumPct", 100);
+  streamFinished = true;
+  summaryCard.hidden = false;
+  summaryCard.textContent =
+    `${label}: ${formatNumber(ev.overall_done ?? 0)}/${formatNumber(ev.overall_total ?? 0)} ${noun}`;
+  appendLog(label, "log-ok");
+  stopStage();
+}
+
+function stopStage() {
   if (evtSource) {
     evtSource.close();
     evtSource = null;
   }
-  researchBtn.disabled = false;
-  stopBtn.disabled = true;
+  activeStage = null;
+  setButtons(false);
+}
+
+function selectedMode() {
+  const checked = document.querySelector('input[name="queryMode"]:checked');
+  return checked ? checked.value : "strict";
+}
+
+function startQueryProgress(mode) {
+  const progress = document.getElementById("queryProgress");
+  queryExpectedMs = mode === "deep" ? 20000 : 5000;
+  queryStartedAt = Date.now();
+  progress.classList.add("active");
+  setProgress("queryBar", "queryPct", 0);
+  if (queryTimer) clearInterval(queryTimer);
+  queryTimer = setInterval(() => {
+    const elapsed = Date.now() - queryStartedAt;
+    setProgress("queryBar", "queryPct", Math.min(90, (elapsed / queryExpectedMs) * 90));
+  }, 120);
+}
+
+function finishQueryProgress() {
+  const progress = document.getElementById("queryProgress");
+  if (queryTimer) clearInterval(queryTimer);
+  queryTimer = null;
+  setProgress("queryBar", "queryPct", 100);
+  setTimeout(() => {
+    progress.classList.remove("active");
+    setProgress("queryBar", "queryPct", 0);
+  }, 450);
 }
 
 async function runQuery() {
   const input = document.getElementById("question");
   const answer = document.getElementById("answer");
   const question = input.value.trim();
+  const mode = selectedMode();
   if (!question) {
     answer.textContent = "Please enter a question.";
     return;
   }
+
   answer.textContent = "Querying...";
-  const response = await fetch("/query", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
-  });
-  const data = await response.json();
-  answer.textContent = data.answer;
+  startQueryProgress(mode);
+  try {
+    const response = await fetch("/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, mode }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    answer.textContent = data.answer;
+  } catch (error) {
+    answer.textContent = `Query failed: ${error.message}`;
+  } finally {
+    finishQueryProgress();
+  }
 }
 
-researchBtn.addEventListener("click", startResearch);
-stopBtn.addEventListener("click", stopResearch);
+crawlBtn.addEventListener("click", () => startStage("crawl"));
+parseBtn.addEventListener("click", () => startStage("parse"));
+stopBtn.addEventListener("click", stopStage);
 document.getElementById("queryBtn").addEventListener("click", runQuery);
 document.getElementById("question").addEventListener("keydown", (event) => {
   if (event.key === "Enter") runQuery();

@@ -9,16 +9,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.config import get_settings  # noqa: E402
-from backend.db.models import Connection, Fact, Project  # noqa: E402
+from backend.db.models import Connection, Fact, Project, RawPage  # noqa: E402
 from backend.db.store import Store  # noqa: E402
-from backend.pipeline.research import (  # noqa: E402
-    AttributionValidator,
+from backend.pipeline.parser import (  # noqa: E402
     ExtractedConnection,
     ExtractedFact,
     ExtractedProject,
-    FetchedPage,
+    OpenAIValidationClient,
     PageExtraction,
-    PageFetcher,
+    ValidationClient,
+    apply_validation,
 )
 
 LOG_PATH = Path(__file__).with_name("cleanup_attribution.log")
@@ -34,58 +34,46 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def fetch_source(
-    fetcher: PageFetcher,
-    cache: dict[str, FetchedPage | None],
-    source_url: str,
-) -> FetchedPage | None:
-    if not source_url:
-        return None
-    if source_url not in cache:
-        cache[source_url] = fetcher.fetch(source_url)
-    return cache[source_url]
-
-
 def validate_project(
-    validator: AttributionValidator,
-    page: FetchedPage,
+    validator: ValidationClient,
+    raw_page: RawPage,
     project: Project,
 ) -> bool:
     extraction = PageExtraction(
         projects=[
             ExtractedProject(
-                name=project.project_name,
+                project_name=project.project_name,
                 description=project.description,
-                source_url=project.source_url,
+                validation_verdict=project.validation_verdict,
             )
         ]
     )
-    validated = validator.validate(project.alum_name, page.text, extraction)
-    return bool(validated.projects)
+    apply_validation(extraction, validator.validate(raw_page, extraction))
+    return bool(extraction.projects and extraction.projects[0].validation_verdict != "drop")
 
 
 def validate_connection(
-    validator: AttributionValidator,
-    page: FetchedPage,
+    validator: ValidationClient,
+    raw_page: RawPage,
     connection: Connection,
 ) -> bool:
     extraction = PageExtraction(
         connections=[
             ExtractedConnection(
-                name=connection.connected_name,
+                connected_name=connection.connected_name,
                 context=connection.context,
                 relationship_type=connection.relationship_type,
-                source_url=connection.source_url,
+                validation_verdict=connection.validation_verdict,
             )
         ]
     )
-    validated = validator.validate(connection.alum_name, page.text, extraction)
-    return bool(validated.connections)
+    apply_validation(extraction, validator.validate(raw_page, extraction))
+    return bool(extraction.connections and extraction.connections[0].validation_verdict != "drop")
 
 
 def validate_fact(
-    validator: AttributionValidator,
-    page: FetchedPage,
+    validator: ValidationClient,
+    raw_page: RawPage,
     fact: Fact,
 ) -> bool:
     extraction = PageExtraction(
@@ -94,19 +82,12 @@ def validate_fact(
                 category=fact.category,
                 content=fact.content,
                 confidence=fact.confidence,
-                source_url=fact.source_url,
+                validation_verdict=fact.validation_verdict,
             )
         ]
     )
-    validated = validator.validate(fact.alum_name, page.text, extraction)
-    return bool(validated.facts)
-
-
-def drop_reasons(validator: AttributionValidator) -> str:
-    reasons = [
-        f"{drop.category}[{drop.index}] {drop.item}: {drop.reason}" for drop in validator.last_drops
-    ]
-    return "; ".join(reasons) or "validator did not keep item"
+    apply_validation(extraction, validator.validate(raw_page, extraction))
+    return bool(extraction.facts and extraction.facts[0].validation_verdict != "drop")
 
 
 def log_drop(message: str) -> None:
@@ -124,91 +105,71 @@ def main() -> int:
     LOG_PATH.write_text("", encoding="utf-8")
     store = Store(settings.database_url)
     store.init_db()
-    fetcher = PageFetcher(delay=2.0)
-    validator = AttributionValidator(api_key=settings.openai_api_key, model="gpt-5.4-mini")
-    page_cache: dict[str, FetchedPage | None] = {}
-    unreachable_sources: set[str] = set()
-    missing_source_items = 0
+    validator = OpenAIValidationClient(api_key=settings.openai_api_key, model="gpt-5.4-mini")
     dropped = 0
     kept = 0
+    missing_source_items = 0
 
-    try:
-        for project in store.list_projects():
-            page = fetch_source(fetcher, page_cache, project.source_url)
-            if page is None or not page.text:
-                kept += 1
-                if project.source_url:
-                    unreachable_sources.add(project.source_url)
-                else:
-                    missing_source_items += 1
-                continue
-            if validate_project(validator, page, project):
-                kept += 1
-                continue
-            dropped += 1
-            message = (
-                f"{'DRY RUN ' if args.dry_run else ''}drop project id={project.id} "
-                f"alum={project.alum_name!r} project={project.project_name!r} "
-                f"source={project.source_url!r}: {drop_reasons(validator)}"
-            )
-            print(message)
-            log_drop(message)
-            if not args.dry_run:
-                store.delete_project(project.id)
+    for project in store.list_projects():
+        if project.raw_page is None:
+            kept += 1
+            missing_source_items += 1
+            continue
+        if validate_project(validator, project.raw_page, project):
+            kept += 1
+            continue
+        dropped += 1
+        message = (
+            f"{'DRY RUN ' if args.dry_run else ''}drop project id={project.id} "
+            f"alum={project.alum_name!r} project={project.project_name!r} "
+            f"source={project.raw_page.source_url!r}"
+        )
+        print(message)
+        log_drop(message)
+        if not args.dry_run:
+            store.delete_project(project.id)
 
-        for connection in store.list_connections():
-            page = fetch_source(fetcher, page_cache, connection.source_url)
-            if page is None or not page.text:
-                kept += 1
-                if connection.source_url:
-                    unreachable_sources.add(connection.source_url)
-                else:
-                    missing_source_items += 1
-                continue
-            if validate_connection(validator, page, connection):
-                kept += 1
-                continue
-            dropped += 1
-            message = (
-                f"{'DRY RUN ' if args.dry_run else ''}drop connection id={connection.id} "
-                f"alum={connection.alum_name!r} connected={connection.connected_name!r} "
-                f"source={connection.source_url!r}: {drop_reasons(validator)}"
-            )
-            print(message)
-            log_drop(message)
-            if not args.dry_run:
-                store.delete_connection(connection.id)
+    for connection in store.list_connections():
+        if connection.raw_page is None:
+            kept += 1
+            missing_source_items += 1
+            continue
+        if validate_connection(validator, connection.raw_page, connection):
+            kept += 1
+            continue
+        dropped += 1
+        message = (
+            f"{'DRY RUN ' if args.dry_run else ''}drop connection id={connection.id} "
+            f"alum={connection.alum_name!r} connected={connection.connected_name!r} "
+            f"source={connection.raw_page.source_url!r}"
+        )
+        print(message)
+        log_drop(message)
+        if not args.dry_run:
+            store.delete_connection(connection.id)
 
-        for fact in store.list_facts():
-            page = fetch_source(fetcher, page_cache, fact.source_url)
-            if page is None or not page.text:
-                kept += 1
-                if fact.source_url:
-                    unreachable_sources.add(fact.source_url)
-                else:
-                    missing_source_items += 1
-                continue
-            if validate_fact(validator, page, fact):
-                kept += 1
-                continue
-            dropped += 1
-            message = (
-                f"{'DRY RUN ' if args.dry_run else ''}drop fact id={fact.id} "
-                f"alum={fact.alum_name!r} category={fact.category!r} "
-                f"source={fact.source_url!r}: {drop_reasons(validator)}"
-            )
-            print(message)
-            log_drop(message)
-            if not args.dry_run:
-                store.delete_fact(fact.id)
-    finally:
-        fetcher.close()
+    for fact in store.list_facts():
+        if fact.raw_page is None:
+            kept += 1
+            missing_source_items += 1
+            continue
+        if validate_fact(validator, fact.raw_page, fact):
+            kept += 1
+            continue
+        dropped += 1
+        message = (
+            f"{'DRY RUN ' if args.dry_run else ''}drop fact id={fact.id} "
+            f"alum={fact.alum_name!r} category={fact.category!r} "
+            f"source={fact.raw_page.source_url!r}"
+        )
+        print(message)
+        log_drop(message)
+        if not args.dry_run:
+            store.delete_fact(fact.id)
 
-    summary = (
-        f"{dropped} items dropped, {kept} kept, {len(unreachable_sources)} source URLs unreachable"
-    )
+    summary = f"{dropped} items dropped, {kept} kept"
     if missing_source_items:
-        summary = f"{summary}, {missing_source_items} items missing source URLs kept"
+        summary = f"{summary}, {missing_source_items} items missing source raw pages kept"
     if args.dry_run:
         summary = f"dry run: {summary}"
     print(summary)

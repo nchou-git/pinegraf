@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import importlib
 import sys
@@ -23,65 +25,53 @@ def load_mock_main(monkeypatch, tmp_path):
     return module
 
 
-def test_enrich_then_query_flow(monkeypatch, tmp_path) -> None:
+def test_crawl_parse_and_query_endpoints(monkeypatch, tmp_path) -> None:
     main = load_mock_main(monkeypatch, tmp_path)
 
     async def run_flow() -> None:
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            enrich_response = await client.post("/enrich")
-            assert enrich_response.status_code == 200
-            assert enrich_response.json()["enriched_count"] == len(
-                main.load_alumni_csv(Path("data/alumni.csv"))
-            )
+            count_response = await client.get("/alumni-count")
+            assert count_response.status_code == 200
+            assert count_response.json() == {
+                "count": len(main.load_alumni_csv(Path("data/alumni.csv")))
+            }
 
-            query_response = await client.post(
-                "/query", json={"question": "Who works at Acme Corp?"}
+            crawl_start = await client.post("/crawl/start")
+            assert crawl_start.status_code == 200
+            assert crawl_start.json()["status"] == "started"
+            crawl_stream = await client.get("/crawl/stream")
+            assert crawl_stream.status_code == 200
+            assert '"kind": "crawl_start"' in crawl_stream.text
+            assert '"kind": "page_fetched"' in crawl_stream.text
+            assert '"kind": "done"' in crawl_stream.text
+
+            parse_start = await client.post("/parse/start")
+            assert parse_start.status_code == 200
+            assert parse_start.json()["status"] == "started"
+            parse_stream = await client.get("/parse/stream")
+            assert parse_stream.status_code == 200
+            assert '"kind": "parse_start"' in parse_stream.text
+            assert '"kind": "page_parsed"' in parse_stream.text
+            assert '"kind": "done"' in parse_stream.text
+
+            strict_query = await client.post(
+                "/query",
+                json={"question": "Who works at Acme Corp?", "mode": "strict"},
             )
-            assert query_response.status_code == 200
-            assert "Acme alumni" in query_response.json()["answer"]
+            assert strict_query.status_code == 200
+            assert "Acme alumni" in strict_query.json()["answer"]
+
+            deep_query = await client.post(
+                "/query",
+                json={"question": "What pages mention Gyrobike?", "mode": "deep"},
+            )
+            assert deep_query.status_code == 200
+            assert "[source](" in deep_query.json()["answer"]
 
             profiles_response = await client.get("/profiles")
             assert profiles_response.status_code == 200
             assert profiles_response.json()["profiles"]
-
-    asyncio.run(run_flow())
-
-
-def test_projects_endpoint(monkeypatch, tmp_path) -> None:
-    main = load_mock_main(monkeypatch, tmp_path)
-    main.store.add_projects(
-        "Errik Anderson",
-        [
-            {
-                "name": "Gyrobike FYP",
-                "description": "First-year project",
-                "source_url": "https://example.com/gyrobike",
-            }
-        ],
-    )
-
-    async def run_flow() -> None:
-        transport = httpx.ASGITransport(app=main.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/projects")
-
-        assert response.status_code == 200
-        assert response.json()["projects"][0]["project_name"] == "Gyrobike FYP"
-
-    asyncio.run(run_flow())
-
-
-def test_alumni_count_endpoint(monkeypatch, tmp_path) -> None:
-    main = load_mock_main(monkeypatch, tmp_path)
-
-    async def run_flow() -> None:
-        transport = httpx.ASGITransport(app=main.app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/alumni-count")
-
-        assert response.status_code == 200
-        assert response.json() == {"count": len(main.load_alumni_csv(Path("data/alumni.csv")))}
 
     asyncio.run(run_flow())
 

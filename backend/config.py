@@ -14,13 +14,15 @@ class Settings(BaseModel):
 
     openai_api_key: str = Field(default="")
     serpapi_api_key: str = Field(default="")
+    # Prefer Postgres in .env:
+    # postgresql+psycopg://pinegraf:pinegraf@localhost:5432/pinegraf
+    # Store.init_db falls back to sqlite:///./pinegraf.db for local dev if Postgres is unavailable.
     database_url: str = Field(default="sqlite:///./pinegraf.db")
     use_mock_search: bool = Field(default=True)
     use_mock_extract: bool = Field(default=True)
     use_mock_query: bool = Field(default=True)
     use_mock_fetch: bool = Field(default=True)
-    research_max_depth: int = Field(default=1, ge=0)
-    research_pages_per_alum: int = Field(default=3, ge=1)
+    crawl_pages_per_alum: int = Field(default=6, ge=1)
 
     @field_validator(
         "use_mock_search",
@@ -49,8 +51,7 @@ def get_settings() -> Settings:
             use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
             use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
             use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),
-            research_max_depth=int(os.getenv("RESEARCH_MAX_DEPTH", "1")),
-            research_pages_per_alum=int(os.getenv("RESEARCH_PAGES_PER_ALUM", "3")),
+            crawl_pages_per_alum=int(os.getenv("CRAWL_PAGES_PER_ALUM", "6")),
         )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc

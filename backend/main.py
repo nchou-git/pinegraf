@@ -3,48 +3,55 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import logging
 import queue
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.config import get_settings
-from backend.db.store import Store
-from backend.pipeline.extract import (
-    ExtractClient,
-    MockExtractClient,
-    OpenAIExtractClient,
+from backend.db.store import KEEP_VERDICTS, SQLITE_WARNING, Store
+from backend.pipeline.crawler import Crawler, ProgressEvent
+from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher
+from backend.pipeline.parser import (
+    MockExtractionClient,
+    MockSynthesisClient,
+    MockValidationClient,
+    OpenAIExtractionClient,
+    OpenAISynthesisClient,
+    OpenAIValidationClient,
+    Parser,
 )
 from backend.pipeline.query import (
+    DeepQueryClient,
+    MockDeepQueryClient,
     MockQueryClient,
     OpenAIQueryClient,
     QueryClient,
 )
-from backend.pipeline.research import (
-    AttributionValidator,
-    EntityExtractor,
-    MockAttributionValidator,
-    MockEntityExtractor,
-    MockPageFetcher,
-    MockProfileSynthesizer,
-    PageFetcher,
-    ProfileSynthesizer,
-    ProgressEvent,
-    ResearchOrchestrator,
-)
-from backend.pipeline.search import (
-    MockSearchClient,
-    SearchClient,
-    SerpAPISearchClient,
-)
+from backend.pipeline.search import MockSearchClient, SearchClient, SerpAPISearchClient
+
+logger = logging.getLogger(__name__)
+DONE_SENTINEL = "__done__"
 
 
 class QueryRequest(BaseModel):
     question: str
+    mode: Literal["strict", "deep"] = Field(default="strict")
+
+
+@dataclass
+class StageJob:
+    name: str
+    queue: queue.Queue[ProgressEvent | str] = field(default_factory=queue.Queue)
+    running: bool = False
+    thread: threading.Thread | None = None
 
 
 def load_alumni_csv(path: Path) -> list[dict[str, str]]:
@@ -60,75 +67,142 @@ def load_alumni_csv(path: Path) -> list[dict[str, str]]:
         return records
 
 
-def build_clients() -> tuple[SearchClient, ExtractClient, QueryClient]:
+def build_search_client() -> SearchClient:
     settings = get_settings()
-    search: SearchClient = (
-        MockSearchClient()
-        if settings.use_mock_search
-        else SerpAPISearchClient(api_key=settings.serpapi_api_key)
-    )
-    extract: ExtractClient = (
-        MockExtractClient()
-        if settings.use_mock_extract
-        else OpenAIExtractClient(api_key=settings.openai_api_key)
-    )
-    query: QueryClient = (
-        MockQueryClient()
-        if settings.use_mock_query
-        else OpenAIQueryClient(api_key=settings.openai_api_key)
-    )
-    return search, extract, query
+    if settings.use_mock_search:
+        return MockSearchClient()
+    return SerpAPISearchClient(api_key=settings.serpapi_api_key)
 
 
-def build_research_components() -> tuple[
-    PageFetcher,
-    EntityExtractor,
-    ProfileSynthesizer,
-    AttributionValidator,
-]:
+def build_fetcher() -> PageFetcher:
     settings = get_settings()
-    fetcher: PageFetcher = MockPageFetcher() if settings.use_mock_fetch else PageFetcher()
-    extractor: EntityExtractor = (
-        MockEntityExtractor()
-        if settings.use_mock_extract
-        else EntityExtractor(api_key=settings.openai_api_key, model="gpt-5.4-mini")
+    if settings.use_mock_fetch:
+        return MockPageFetcher()
+    return PageFetcher()
+
+
+def build_parser() -> Parser:
+    settings = get_settings()
+    if settings.use_mock_extract:
+        extractor = MockExtractionClient()
+        validator = MockValidationClient()
+        synthesizer = MockSynthesisClient()
+    else:
+        extractor = OpenAIExtractionClient(api_key=settings.openai_api_key, model="gpt-5.4-mini")
+        validator = OpenAIValidationClient(api_key=settings.openai_api_key, model="gpt-5.4-mini")
+        synthesizer = OpenAISynthesisClient(api_key=settings.openai_api_key, model="gpt-5.4")
+    return Parser(
+        store=store,
+        extractor=extractor,
+        validator=validator,
+        synthesizer=synthesizer,
     )
-    synthesizer: ProfileSynthesizer = (
-        MockProfileSynthesizer()
-        if settings.use_mock_extract
-        else ProfileSynthesizer(api_key=settings.openai_api_key, model="gpt-5.4")
-    )
-    validator: AttributionValidator = (
-        MockAttributionValidator()
-        if settings.use_mock_extract
-        else AttributionValidator(api_key=settings.openai_api_key, model="gpt-5.4-mini")
-    )
-    return fetcher, extractor, synthesizer, validator
+
+
+def build_query_client(mode: Literal["strict", "deep"]) -> QueryClient:
+    settings = get_settings()
+    if mode == "deep":
+        if settings.use_mock_query:
+            return MockDeepQueryClient(store)
+        return DeepQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.5")
+
+    if settings.use_mock_query:
+        return MockQueryClient(store)
+    return OpenAIQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.3-mini")
 
 
 app = FastAPI(title="Pinegraf")
 settings = get_settings()
 store = Store(settings.database_url)
 store.init_db()
-search_client, extract_client, query_client = build_clients()
+if store.is_sqlite:
+    logger.warning(SQLITE_WARNING)
+
+crawl_job = StageJob("crawl")
+parse_job = StageJob("parse")
 
 
-@app.post("/enrich")
-async def enrich() -> dict[str, object]:
+def _reset_job(job: StageJob) -> None:
+    job.queue = queue.Queue()
+    job.running = False
+    job.thread = None
+
+
+def _start_job(job: StageJob, target: Callable[[Callable[[ProgressEvent], None]], None]) -> str:
+    if job.running:
+        return "already_running"
+    _reset_job(job)
+    job.running = True
+
+    def emit(event: ProgressEvent) -> None:
+        job.queue.put(event)
+
+    def worker() -> None:
+        try:
+            target(emit)
+        except Exception as exc:
+            job.queue.put(ProgressEvent("done", {"error": f"{type(exc).__name__}: {exc}"}))
+        finally:
+            job.running = False
+            job.queue.put(DONE_SENTINEL)
+
+    job.thread = threading.Thread(target=worker, daemon=True, name=f"pinegraf-{job.name}")
+    job.thread.start()
+    return "started"
+
+
+async def _event_generator(job: StageJob) -> AsyncIterator[bytes]:
+    while True:
+        try:
+            event = job.queue.get_nowait()
+        except queue.Empty:
+            if not job.running and job.queue.empty():
+                break
+            await asyncio.sleep(0.05)
+            continue
+        if event == DONE_SENTINEL:
+            break
+        payload = json.dumps({"kind": event.kind, **event.data}, default=str)
+        yield f"data: {payload}\n\n".encode("utf-8")
+
+
+@app.post("/crawl/start")
+async def crawl_start() -> dict[str, str]:
     alumni = load_alumni_csv(Path("data/alumni.csv"))
-    enriched_count = 0
-    for record in alumni:
-        search_results = search_client.search_person(record["name"], record["class_year"])
-        profile = extract_client.extract_profile(record["name"], search_results)
-        store.upsert_profile(
-            name=profile.name,
-            class_year=record["class_year"],
-            current_company=profile.current_company,
-            current_title=profile.current_title,
-            past_companies=profile.past_companies,
-        )
-        enriched_count += 1
-    return {"status": "ok", "enriched_count": enriched_count}
+
+    def target(emit: Callable[[ProgressEvent], None]) -> None:
+        fetcher = build_fetcher()
+        try:
+            crawler = Crawler(
+                store=store,
+                search_client=build_search_client(),
+                fetcher=fetcher,
+                pages_per_alum=get_settings().crawl_pages_per_alum,
+            )
+            crawler.run(alumni, emit)
+        finally:
+            fetcher.close()
+
+    return {"status": _start_job(crawl_job, target)}
+
+
+@app.get("/crawl/stream")
+async def crawl_stream() -> StreamingResponse:
+    return StreamingResponse(_event_generator(crawl_job), media_type="text/event-stream")
+
+
+@app.post("/parse/start")
+async def parse_start(force: bool = False) -> dict[str, str | bool]:
+    def target(emit: Callable[[ProgressEvent], None]) -> None:
+        parser = build_parser()
+        parser.run(emit, force=force)
+
+    return {"status": _start_job(parse_job, target), "force": force}
+
+
+@app.get("/parse/stream")
+async def parse_stream() -> StreamingResponse:
+    return StreamingResponse(_event_generator(parse_job), media_type="text/event-stream")
 
 
 @app.get("/alumni-count")
@@ -137,159 +211,47 @@ async def alumni_count() -> dict[str, int]:
     return {"count": len(alumni)}
 
 
-@app.get("/research/stream")
-async def research_stream() -> StreamingResponse:
-    alumni = load_alumni_csv(Path("data/alumni.csv"))
-    fetcher, extractor, synthesizer, validator = build_research_components()
-    orchestrator = ResearchOrchestrator(
-        store=store,
-        search_client=search_client,
-        fetcher=fetcher,
-        extractor=extractor,
-        synthesizer=synthesizer,
-        validator=validator,
-        max_depth=0,
-        pages_per_alum=5,
-    )
-
-    event_queue: queue.Queue[ProgressEvent | str] = queue.Queue()
-    done_sentinel = "__done__"
-
-    def emit(ev: ProgressEvent) -> None:
-        event_queue.put(ev)
-
-    def worker() -> None:
-        try:
-            orchestrator.run(alumni, emit)
-        except Exception as exc:
-            event_queue.put(ProgressEvent("done", {"error": f"{type(exc).__name__}: {exc}"}))
-        finally:
-            fetcher.close()
-            event_queue.put(done_sentinel)
-
-    threading.Thread(target=worker, daemon=True, name="pinegraf-research").start()
-
-    async def event_generator() -> AsyncIterator[bytes]:
-        while True:
-            try:
-                ev = event_queue.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(0.05)
-                continue
-            if ev == done_sentinel:
-                break
-            payload = json.dumps({"kind": ev.kind, **ev.data})
-            yield f"data: {payload}\n\n".encode("utf-8")
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
 @app.get("/profiles")
 async def list_profiles() -> dict[str, object]:
     return {
         "profiles": [
             {
-                "name": p.name,
-                "class_year": p.class_year,
-                "current_company": p.current_company,
-                "current_title": p.current_title,
-                "past_companies": p.past_companies,
-                "education": p.education,
-                "bio_summary": p.bio_summary,
-                "depth": p.depth,
-                "discovered_via": p.discovered_via,
-                "last_researched_at": (
-                    p.last_researched_at.isoformat() if p.last_researched_at else None
+                "name": profile.name,
+                "class_year": profile.class_year,
+                "current_company": profile.current_company,
+                "current_title": profile.current_title,
+                "past_companies": profile.past_companies,
+                "education": profile.education,
+                "bio_summary": profile.bio_summary,
+                "discovered_via": profile.discovered_via,
+                "last_parsed_at": (
+                    profile.last_parsed_at.isoformat() if profile.last_parsed_at else None
                 ),
             }
-            for p in store.list_profiles()
+            for profile in store.list_profiles()
         ]
     }
 
 
 @app.get("/connections")
 async def list_connections() -> dict[str, object]:
-    return {
-        "connections": [
-            {
-                "alum_name": c.alum_name,
-                "connected_name": c.connected_name,
-                "context": c.context,
-                "source_url": c.source_url,
-                "relationship_type": c.relationship_type,
-            }
-            for c in store.list_connections()
-        ]
-    }
+    return {"connections": store.database_context(verdicts=KEEP_VERDICTS)["connections"]}
 
 
 @app.get("/projects")
 async def list_projects() -> dict[str, object]:
-    return {
-        "projects": [
-            {
-                "alum_name": p.alum_name,
-                "project_name": p.project_name,
-                "description": p.description,
-                "source_url": p.source_url,
-            }
-            for p in store.list_projects()
-        ]
-    }
+    return {"projects": store.database_context(verdicts=KEEP_VERDICTS)["projects"]}
 
 
-def database_context() -> dict[str, object]:
-    return {
-        "profiles": [
-            {
-                "name": p.name,
-                "class_year": p.class_year,
-                "current_company": p.current_company,
-                "current_title": p.current_title,
-                "past_companies": p.past_companies,
-                "education": p.education,
-                "bio_summary": p.bio_summary,
-                "depth": p.depth,
-                "discovered_via": p.discovered_via,
-            }
-            for p in store.list_profiles()
-        ],
-        "facts": [
-            {
-                "alum_name": f.alum_name,
-                "category": f.category,
-                "content": f.content,
-                "source_url": f.source_url,
-                "confidence": f.confidence,
-            }
-            for f in store.list_facts()
-        ],
-        "connections": [
-            {
-                "alum_name": c.alum_name,
-                "connected_name": c.connected_name,
-                "context": c.context,
-                "source_url": c.source_url,
-                "relationship_type": c.relationship_type,
-            }
-            for c in store.list_connections()
-        ],
-        "projects": [
-            {
-                "alum_name": p.alum_name,
-                "project_name": p.project_name,
-                "description": p.description,
-                "source_url": p.source_url,
-            }
-            for p in store.list_projects()
-        ],
-    }
+@app.get("/facts")
+async def list_facts() -> dict[str, object]:
+    return {"facts": store.database_context(verdicts=KEEP_VERDICTS)["facts"]}
 
 
 @app.post("/query")
 async def query(payload: QueryRequest) -> dict[str, str]:
-    answer = query_client.answer_question(payload.question, database_context())
-    return {"answer": answer.answer}
+    answer = build_query_client(payload.mode).answer_question(payload.question)
+    return {"answer": answer.answer, "mode": payload.mode}
 
 
 @app.get("/")
