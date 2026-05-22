@@ -8,6 +8,10 @@ const crawlBtn = document.getElementById("crawl-btn");
 const parseBtn = document.getElementById("parse-btn");
 const stopBtn = document.getElementById("stop-btn");
 const logEl = document.getElementById("log");
+const progressWrap = document.getElementById("progress-wrap");
+const progressLabel = document.getElementById("progress-label");
+const progressCount = document.getElementById("progress-count");
+const progressFill = document.getElementById("progress-fill");
 
 let evtSource = null;
 let activeStage = null;
@@ -20,6 +24,29 @@ function appendLog(text, cls = "log-evt") {
   div.textContent = text;
   logEl.appendChild(div);
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+function showProgress(stage) {
+  progressWrap.hidden = false;
+  progressLabel.textContent = stage === "crawl" ? "Crawling" : "Parsing";
+  progressCount.textContent = "0 / ?";
+  progressFill.style.width = "0%";
+  progressFill.classList.remove("done", "err");
+}
+
+function updateProgress(ev) {
+  const done = ev.overall_done ?? ev.page_done;
+  const total = ev.overall_total ?? ev.page_total;
+  if (total && done !== undefined) {
+    const pct = Math.min(100, Math.round((done / total) * 100));
+    progressFill.style.width = pct + "%";
+    progressCount.textContent = `${done} / ${total}`;
+  }
+  if (ev.kind === "done") {
+    progressFill.style.width = "100%";
+    progressFill.classList.add(ev.error ? "err" : "done");
+    progressLabel.textContent = ev.error ? "Failed" : "Complete";
+  }
 }
 
 function formatEvent(ev) {
@@ -124,6 +151,7 @@ async function startStage(stage) {
   logEl.innerHTML = "";
   activeStage = stage;
   setRunning(true);
+  showProgress(stage);
 
   try {
     const res = await fetch(`/admin/${stage}/start`, { method: "POST" });
@@ -145,6 +173,7 @@ async function startStage(stage) {
       const summary = formatEvent(data);
       const cls = data.error || data.kind === "page_error" ? "log-err" : "log-evt";
       appendLog(summary, cls);
+      updateProgress(data);
       if (data.kind === "done") stopStream();
     };
     evtSource.onerror = () => {

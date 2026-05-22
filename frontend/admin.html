@@ -55,6 +55,15 @@
             <button id="parse-btn" class="primary" type="button">Parse</button>
             <button id="stop-btn" class="secondary" type="button" disabled>Stop</button>
           </div>
+          <div id="progress-wrap" hidden>
+            <div class="progress-meta">
+              <span id="progress-label">Idle</span>
+              <span id="progress-count">0 / 0</span>
+            </div>
+            <div class="progress-track">
+              <div id="progress-fill" class="progress-fill"></div>
+            </div>
+          </div>
           <div id="log"></div>
         </div>
       </section>
