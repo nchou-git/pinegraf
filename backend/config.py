@@ -8,29 +8,40 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 load_dotenv()
 
+
 def _csv(name: str) -> list[str]:
-    v = os.getenv(name, "")
-    return [s.strip() for s in v.split(",") if s.strip()]
+    """Read a comma-separated env var into a list of stripped strings."""
+    raw = os.getenv(name, "")
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    # External APIs
     openai_api_key: str = Field(default="")
-    pinegraf_admin_password: str = Field(default="admin")
-    pinegraf_admin_cookie_secret: str = Field(default="dev-secret")
-    # Prefer Postgres in .env:
-    # postgresql+psycopg://pinegraf:pinegraf@localhost:5432/pinegraf
-    # Store.init_db falls back to sqlite:///./pinegraf.db for local dev if Postgres is unavailable.
+
+    # Database
+    # Prefer Postgres in .env, e.g.:
+    #   postgresql+psycopg://pinegraf:pinegraf@localhost:5432/pinegraf
+    # Store.init_db falls back to SQLite for local dev if Postgres is unavailable.
     database_url: str = Field(default="sqlite:///./pinegraf.db")
+
+    # Admin auth
+    pinegraf_admin_password: str = Field(default="pinegraf")
+    pinegraf_admin_cookie_secret: str = Field(default="dev-secret")
+
+    # Mock toggles for offline dev / tests
     use_mock_extract: bool = Field(default=True)
     use_mock_query: bool = Field(default=True)
     use_mock_fetch: bool = Field(default=True)
+
+    # Crawler config
     crawl_seed_urls: list[str] = Field(default_factory=list)
     crawl_sitemap_urls: list[str] = Field(default_factory=list)
     crawl_allowed_domains: list[str] = Field(default_factory=list)
-    crawl_max_pages: int = Field(default=500)
-    crawl_max_depth: int = Field(default=2)
+    crawl_max_pages: int = Field(default=500, ge=1)
+    crawl_max_depth: int = Field(default=2, ge=0)
 
     @field_validator(
         "use_mock_extract",
@@ -52,12 +63,11 @@ def get_settings() -> Settings:
     try:
         return Settings(
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "admin"),
-            pinegraf_admin_cookie_secret=os.getenv(
-                "PINEGRAF_ADMIN_COOKIE_SECRET",
-                "dev-secret",
-            ),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
+            pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf"),
+            pinegraf_admin_cookie_secret=os.getenv(
+                "PINEGRAF_ADMIN_COOKIE_SECRET", "dev-secret"
+            ),
             use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
             use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
             use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),
