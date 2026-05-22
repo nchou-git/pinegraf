@@ -19,33 +19,44 @@
           </svg>
           <div class="brand-text">
             <h1>Pinegraf admin</h1>
-            <p class="tagline">Pipeline control &amp; live operations.</p>
+            <p class="tagline">Admin TAGLINE_HEREmiddot; pipeline controls</p>
           </div>
         </div>
         <a class="nav-link" href="/">&larr; back to site</a>
       </header>
 
       <section id="login-card" class="card" hidden>
-        <h2>Sign in</h2>
-        <p class="tagline" style="margin: 6px 0 14px;">Enter the admin password.</p>
-        <div class="login-row">
-          <input id="pw" type="password" placeholder="Password" />
-          <button id="login-btn" class="primary" type="button">Sign in</button>
+        <div class="tabs" role="tablist">
+          <button class="tab active" type="button">Sign in</button>
         </div>
-        <div id="login-err" class="err"></div>
+        <div class="panel">
+          <h2>Sign in</h2>
+          <p class="tagline" style="margin-bottom: 16px;">Enter the admin password.</p>
+          <div class="login-row">
+            <input id="pw" type="password" placeholder="Password" />
+            <button id="login-btn" class="primary" type="button">Sign in</button>
+          </div>
+          <div id="login-err" class="err"></div>
+        </div>
       </section>
 
       <section id="admin-card" class="card" hidden>
-        <div style="display: flex; justify-content: space-between; align-items: baseline;">
-          <h2>Pipeline</h2>
-          <button id="logout-btn" class="secondary" type="button">Sign out</button>
+        <div class="tabs" role="tablist">
+          <button class="tab active" type="button">Pipeline</button>
         </div>
-        <div class="actions">
-          <button id="crawl-btn" class="primary" type="button">Crawl</button>
-          <button id="parse-btn" class="primary" type="button">Parse</button>
-          <button id="stop-btn" class="secondary" type="button" disabled>Stop</button>
+        <div class="panel">
+          <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+            <h2>Pipeline</h2>
+            <button id="logout-btn" class="secondary" type="button">Sign out</button>
+          </div>
+          <p class="tagline" style="margin-bottom: 16px;">Run the crawl and parse stages. Watch live progress.</p>
+          <div class="actions">
+            <button id="crawl-btn" class="primary" type="button">Crawl</button>
+            <button id="parse-btn" class="primary" type="button">Parse</button>
+            <button id="stop-btn" class="secondary" type="button" disabled>Stop</button>
+          </div>
+          <div id="log"></div>
         </div>
-        <div id="log"></div>
       </section>
     </main>
     <script src="/admin.js"></script>
