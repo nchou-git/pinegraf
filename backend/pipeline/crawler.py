@@ -33,7 +33,7 @@ class ProgressEvent:
 @dataclass(frozen=True)
 class CrawlTask:
     alum_name: str
-    entity_id: uuid.UUID
+    entity_id: uuid.UUID | None
     url: str
     page_index: int
     page_total: int
@@ -282,7 +282,7 @@ class SiteCrawler:
                 await queue.put(
                     CrawlTask(
                         alum_name="",
-                        entity_id=uuid.UUID(int=0),
+                        entity_id=None,  # type: ignore[arg-type]
                         url=url,
                         page_index=idx,
                         page_total=len(final),
@@ -295,6 +295,13 @@ class SiteCrawler:
                     try:
                         if await self._crawl_url(task, emit):
                             results["fetched"] += 1
+                    except Exception as exc:
+                        import traceback
+                        emit(ProgressEvent("page_error", {
+                            "url": task.url,
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "traceback": traceback.format_exc()[-1000:],
+                        }))
                     finally:
                         results["done"] += 1
                         queue.task_done()

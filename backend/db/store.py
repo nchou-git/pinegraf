@@ -299,14 +299,15 @@ class Store:
                     existing.entity_id = entity_uuid
                     session.commit()
                 return existing
-            if entity_uuid is None:
+            if entity_uuid is None and alum_name:
                 entity_uuid = _profile_entity_for_name(session, alum_name)
-            if entity_uuid is None:
+            if entity_uuid is None and alum_name:
                 entity_uuid = _resolve_entity_in_session(
                     session,
                     name=alum_name,
                     context={"source": "legacy_store"},
                 )
+            # If still None, store with NULL entity_id (sitemap crawl).
             where_clause = and_(RawPage.source_url == source_url, RawPage.entity_id == entity_uuid)
             raw_page = RawPage(
                 alum_name=alum_name,
