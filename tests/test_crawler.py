@@ -42,6 +42,8 @@ def test_crawler_saves_raw_pages_and_dedupes_urls(tmp_path) -> None:
 
     pages = store.list_raw_pages()
     assert len(pages) == 2
+    assert all(page.entity_id is not None for page in pages)
+    assert len({page.entity_id for page in pages}) == 1
     assert len(fetcher.urls) == 2
     assert {page.source_url for page in pages} == {
         "https://example.com/jane-doe/one",

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from collections.abc import Iterable
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from backend.db.models import (
     Base,
     Connection,
     CrawlState,
+    EntityAttribute,
     Fact,
     Project,
     RawPage,
@@ -34,7 +36,7 @@ SYNTHESIS_VERDICTS = ("keep", "uncertain")
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _is_sqlite_url(database_url: str) -> bool:
@@ -138,6 +140,7 @@ class Store:
         self,
         *,
         name: str,
+        entity_id: uuid.UUID | str | None = None,
         class_year: str = "",
         current_company: str | None = None,
         current_title: str | None = None,
@@ -147,11 +150,43 @@ class Store:
         discovered_via: str = "seed",
         last_parsed_at: datetime | None = None,
     ) -> AlumniProfile:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
-            existing = session.execute(
-                select(AlumniProfile).where(AlumniProfile.name == name)
-            ).scalar_one_or_none()
+            existing = None
+            if entity_uuid is not None:
+                existing = session.execute(
+                    select(AlumniProfile).where(AlumniProfile.entity_id == entity_uuid)
+                ).scalar_one_or_none()
+            if existing is None and class_year:
+                existing = session.execute(
+                    select(AlumniProfile).where(
+                        AlumniProfile.name == name,
+                        AlumniProfile.class_year == class_year,
+                    )
+                ).scalar_one_or_none()
+            if existing is None and not class_year:
+                existing_rows = list(
+                    session.execute(
+                        select(AlumniProfile).where(AlumniProfile.name == name).limit(2)
+                    ).scalars()
+                )
+                if len(existing_rows) == 1:
+                    existing = existing_rows[0]
+            if entity_uuid is None:
+                if existing is not None and existing.entity_id is not None:
+                    entity_uuid = existing.entity_id
+                else:
+                    context = {"source": discovered_via or "seed"}
+                    if class_year:
+                        context["class_year"] = class_year
+                    entity_uuid = _resolve_entity_in_session(
+                        session,
+                        name=name,
+                        context=context,
+                    )
             if existing:
+                if entity_uuid is not None:
+                    existing.entity_id = entity_uuid
                 if class_year:
                     existing.class_year = class_year
                 if current_company is not None:
@@ -172,6 +207,7 @@ class Store:
             else:
                 profile = AlumniProfile(
                     name=name,
+                    entity_id=entity_uuid,
                     class_year=class_year,
                     current_company=current_company or "",
                     current_title=current_title or "",
@@ -200,38 +236,66 @@ class Store:
             ).scalar_one_or_none()
             return crawl_class or ""
 
-    def raw_page_exists(self, alum_name: str, source_url: str) -> bool:
+    def get_class_year_for_entity(self, entity_id: uuid.UUID | str) -> str:
+        entity_uuid = _coerce_uuid(entity_id)
+        if entity_uuid is None:
+            return ""
         with self._session_factory() as session:
-            return (
-                session.execute(
-                    select(RawPage.id).where(
-                        RawPage.alum_name == alum_name,
-                        RawPage.source_url == source_url,
-                    )
-                ).first()
-                is not None
-            )
+            profile_class = session.execute(
+                select(AlumniProfile.class_year).where(AlumniProfile.entity_id == entity_uuid)
+            ).scalar_one_or_none()
+            return profile_class or ""
+
+    def raw_page_exists(
+        self,
+        alum_name: str,
+        source_url: str,
+        entity_id: uuid.UUID | str | None = None,
+    ) -> bool:
+        entity_uuid = _coerce_uuid(entity_id)
+        with self._session_factory() as session:
+            where_clause = RawPage.source_url == source_url
+            if entity_uuid is not None:
+                where_clause = and_(where_clause, RawPage.entity_id == entity_uuid)
+            else:
+                where_clause = and_(where_clause, RawPage.alum_name == alum_name)
+            return session.execute(select(RawPage.id).where(where_clause)).first() is not None
 
     def save_raw_page(
         self,
         *,
         alum_name: str,
+        entity_id: uuid.UUID | str | None = None,
         source_url: str,
         page_title: str,
         page_text: str,
         fetched_at: datetime | None = None,
     ) -> RawPage:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
-            existing = session.execute(
-                select(RawPage).where(
-                    RawPage.alum_name == alum_name,
-                    RawPage.source_url == source_url,
-                )
-            ).scalar_one_or_none()
+            where_clause = RawPage.source_url == source_url
+            if entity_uuid is not None:
+                where_clause = and_(where_clause, RawPage.entity_id == entity_uuid)
+            else:
+                where_clause = and_(where_clause, RawPage.alum_name == alum_name)
+            existing = session.execute(select(RawPage).where(where_clause)).scalar_one_or_none()
             if existing:
+                if entity_uuid is not None and existing.entity_id is None:
+                    existing.entity_id = entity_uuid
+                    session.commit()
                 return existing
+            if entity_uuid is None:
+                entity_uuid = _profile_entity_for_name(session, alum_name)
+            if entity_uuid is None:
+                entity_uuid = _resolve_entity_in_session(
+                    session,
+                    name=alum_name,
+                    context={"source": "legacy_store"},
+                )
+            where_clause = and_(RawPage.source_url == source_url, RawPage.entity_id == entity_uuid)
             raw_page = RawPage(
                 alum_name=alum_name,
+                entity_id=entity_uuid,
                 source_url=source_url,
                 page_title=page_title[:512],
                 page_text=page_text,
@@ -243,12 +307,7 @@ class Store:
                 session.commit()
             except IntegrityError:
                 session.rollback()
-                existing = session.execute(
-                    select(RawPage).where(
-                        RawPage.alum_name == alum_name,
-                        RawPage.source_url == source_url,
-                    )
-                ).scalar_one()
+                existing = session.execute(select(RawPage).where(where_clause)).scalar_one()
                 return existing
             return raw_page
 
@@ -283,16 +342,85 @@ class Store:
             raw_page.parsed_at = parsed_at or _utcnow()
             session.commit()
 
+    def set_raw_page_entity(self, raw_page_id: int, entity_id: uuid.UUID | str) -> None:
+        entity_uuid = _coerce_uuid(entity_id)
+        if entity_uuid is None:
+            return
+        with self._session_factory() as session:
+            raw_page = session.get(RawPage, raw_page_id)
+            if raw_page is None:
+                return
+            raw_page.entity_id = entity_uuid
+            session.commit()
+
+    def replace_entity_attributes(
+        self,
+        *,
+        entity_id: uuid.UUID | str,
+        source_url: str | None,
+        attributes: Iterable[dict[str, object]],
+    ) -> None:
+        entity_uuid = _coerce_uuid(entity_id)
+        if entity_uuid is None:
+            return
+        with self._session_factory() as session:
+            session.query(EntityAttribute).filter(
+                EntityAttribute.entity_id == entity_uuid,
+                EntityAttribute.source_url == source_url,
+            ).delete()
+            for attribute in attributes:
+                attribute_name = str(attribute.get("attribute_name", "")).strip()
+                attribute_value = str(attribute.get("attribute_value", "")).strip()
+                if not attribute_name or not attribute_value:
+                    continue
+                session.add(
+                    EntityAttribute(
+                        entity_id=entity_uuid,
+                        attribute_name=attribute_name,
+                        attribute_value=attribute_value,
+                        source_url=source_url,
+                        confidence=str(attribute.get("confidence", "medium")).strip() or "medium",
+                        extracted_at=attribute.get("extracted_at")
+                        if isinstance(attribute.get("extracted_at"), datetime)
+                        else _utcnow(),
+                        validation_verdict=_clean_verdict(
+                            attribute.get("validation_verdict", "keep")
+                        ),
+                    )
+                )
+            session.commit()
+
+    def list_entity_attributes(
+        self,
+        *,
+        entity_id: uuid.UUID | str | None = None,
+        verdicts: tuple[str, ...] | None = None,
+    ) -> list[EntityAttribute]:
+        entity_uuid = _coerce_uuid(entity_id)
+        with self._session_factory() as session:
+            stmt = select(EntityAttribute).order_by(EntityAttribute.id.asc())
+            if entity_uuid is not None:
+                stmt = stmt.where(EntityAttribute.entity_id == entity_uuid)
+            if verdicts:
+                stmt = stmt.where(EntityAttribute.validation_verdict.in_(verdicts))
+            return list(session.execute(stmt).scalars())
+
     def replace_structured_items(
         self,
         *,
         raw_page_id: int,
         alum_name: str,
+        entity_id: uuid.UUID | str | None = None,
         facts: Iterable[dict[str, object]],
         connections: Iterable[dict[str, object]],
         projects: Iterable[dict[str, object]],
     ) -> None:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
+            if entity_uuid is None:
+                raw_page = session.get(RawPage, raw_page_id)
+                if raw_page is not None:
+                    entity_uuid = raw_page.entity_id
             position_facts = [
                 fact
                 for fact in facts
@@ -318,6 +446,7 @@ class Store:
                 session.add(
                     Fact(
                         alum_name=alum_name,
+                        entity_id=entity_uuid,
                         source_raw_page_id=raw_page_id,
                         category=str(fact.get("category", "general")).strip() or "general",
                         content=content,
@@ -328,6 +457,7 @@ class Store:
             self._upsert_position_facts(
                 session=session,
                 alum_name=alum_name,
+                entity_id=entity_uuid,
                 source_raw_page_id=raw_page_id,
                 position_facts=position_facts,
             )
@@ -338,6 +468,7 @@ class Store:
                 session.add(
                     Connection(
                         alum_name=alum_name,
+                        entity_id=entity_uuid,
                         connected_name=connected_name,
                         source_raw_page_id=raw_page_id,
                         context=str(connection.get("context", "")).strip(),
@@ -355,6 +486,7 @@ class Store:
                 session.add(
                     Project(
                         alum_name=alum_name,
+                        entity_id=entity_uuid,
                         source_raw_page_id=raw_page_id,
                         project_name=project_name,
                         description=str(project.get("description", "")).strip(),
@@ -368,6 +500,7 @@ class Store:
         *,
         session: Session,
         alum_name: str,
+        entity_id: uuid.UUID | None,
         source_raw_page_id: int,
         position_facts: Iterable[dict[str, object]],
     ) -> None:
@@ -413,6 +546,7 @@ class Store:
                 session.add(
                     Fact(
                         alum_name=alum_name,
+                        entity_id=entity_id,
                         source_raw_page_id=source_raw_page_id,
                         category="position",
                         content=json.dumps(normalized_payload),
@@ -423,6 +557,8 @@ class Store:
                 continue
 
             existing.content = json.dumps(normalized_payload)
+            if entity_id is not None:
+                existing.entity_id = entity_id
             existing.confidence = str(fact.get("confidence", "low")).strip() or "low"
             existing.validation_verdict = _clean_verdict(fact.get("validation_verdict"))
 
@@ -440,10 +576,12 @@ class Store:
         alum_name: str,
         source_raw_page_id: int,
         facts: list[dict[str, object]],
+        entity_id: uuid.UUID | str | None = None,
     ) -> None:
         self.replace_structured_items(
             raw_page_id=source_raw_page_id,
             alum_name=alum_name,
+            entity_id=entity_id,
             facts=facts,
             connections=[],
             projects=[],
@@ -511,12 +649,20 @@ class Store:
         self,
         alum_name: str,
         verdicts: tuple[str, ...] | None = None,
+        *,
+        entity_id: uuid.UUID | str | None = None,
     ) -> list[Fact]:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
+            where_clause = (
+                Fact.entity_id == entity_uuid
+                if entity_uuid is not None
+                else Fact.alum_name == alum_name
+            )
             stmt = (
                 select(Fact)
                 .options(joinedload(Fact.raw_page))
-                .where(Fact.alum_name == alum_name)
+                .where(where_clause)
                 .order_by(Fact.id.asc())
             )
             if verdicts:
@@ -527,12 +673,20 @@ class Store:
         self,
         alum_name: str,
         verdicts: tuple[str, ...] | None = None,
+        *,
+        entity_id: uuid.UUID | str | None = None,
     ) -> list[Connection]:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
+            where_clause = (
+                Connection.entity_id == entity_uuid
+                if entity_uuid is not None
+                else Connection.alum_name == alum_name
+            )
             stmt = (
                 select(Connection)
                 .options(joinedload(Connection.raw_page))
-                .where(Connection.alum_name == alum_name)
+                .where(where_clause)
                 .order_by(Connection.id.asc())
             )
             if verdicts:
@@ -543,12 +697,20 @@ class Store:
         self,
         alum_name: str,
         verdicts: tuple[str, ...] | None = None,
+        *,
+        entity_id: uuid.UUID | str | None = None,
     ) -> list[Project]:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
+            where_clause = (
+                Project.entity_id == entity_uuid
+                if entity_uuid is not None
+                else Project.alum_name == alum_name
+            )
             stmt = (
                 select(Project)
                 .options(joinedload(Project.raw_page))
-                .where(Project.alum_name == alum_name)
+                .where(where_clause)
                 .order_by(Project.id.asc())
             )
             if verdicts:
@@ -559,12 +721,20 @@ class Store:
         self,
         alum_name: str,
         verdicts: frozenset[str] = frozenset(KEEP_VERDICTS),
+        *,
+        entity_id: uuid.UUID | str | None = None,
     ) -> list[dict[str, object]]:
+        entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
+            where_clause = (
+                Fact.entity_id == entity_uuid
+                if entity_uuid is not None
+                else Fact.alum_name == alum_name
+            )
             stmt = (
                 select(Fact)
                 .options(joinedload(Fact.raw_page))
-                .where(Fact.alum_name == alum_name, Fact.category == "position")
+                .where(where_clause, Fact.category == "position")
                 .order_by(Fact.id.asc())
             )
             if verdicts:
@@ -612,6 +782,7 @@ class Store:
             "profiles": [
                 {
                     "name": profile.name,
+                    "entity_id": str(profile.entity_id) if profile.entity_id else None,
                     "class_year": profile.class_year,
                     "current_company": profile.current_company,
                     "current_title": profile.current_title,
@@ -625,6 +796,7 @@ class Store:
                     "positions": self.get_positions_for_alum(
                         profile.name,
                         verdicts=verdict_set,
+                        entity_id=profile.entity_id,
                     ),
                 }
                 for profile in self.list_profiles()
@@ -743,6 +915,40 @@ def _clean_verdict(value: object) -> str:
     return verdict
 
 
+def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+    if value is None or isinstance(value, uuid.UUID):
+        return value
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    return uuid.UUID(cleaned)
+
+
+def _profile_entity_for_name(session: Session, name: str) -> uuid.UUID | None:
+    rows = list(
+        session.execute(
+            select(AlumniProfile.entity_id)
+            .where(AlumniProfile.name == name, AlumniProfile.entity_id.is_not(None))
+            .distinct()
+            .limit(2)
+        ).scalars()
+    )
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+def _resolve_entity_in_session(
+    session: Session,
+    *,
+    name: str,
+    context: dict[str, str] | None,
+) -> uuid.UUID:
+    from backend.resolution.entity_resolver import resolve_or_create
+
+    return resolve_or_create(name, session=session, context=context)
+
+
 def _normalize_position_token(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
@@ -836,6 +1042,7 @@ def fact_to_dict(fact: Fact) -> dict[str, object]:
     return {
         "id": fact.id,
         "alum_name": fact.alum_name,
+        "entity_id": str(fact.entity_id) if fact.entity_id else None,
         "source_raw_page_id": fact.source_raw_page_id,
         "source_url": fact.raw_page.source_url if fact.raw_page else "",
         "category": fact.category,
@@ -849,6 +1056,7 @@ def connection_to_dict(connection: Connection) -> dict[str, object]:
     return {
         "id": connection.id,
         "alum_name": connection.alum_name,
+        "entity_id": str(connection.entity_id) if connection.entity_id else None,
         "connected_name": connection.connected_name,
         "source_raw_page_id": connection.source_raw_page_id,
         "source_url": connection.raw_page.source_url if connection.raw_page else "",
@@ -862,6 +1070,7 @@ def project_to_dict(project: Project) -> dict[str, object]:
     return {
         "id": project.id,
         "alum_name": project.alum_name,
+        "entity_id": str(project.entity_id) if project.entity_id else None,
         "source_raw_page_id": project.source_raw_page_id,
         "source_url": project.raw_page.source_url if project.raw_page else "",
         "project_name": project.project_name,

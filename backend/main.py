@@ -208,6 +208,7 @@ async def list_profiles() -> dict[str, object]:
         "profiles": [
             {
                 "name": profile.name,
+                "entity_id": str(profile.entity_id) if profile.entity_id else None,
                 "class_year": profile.class_year,
                 "current_company": profile.current_company,
                 "current_title": profile.current_title,

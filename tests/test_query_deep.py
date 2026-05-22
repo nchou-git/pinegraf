@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from pytest_mock import MockerFixture
@@ -20,14 +20,14 @@ def test_deep_query_uses_raw_pages_and_citation_prompt_on_sqlite_fallback(
         source_url="https://example.com/old",
         page_title="Old",
         page_text="Old page about Dartmouth Tuck and Acme.",
-        fetched_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     second = store.save_raw_page(
         alum_name="Jane Doe",
         source_url="https://example.com/new",
         page_title="New",
         page_text="New page about Gyrobike.",
-        fetched_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        fetched_at=datetime(2026, 1, 2, tzinfo=UTC),
     )
     fake_create = mocker.Mock(return_value=SimpleNamespace(output_text="Deep answer."))
     fake_client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))

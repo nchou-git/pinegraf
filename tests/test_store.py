@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +33,7 @@ def test_raw_pages_save_list_and_dedupe(tmp_path) -> None:
     pages = store.list_raw_pages()
     assert len(pages) == 1
     assert first.id == second.id == pages[0].id
+    assert pages[0].entity_id is not None
     assert pages[0].parsed_at is None
 
 
@@ -46,7 +47,7 @@ def test_parsed_at_flag(tmp_path) -> None:
     )
 
     assert [p.id for p in store.list_pages_to_parse()] == [page.id]
-    store.mark_raw_page_parsed(page.id, datetime(2026, 1, 1, tzinfo=timezone.utc))
+    store.mark_raw_page_parsed(page.id, datetime(2026, 1, 1, tzinfo=UTC))
 
     assert store.list_pages_to_parse() == []
     assert store.list_pages_to_parse(force=True)[0].parsed_at is not None
@@ -65,6 +66,18 @@ def test_jsonb_profile_fields_round_trip_on_sqlite(tmp_path) -> None:
     profile = store.list_profiles()[0]
     assert profile.past_companies == ["Beta Inc"]
     assert profile.education == ["Dartmouth Tuck MBA"]
+
+
+def test_profiles_with_same_name_different_class_year_keep_distinct_entities(tmp_path) -> None:
+    store = make_store(tmp_path)
+
+    store.upsert_profile(name="Jane Doe", class_year="T'24")
+    store.upsert_profile(name="Jane Doe", class_year="T'25")
+
+    profiles = store.list_profiles()
+    assert len(profiles) == 2
+    assert {profile.class_year for profile in profiles} == {"T'24", "T'25"}
+    assert len({profile.entity_id for profile in profiles}) == 2
 
 
 def test_structured_rows_have_source_fk_and_sqlite_enforces_integrity(tmp_path) -> None:
@@ -86,6 +99,7 @@ def test_structured_rows_have_source_fk_and_sqlite_enforces_integrity(tmp_path) 
 
     fact = store.list_facts()[0]
     assert fact.source_raw_page_id == page.id
+    assert fact.entity_id == page.entity_id
     assert fact.raw_page.source_url == "https://example.com/jane"
 
     with pytest.raises(IntegrityError):

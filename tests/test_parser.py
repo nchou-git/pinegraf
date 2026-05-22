@@ -144,13 +144,17 @@ def test_parser_writes_structured_rows_marks_parsed_and_is_idempotent(tmp_path) 
 
     page = store.list_raw_pages()[0]
     assert page.parsed_at is not None
+    assert page.entity_id is not None
     assert extractor.calls == 1
     assert synthesizer.calls == 1
     assert store.list_connections()[0].source_raw_page_id == page.id
+    assert store.list_connections()[0].entity_id == page.entity_id
     assert store.list_connections()[0].validation_verdict == "keep"
     assert store.list_projects()[0].source_raw_page_id == page.id
+    assert store.list_projects()[0].entity_id == page.entity_id
     assert store.list_projects()[0].validation_verdict == "uncertain"
     assert store.list_facts()[0].source_raw_page_id == page.id
+    assert store.list_facts()[0].entity_id == page.entity_id
     assert store.list_facts()[0].validation_verdict == "drop"
     assert store.list_profiles()[0].current_company == "Acme Corp"
     assert any(event.kind == "page_parsed" for event in events)

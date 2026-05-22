@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from urllib.parse import quote
 
 from backend.db.store import Store
 from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher
+from backend.resolution.entity_resolver import resolve_or_create
 
 
 @dataclass
@@ -43,10 +45,12 @@ class Crawler:
             if not name:
                 continue
 
+            entity_id = self._resolve_seed_entity(name, class_year)
             self.store.enqueue_crawl(name, class_year, depth=0, discovered_via="seed")
             self.store.mark_crawl_status(name, "running", class_year=class_year)
             self.store.upsert_profile(
                 name=name,
+                entity_id=entity_id,
                 class_year=class_year,
                 discovered_via="seed",
             )
@@ -65,7 +69,7 @@ class Crawler:
 
             try:
                 urls = self._seed_urls(alum, name=name)
-                fetched = self._crawl_urls(name, urls, emit)
+                fetched = self._crawl_urls(name, entity_id, urls, emit)
                 self.store.mark_crawl_status(name, "done", class_year=class_year)
                 done += 1
                 emit(
@@ -102,6 +106,7 @@ class Crawler:
     def _crawl_urls(
         self,
         alum_name: str,
+        entity_id: uuid.UUID,
         urls: list[str],
         emit: Callable[[ProgressEvent], None],
     ) -> int:
@@ -109,7 +114,7 @@ class Crawler:
         page_total = len(urls)
         for page_index, source_url in enumerate(urls, start=1):
             url = source_url.strip()
-            if self.store.raw_page_exists(alum_name, url):
+            if self.store.raw_page_exists(alum_name, url, entity_id=entity_id):
                 emit(
                     ProgressEvent(
                         "page_skipped",
@@ -141,6 +146,7 @@ class Crawler:
 
             raw_page = self.store.save_raw_page(
                 alum_name=alum_name,
+                entity_id=entity_id,
                 source_url=page.url,
                 page_title=page.title,
                 page_text=page.text,
@@ -160,6 +166,15 @@ class Crawler:
                 )
             )
         return fetched
+
+    def _resolve_seed_entity(self, name: str, class_year: str) -> uuid.UUID:
+        context = {"source": "seed_csv"}
+        if class_year:
+            context["class_year"] = class_year
+        with self.store.session() as session:
+            entity_id = resolve_or_create(name, session=session, context=context)
+            session.commit()
+            return entity_id
 
     def _seed_urls(self, alum: dict[str, str], *, name: str) -> list[str]:
         urls = self._unique_urls(self._iter_seed_urls(alum), limit=self.pages_per_alum)

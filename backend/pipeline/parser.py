@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from openai import OpenAI
@@ -13,6 +14,7 @@ from backend.db.models import RawPage
 from backend.db.store import SYNTHESIS_VERDICTS, Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.openai_retry import retry_openai_call
+from backend.resolution.entity_resolver import resolve_or_create
 
 MAX_EXTRACTION_CHARS = 30_000
 ValidationVerdict = Literal["keep", "uncertain", "drop"]
@@ -369,11 +371,14 @@ class Parser:
             )
         )
 
-        pages_by_alum: dict[str, list[RawPage]] = defaultdict(list)
+        pages_by_alum: dict[tuple[str, uuid.UUID], list[RawPage]] = defaultdict(list)
         for page in pages:
-            pages_by_alum[page.alum_name].append(page)
+            entity_id = self._entity_id_for_raw_page(page)
+            pages_by_alum[(page.alum_name, entity_id)].append(page)
 
-        for alum_index, (alum_name, alum_pages) in enumerate(pages_by_alum.items(), start=1):
+        for alum_index, ((alum_name, entity_id), alum_pages) in enumerate(
+            pages_by_alum.items(), start=1
+        ):
             emit(
                 ProgressEvent(
                     "alum_start",
@@ -393,6 +398,7 @@ class Parser:
                 self.store.replace_structured_items(
                     raw_page_id=raw_page.id,
                     alum_name=raw_page.alum_name,
+                    entity_id=entity_id,
                     facts=[
                         *[fact.model_dump() for fact in extraction.facts],
                         *[
@@ -418,6 +424,11 @@ class Parser:
                     connections=[connection.model_dump() for connection in extraction.connections],
                     projects=[project.model_dump() for project in extraction.projects],
                 )
+                self.store.replace_entity_attributes(
+                    entity_id=entity_id,
+                    source_url=raw_page.source_url,
+                    attributes=extracted_profile_attributes(extraction.profile),
+                )
                 self.store.mark_raw_page_parsed(raw_page.id)
                 page_profiles.append(extraction.profile)
                 parsed_pages += 1
@@ -438,7 +449,7 @@ class Parser:
                     )
                 )
 
-            profile = self._synthesize_alum(alum_name, page_profiles)
+            profile = self._synthesize_alum(alum_name, entity_id, page_profiles)
             emit(
                 ProgressEvent(
                     "alum_done",
@@ -457,10 +468,17 @@ class Parser:
     def _synthesize_alum(
         self,
         alum_name: str,
+        entity_id: uuid.UUID,
         page_profiles: list[ExtractedProfile],
     ) -> SynthesizedProfile:
-        class_year = self.store.get_class_year_for_alum(alum_name)
-        positions = self.store.get_positions_for_alum(alum_name, set(SYNTHESIS_VERDICTS))
+        class_year = self.store.get_class_year_for_entity(
+            entity_id
+        ) or self.store.get_class_year_for_alum(alum_name)
+        positions = self.store.get_positions_for_alum(
+            alum_name,
+            set(SYNTHESIS_VERDICTS),
+            entity_id=entity_id,
+        )
         evidence = {
             "page_profiles": [profile.model_dump() for profile in page_profiles],
             "positions": positions,
@@ -472,7 +490,11 @@ class Parser:
                     "validation_verdict": fact.validation_verdict,
                     "source_url": fact.raw_page.source_url if fact.raw_page else "",
                 }
-                for fact in self.store.list_facts_for_alum(alum_name, SYNTHESIS_VERDICTS)
+                for fact in self.store.list_facts_for_alum(
+                    alum_name,
+                    SYNTHESIS_VERDICTS,
+                    entity_id=entity_id,
+                )
             ],
             "connections": [
                 {
@@ -485,6 +507,7 @@ class Parser:
                 for connection in self.store.list_connections_for_alum(
                     alum_name,
                     SYNTHESIS_VERDICTS,
+                    entity_id=entity_id,
                 )
             ],
             "projects": [
@@ -494,7 +517,11 @@ class Parser:
                     "validation_verdict": project.validation_verdict,
                     "source_url": project.raw_page.source_url if project.raw_page else "",
                 }
-                for project in self.store.list_projects_for_alum(alum_name, SYNTHESIS_VERDICTS)
+                for project in self.store.list_projects_for_alum(
+                    alum_name,
+                    SYNTHESIS_VERDICTS,
+                    entity_id=entity_id,
+                )
             ],
         }
         profile = self.synthesizer.synthesize(alum_name, class_year, evidence)
@@ -504,6 +531,7 @@ class Parser:
         )
         self.store.upsert_profile(
             name=alum_name,
+            entity_id=entity_id,
             class_year=class_year,
             current_company=str((first_current or {}).get("company", "")).strip()
             or profile.current_company,
@@ -512,9 +540,23 @@ class Parser:
             past_companies=profile.past_companies,
             education=profile.education,
             bio_summary=profile.bio_summary,
-            last_parsed_at=datetime.now(timezone.utc),
+            last_parsed_at=datetime.now(UTC),
         )
         return profile
+
+    def _entity_id_for_raw_page(self, raw_page: RawPage) -> uuid.UUID:
+        if raw_page.entity_id is not None:
+            return raw_page.entity_id
+        class_year = self.store.get_class_year_for_alum(raw_page.alum_name)
+        context = {"source": "extracted_from_page"}
+        if class_year:
+            context["class_year"] = class_year
+        with self.store.session() as session:
+            entity_id = resolve_or_create(raw_page.alum_name, session=session, context=context)
+            session.commit()
+        self.store.set_raw_page_entity(raw_page.id, entity_id)
+        raw_page.entity_id = entity_id
+        return entity_id
 
 
 def apply_validation(extraction: PageExtraction, validation: ValidationResult) -> None:
@@ -522,6 +564,44 @@ def apply_validation(extraction: PageExtraction, validation: ValidationResult) -
     _apply_item_verdicts(extraction.projects, validation.project_verdicts)
     _apply_item_verdicts(extraction.facts, validation.fact_verdicts)
     _apply_item_verdicts(extraction.positions, validation.position_verdicts)
+
+
+def extracted_profile_attributes(profile: ExtractedProfile) -> list[dict[str, object]]:
+    attributes: list[dict[str, object]] = []
+    for attribute_name in ("current_company", "current_title", "bio_summary"):
+        value = getattr(profile, attribute_name).strip()
+        if value:
+            attributes.append(
+                {
+                    "attribute_name": attribute_name,
+                    "attribute_value": value,
+                    "confidence": "medium",
+                    "validation_verdict": "keep",
+                }
+            )
+    for company in profile.past_companies:
+        cleaned = company.strip()
+        if cleaned:
+            attributes.append(
+                {
+                    "attribute_name": "past_company",
+                    "attribute_value": cleaned,
+                    "confidence": "medium",
+                    "validation_verdict": "keep",
+                }
+            )
+    for education in profile.education:
+        cleaned = education.strip()
+        if cleaned:
+            attributes.append(
+                {
+                    "attribute_name": "education",
+                    "attribute_value": cleaned,
+                    "confidence": "medium",
+                    "validation_verdict": "keep",
+                }
+            )
+    return attributes
 
 
 def _apply_item_verdicts(
