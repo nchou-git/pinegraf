@@ -379,6 +379,14 @@ async def frontend_admin_js() -> Response:
     )
 
 
+@app.get("/styles.css")
+async def frontend_styles() -> Response:
+    return Response(
+        Path("frontend/styles.css").read_text(encoding="utf-8"),
+        media_type="text/css",
+    )
+
+
 @app.get("/favicon.svg")
 async def frontend_favicon() -> Response:
     return Response(

@@ -17,7 +17,7 @@ from backend.db.models import AuditEvent
 from backend.db.store import Store
 
 ADMIN_COOKIE_NAME = "pinegraf_admin"
-STATIC_GET_PATHS = {"/app.js", "/admin.js", "/favicon.svg", "/"}
+STATIC_GET_PATHS = {"/app.js", "/admin.js", "/styles.css", "/favicon.svg", "/"}
 AUDITED_EXACT_PATHS = {"/lookup", "/research"}
 REDACTED = "[redacted]"
 
