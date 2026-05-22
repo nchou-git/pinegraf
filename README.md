@@ -1,126 +1,130 @@
 # Pinegraf
 
-Pinegraf is an OSINT research prototype for people and organizations. It starts
-with a closed-world alumni seed list, crawls public non-LinkedIn pages, stores
-source snapshots, extracts structured facts and relationships, resolves people
-to conservative entity records, and answers analyst questions with citations.
+People-OSINT prototype. Crawls public web pages, extracts structured profile data and relationships, and answers natural-language questions about the resulting corpus with citations.
 
-The first target dataset is Tuck alumni, but the pipeline is built around
-generic `person` and `organization` entities.
+Status: early prototype. Schema and API will change.
 
-## Who It Is For
+## What it does
 
-Pinegraf is for analysts and builders evaluating public-source research
-workflows where source traceability matters. The app keeps raw page snapshots,
-structured claim-level attributes, audit events, and natural-language query
-paths in one local system.
+- **Crawl** — fetches pages from configured sitemaps and seed URLs, stores raw HTML and extracted text in Postgres. Respects robots.txt, conditional GETs (ETag / Last-Modified), per-host pacing.
+- **Parse** — LLM extracts profiles, companies, positions, education, and relationships from each page; validates and stores structured rows.
+- **Lookup** — structured DB filter by name / company / class year. No AI.
+- **Research** — natural-language questions answered from the raw page corpus with source citations.
+- **Admin** — password-gated panel to trigger crawl/parse jobs and watch live progress.
 
-## Local Setup
+## Architecture
+
+```text
+Sitemap/seed URLs
+       |
+       v
+   SiteCrawler (async, per-host pacing)
+       |
+       v
+   raw_pages (Postgres)
+       |
+       v
+     Parser (OpenAI)
+       |
+       v
+   entities, attributes, connections, projects
+       |
+       v
+   FastAPI /lookup    (structured query, no LLM)
+   FastAPI /research  (deep query, LLM over raw pages with citations)
+```
+
+See `docs/architecture.md` and `docs/data_model.md` for details.
+
+## Requirements
+
+- Python 3.11+
+- Postgres 14+ (SQLite fallback for local dev only)
+
+## Setup
 
 ```bash
 python3 -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate
 pip install -e .
+
 cp .env.example .env
-```
+# edit .env: set OPENAI_API_KEY, DATABASE_URL, PINEGRAF_ADMIN_PASSWORD,
+# and crawler config (CRAWL_SITEMAP_URLS, CRAWL_ALLOWED_DOMAINS, etc.)
 
-For local SQLite development, keep `DATABASE_URL=sqlite:///./pinegraf.db`.
-For Postgres, start the bundled service and set the Postgres URL:
-
-```bash
-docker compose up -d postgres
-```
-
-Apply migrations and run the server:
-
-```bash
 alembic upgrade head
+```
+
+## Run
+
+```bash
 uvicorn backend.main:app --reload
 ```
 
-Open `http://127.0.0.1:8000/`.
+Open:
 
-## Pipeline
+- `http://127.0.0.1:8000` — user UI (Lookup + Research)
+- `http://127.0.0.1:8000/admin` — admin panel (Crawl + Parse), password from `PINEGRAF_ADMIN_PASSWORD`
 
-```text
-crawl -> parse -> resolve -> store -> query
+## Configure a crawl
+
+In `.env`:
+
+```env
+USE_MOCK_FETCH=false
+CRAWL_SITEMAP_URLS=https://example.edu/sitemap.xml
+CRAWL_SEED_URLS=https://example.edu/
+CRAWL_ALLOWED_DOMAINS=example.edu
+CRAWL_MAX_PAGES=5000
 ```
 
-- Crawl: `backend/pipeline/crawler.py` uses an async HTTP crawler with
-  conditional GETs, per-host concurrency, source snapshotting, and mockable
-  fetchers for tests.
-- Parse: `backend/pipeline/parser.py` extracts profiles, facts, connections,
-  projects, positions, and claim-level entity attributes from stored pages.
-- Resolve: `backend/resolution/entity_resolver.py` never merges on name alone;
-  it only reuses an entity when class year or current company context gives one
-  exact match.
-- Store: `backend/db/store.py` owns persistence and query helpers over the
-  SQLAlchemy models in `backend/db/models.py`.
-- Query: `backend/pipeline/query.py` answers strict structured questions or deep
-  raw-page RAG questions with source URLs.
+Settings are cached at process start; restart uvicorn after changing `.env`.
 
-More detail: [docs/architecture.md](docs/architecture.md) and
-[docs/data_model.md](docs/data_model.md).
+## Mock mode
 
-## Migrations
+`USE_MOCK_FETCH=true`, `USE_MOCK_EXTRACT=true`, `USE_MOCK_QUERY=true` run the full pipeline against canned data with no external HTTP / OpenAI calls. Useful for UI testing and offline dev.
 
-Use Alembic for every schema change:
+## Tests
 
 ```bash
-alembic upgrade head
-alembic downgrade -1
-alembic upgrade head
-```
-
-SQLite is supported for local tests and prototypes. Production should use
-Postgres 14+.
-
-## Evaluation
-
-Run the seeded extraction eval:
-
-```bash
-python -m scripts.eval_extraction
-```
-
-The script runs migrations on a temporary SQLite database, crawls fixture pages,
-parses with mock clients, compares extracted attributes to
-`tests/eval/golden_set.json`, prints per-attribute precision/recall/F1, and
-writes `eval_results.json`.
-
-To add golden entries, edit `tests/eval/golden_set.json` and add matching JSON
-fixtures in `tests/eval/fixtures/`. Fixture URLs use the slug generated from the
-entity name, for example `https://fixtures.local/jane-doe.html`.
-
-## Benchmark
-
-Run the async crawler benchmark:
-
-```bash
-python -m scripts.bench_crawl
-```
-
-It serves 500 local fake pages across five localhost ports, crawls them with the
-async crawler, prints pages/sec and wall time, and exits non-zero if the run
-takes more than 30 seconds.
-
-## Tests And Formatting
-
-```bash
-ruff check .
-ruff format .
 pytest -v
 ```
 
-Tests must not hit real external APIs. Use mockable fetch, extraction,
-validation, synthesis, and query clients.
+## Database
 
-## API
+Tables of note:
 
-- `POST /crawl/start`, `GET /crawl/stream`: run and stream crawl jobs.
-- `POST /parse/start?force=true`, `GET /parse/stream`: run and stream parse jobs.
-- `POST /query`: answer `{"question": "...", "mode": "strict"|"deep"}`.
-- `POST /lookup`: lookup-compatible query endpoint, audited.
-- `POST /admin/login`: set the admin cookie.
-- `GET /admin/audit`: admin-only audit event listing.
-- `GET /profiles`, `/facts`, `/connections`, `/projects`: inspect stored data.
+- `raw_pages` — one row per fetched page. Includes `page_text`, `raw_html_gz`, `content_sha256`, ETag/Last-Modified, fetch timestamp.
+- `entities`, `entity_aliases`, `entity_attributes` — canonical entity layer with claim-level provenance.
+- `alumni_profiles` — denormalized profile view used by `/lookup`. Kept in sync by the parser.
+- `audit_events` — append-only log of every `/lookup`, `/research`, and `/admin/*` request.
+
+## Layout
+
+```text
+backend/
+  main.py              FastAPI routes (thin)
+  config.py            env-driven settings
+  audit.py             auth + audit middleware
+  db/
+    models.py          SQLAlchemy models
+    store.py           DB queries and writes
+  pipeline/
+    crawler.py         async sitemap crawler
+    page_fetcher.py    sync httpx client used inside crawler
+    parser.py          extractor + validator + synthesizer (LLM)
+    query.py           strict / deep query clients
+  resolution/
+    entity_resolver.py name -> entity_id resolution
+frontend/
+  index.html, app.js   user-facing UI
+  admin.html, admin.js admin panel
+alembic/               migrations
+tests/                 pytest suite
+```
+
+## Security note
+
+The current admin auth is a single shared password compared in constant time, with a session cookie signed by HMAC. It is sufficient for a single-user prototype. It is **not** sufficient for multi-user production — replace with per-user accounts (bcrypt/argon2) and a real session store before deploying.
+
+`.env` is gitignored. Never commit secrets.
