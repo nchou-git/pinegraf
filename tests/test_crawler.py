@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.db.store import Store
-from backend.pipeline.crawler import Crawler, ProgressEvent
+from backend.pipeline.crawler import Crawler, ProgressEvent, SiteCrawler
 from backend.pipeline.page_fetcher import FetchedPage
 
 
@@ -69,3 +71,28 @@ def test_crawler_saves_raw_pages_and_dedupes_urls(tmp_path) -> None:
     assert len(store.list_raw_pages()) == 2
     assert len(fetcher.urls) == 4
     assert any(event.kind == "page_skipped" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_site_crawler_async_core_saves_pages(tmp_path) -> None:
+    store = Store(f"sqlite:///{tmp_path / 'async_crawl.db'}")
+    store.init_db()
+    fetcher = FakeFetcher()
+    events: list[ProgressEvent] = []
+    crawler = SiteCrawler(store=store, fetcher=fetcher)
+
+    await crawler.run(
+        [
+            {
+                "name": "Async Person",
+                "class_year": "T'25",
+                "urls": ["https://example.com/async-person/one"],
+            }
+        ],
+        events.append,
+    )
+
+    pages = store.list_raw_pages()
+    assert len(pages) == 1
+    assert pages[0].content_sha256 is not None
+    assert any(event.kind == "page_fetched" for event in events)

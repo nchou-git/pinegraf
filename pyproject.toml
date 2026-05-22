@@ -14,9 +14,12 @@ dependencies = [
   "python-dotenv",
   "pydantic",
   "pytest",
+  "pytest-asyncio",
   "pytest-mock",
   "ruff",
   "httpx",
+  "h2",
+  "selectolax",
   "beautifulsoup4",
   "lxml",
 ]

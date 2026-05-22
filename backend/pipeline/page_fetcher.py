@@ -5,17 +5,17 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
-from bs4 import BeautifulSoup
+from selectolax.parser import HTMLParser
 
 FETCH_TIMEOUT = 15.0
 FETCH_DELAY_SECONDS = 2.0
 FETCH_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
 USER_AGENT = "PinegrafBot/0.2 (crawl; contact: nchou-git)"
 SKIP_FETCH_DOMAINS = {"linkedin.com", "www.linkedin.com"}
-NOISY_TAGS = ("script", "style", "nav", "footer", "header", "noscript", "aside")
+NOISY_TAGS = ("script", "style", "nav", "footer", "header", "noscript", "aside", "form", "iframe")
 
 
 @dataclass
@@ -37,12 +37,27 @@ def should_fetch_url(url: str) -> bool:
 
 
 def clean_html(html: str) -> tuple[str, str]:
-    soup = BeautifulSoup(html, "lxml")
-    for tag in soup(NOISY_TAGS):
-        tag.decompose()
-    title = (soup.title.string or "").strip() if soup.title else ""
-    text = soup.get_text(separator=" ", strip=True)
+    tree = HTMLParser(html)
+    for node in tree.css(", ".join(NOISY_TAGS)):
+        node.decompose()
+    title_node = tree.css_first("title")
+    title = title_node.text(strip=True) if title_node else ""
+    text_node = tree.body or tree.root
+    text = text_node.text(separator=" ", strip=True) if text_node else ""
     return title, " ".join(text.split())
+
+
+def extract_links(html: str, base_url: str) -> list[str]:
+    tree = HTMLParser(html)
+    links: list[str] = []
+    for node in tree.css("a[href]"):
+        href = node.attributes.get("href", "").strip()
+        if not href:
+            continue
+        absolute_url = urljoin(base_url, href)
+        if should_fetch_url(absolute_url):
+            links.append(absolute_url)
+    return links
 
 
 def _is_transient_http_error(exc: httpx.HTTPError) -> bool:
