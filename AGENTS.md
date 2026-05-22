@@ -6,7 +6,6 @@ Pipeline: take a seed list of alumni -> crawl public pages -> parse stored pages
 
 - Python 3.11+, FastAPI, SQLAlchemy, Postgres 14+ for production, SQLite fallback for dev, pytest
 - OpenAI Python SDK; `gpt-5.4-mini` for extraction and validation, `gpt-5.4` for synthesis, `gpt-5.3-mini` for strict query, `gpt-5.5` for deep query
-- SerpAPI for Google search (`google-search-results` package)
 - Vanilla HTML/JS frontend served by FastAPI
 
 ## Architecture

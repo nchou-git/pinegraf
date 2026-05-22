@@ -1,6 +1,6 @@
 [project]
-name = "tuckscout"
-version = "0.1.0"
+name = "pinegraf"
+version = "0.3.0"
 description = "Alumni enrichment and query pipeline"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,7 +10,6 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "asyncpg",
   "openai",
-  "google-search-results",
   "python-dotenv",
   "pydantic",
   "pytest",

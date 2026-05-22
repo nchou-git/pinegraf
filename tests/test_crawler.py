@@ -3,18 +3,6 @@ from __future__ import annotations
 from backend.db.store import Store
 from backend.pipeline.crawler import Crawler, ProgressEvent
 from backend.pipeline.page_fetcher import FetchedPage
-from backend.pipeline.search import SearchClient, SearchResult
-
-
-class FakeSearchClient(SearchClient):
-    def search_person(self, name: str, class_year: str) -> list[SearchResult]:
-        del class_year
-        slug = name.lower().replace(" ", "-")
-        return [
-            SearchResult("One", f"https://example.com/{slug}/one", ""),
-            SearchResult("Duplicate", f"https://example.com/{slug}/one", ""),
-            SearchResult("Two", f"https://example.com/{slug}/two", ""),
-        ]
 
 
 class FakeFetcher:
@@ -36,10 +24,19 @@ def test_crawler_saves_raw_pages_and_dedupes_urls(tmp_path) -> None:
     events: list[ProgressEvent] = []
     crawler = Crawler(
         store=store,
-        search_client=FakeSearchClient(),
         fetcher=fetcher,  # type: ignore[arg-type]
     )
-    seed = [{"name": "Jane Doe", "class_year": "T'24"}]
+    seed = [
+        {
+            "name": "Jane Doe",
+            "class_year": "T'24",
+            "urls": [
+                "https://example.com/jane-doe/one",
+                "https://example.com/jane-doe/one",
+                "https://example.com/jane-doe/two",
+            ],
+        }
+    ]
 
     crawler.run(seed, events.append)
 

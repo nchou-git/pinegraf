@@ -6,7 +6,7 @@ Pinegraf maps the people behind an alumni network. It starts from `data/alumni.c
 
 Pinegraf runs as three decoupled stages:
 
-1. **Crawl**: SerpAPI search plus `httpx` page fetches. This stage never calls an LLM. Cleaned page text is stored in `raw_pages` and re-runs skip existing `(alum_name, source_url)` rows.
+1. **Crawl**: `httpx` page fetches from seed URLs. This stage never calls an LLM. Cleaned page text is stored in `raw_pages` and re-runs skip existing `(alum_name, source_url)` rows.
 2. **Parse**: LLM extraction, validation, and synthesis over stored `raw_pages`. Structured facts, connections, and projects point back to `source_raw_page_id`.
 3. **Query**: Strict mode reads validated structured rows only. Deep mode retrieves raw pages with Postgres full-text search, falls back to SQLite page order in dev, and asks the LLM to cite page sources.
 
@@ -58,9 +58,8 @@ Production deployment expects Postgres 14+. The schema is portable; no Postgres-
 ## Environment Variables
 
 - `OPENAI_API_KEY`: OpenAI API key for parse and query stages.
-- `SERPAPI_API_KEY`: SerpAPI key for crawl search.
 - `DATABASE_URL`: SQLAlchemy database URL.
-- `USE_MOCK_SEARCH`, `USE_MOCK_FETCH`, `USE_MOCK_EXTRACT`, `USE_MOCK_QUERY`: set to `true` for local deterministic mocks.
+- `USE_MOCK_FETCH`, `USE_MOCK_EXTRACT`, `USE_MOCK_QUERY`: set to `true` for local deterministic mocks.
 - `CRAWL_PAGES_PER_ALUM`: maximum deduped URLs fetched per alum.
 
 ## API

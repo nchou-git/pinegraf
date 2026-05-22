@@ -35,7 +35,6 @@ from backend.pipeline.query import (
     OpenAIQueryClient,
     QueryClient,
 )
-from backend.pipeline.search import MockSearchClient, SearchClient, SerpAPISearchClient
 
 logger = logging.getLogger(__name__)
 DONE_SENTINEL = "__done__"
@@ -65,13 +64,6 @@ def load_alumni_csv(path: Path) -> list[dict[str, str]]:
                 continue
             records.append({"name": name, "class_year": class_year})
         return records
-
-
-def build_search_client() -> SearchClient:
-    settings = get_settings()
-    if settings.use_mock_search:
-        return MockSearchClient()
-    return SerpAPISearchClient(api_key=settings.serpapi_api_key)
 
 
 def build_fetcher() -> PageFetcher:
@@ -175,7 +167,6 @@ async def crawl_start() -> dict[str, str]:
         try:
             crawler = Crawler(
                 store=store,
-                search_client=build_search_client(),
                 fetcher=fetcher,
                 pages_per_alum=get_settings().crawl_pages_per_alum,
             )

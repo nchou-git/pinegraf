@@ -13,19 +13,16 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     openai_api_key: str = Field(default="")
-    serpapi_api_key: str = Field(default="")
     # Prefer Postgres in .env:
     # postgresql+psycopg://pinegraf:pinegraf@localhost:5432/pinegraf
     # Store.init_db falls back to sqlite:///./pinegraf.db for local dev if Postgres is unavailable.
     database_url: str = Field(default="sqlite:///./pinegraf.db")
-    use_mock_search: bool = Field(default=True)
     use_mock_extract: bool = Field(default=True)
     use_mock_query: bool = Field(default=True)
     use_mock_fetch: bool = Field(default=True)
     crawl_pages_per_alum: int = Field(default=6, ge=1)
 
     @field_validator(
-        "use_mock_search",
         "use_mock_extract",
         "use_mock_query",
         "use_mock_fetch",
@@ -45,9 +42,7 @@ def get_settings() -> Settings:
     try:
         return Settings(
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            serpapi_api_key=os.getenv("SERPAPI_API_KEY", ""),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
-            use_mock_search=os.getenv("USE_MOCK_SEARCH", "true"),
             use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
             use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
             use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),

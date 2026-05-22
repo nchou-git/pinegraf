@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from backend.db.store import Store
-from backend.pipeline.page_fetcher import PageFetcher
-from backend.pipeline.search import SearchClient, SearchResult
+from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher
 
 
 @dataclass
@@ -15,16 +15,16 @@ class ProgressEvent:
 
 
 class Crawler:
+    """Deprecated sync crawler wrapper; use SiteCrawler for new crawling code."""
+
     def __init__(
         self,
         *,
         store: Store,
-        search_client: SearchClient,
         fetcher: PageFetcher,
         pages_per_alum: int = 6,
     ) -> None:
         self.store = store
-        self.search_client = search_client
         self.fetcher = fetcher
         self.pages_per_alum = pages_per_alum
 
@@ -64,11 +64,8 @@ class Crawler:
             )
 
             try:
-                results = self._unique_results(
-                    self.search_client.search_person(name, class_year),
-                    limit=self.pages_per_alum,
-                )
-                fetched = self._crawl_results(name, results, emit)
+                urls = self._seed_urls(alum, name=name)
+                fetched = self._crawl_urls(name, urls, emit)
                 self.store.mark_crawl_status(name, "done", class_year=class_year)
                 done += 1
                 emit(
@@ -78,7 +75,7 @@ class Crawler:
                             "name": name,
                             "class_year": class_year,
                             "pages_fetched": fetched,
-                            "page_total": len(results),
+                            "page_total": len(urls),
                             "overall_total": total,
                             "overall_done": done,
                         },
@@ -102,16 +99,16 @@ class Crawler:
 
         emit(ProgressEvent("done", {"overall_total": total, "overall_done": done}))
 
-    def _crawl_results(
+    def _crawl_urls(
         self,
         alum_name: str,
-        results: list[SearchResult],
+        urls: list[str],
         emit: Callable[[ProgressEvent], None],
     ) -> int:
         fetched = 0
-        page_total = len(results)
-        for page_index, result in enumerate(results, start=1):
-            url = result.link.strip()
+        page_total = len(urls)
+        for page_index, source_url in enumerate(urls, start=1):
+            url = source_url.strip()
             if self.store.raw_page_exists(alum_name, url):
                 emit(
                     ProgressEvent(
@@ -145,7 +142,7 @@ class Crawler:
             raw_page = self.store.save_raw_page(
                 alum_name=alum_name,
                 source_url=page.url,
-                page_title=page.title or result.title,
+                page_title=page.title,
                 page_text=page.text,
             )
             fetched += 1
@@ -164,16 +161,50 @@ class Crawler:
             )
         return fetched
 
+    def _seed_urls(self, alum: dict[str, str], *, name: str) -> list[str]:
+        urls = self._unique_urls(self._iter_seed_urls(alum), limit=self.pages_per_alum)
+        if urls or not isinstance(self.fetcher, MockPageFetcher):
+            return urls
+        slug = quote("-".join(name.lower().split()))
+        return [f"https://example.com/{slug}/profile"]
+
     @staticmethod
-    def _unique_results(results: Iterable[SearchResult], *, limit: int) -> list[SearchResult]:
+    def _iter_seed_urls(alum: dict[str, object]) -> Iterable[str]:
+        for key in ("source_url", "profile_url", "url"):
+            value = alum.get(key)
+            if isinstance(value, str):
+                for part in value.replace(";", ",").split(","):
+                    cleaned = part.strip()
+                    if cleaned:
+                        yield cleaned
+            elif isinstance(value, Iterable):
+                for item in value:
+                    cleaned = str(item).strip()
+                    if cleaned:
+                        yield cleaned
+
+        value = alum.get("urls")
+        if isinstance(value, str):
+            for part in value.replace(";", ",").split(","):
+                cleaned = part.strip()
+                if cleaned:
+                    yield cleaned
+        elif isinstance(value, Iterable):
+            for item in value:
+                cleaned = str(item).strip()
+                if cleaned:
+                    yield cleaned
+
+    @staticmethod
+    def _unique_urls(urls: Iterable[str], *, limit: int) -> list[str]:
         seen_urls: set[str] = set()
-        unique: list[SearchResult] = []
-        for result in results:
-            url = result.link.strip()
+        unique: list[str] = []
+        for url_value in urls:
+            url = url_value.strip()
             if not url or url in seen_urls:
                 continue
             seen_urls.add(url)
-            unique.append(result)
+            unique.append(url)
             if len(unique) >= limit:
                 break
         return unique

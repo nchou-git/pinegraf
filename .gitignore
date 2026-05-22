@@ -4,6 +4,7 @@ __pycache__/
 .env
 .pytest_cache/
 .ruff_cache/
+.codex/
 .venv/
 
 # Python build artifacts
