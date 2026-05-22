@@ -1,105 +1,126 @@
 # Pinegraf
 
-Pinegraf maps the people behind an alumni network. It starts from `data/alumni.csv`, crawls public pages, parses those stored pages into source-linked structured tables, and answers natural-language questions in strict or deep RAG mode.
+Pinegraf is an OSINT research prototype for people and organizations. It starts
+with a closed-world alumni seed list, crawls public non-LinkedIn pages, stores
+source snapshots, extracts structured facts and relationships, resolves people
+to conservative entity records, and answers analyst questions with citations.
 
-## Architecture
+The first target dataset is Tuck alumni, but the pipeline is built around
+generic `person` and `organization` entities.
 
-Pinegraf runs as three decoupled stages:
+## Who It Is For
 
-1. **Crawl**: `httpx` page fetches from seed URLs. This stage never calls an LLM. Cleaned page text is stored in `raw_pages` and re-runs skip existing `(alum_name, source_url)` rows.
-2. **Parse**: LLM extraction, validation, and synthesis over stored `raw_pages`. Structured facts, connections, and projects point back to `source_raw_page_id`.
-3. **Query**: Strict mode reads validated structured rows only. Deep mode retrieves raw pages with Postgres full-text search, falls back to SQLite page order in dev, and asks the LLM to cite page sources.
+Pinegraf is for analysts and builders evaluating public-source research
+workflows where source traceability matters. The app keeps raw page snapshots,
+structured claim-level attributes, audit events, and natural-language query
+paths in one local system.
 
 ## Local Setup
 
-1. Create and activate a Python 3.11+ virtualenv.
-2. Start Postgres:
-   ```bash
-   docker compose up -d postgres
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -e .
-   ```
-4. Copy env file:
-   ```bash
-   cp .env.example .env
-   ```
-5. Run the app:
-   ```bash
-   uvicorn backend.main:app --reload
-   ```
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
+cp .env.example .env
+```
+
+For local SQLite development, keep `DATABASE_URL=sqlite:///./pinegraf.db`.
+For Postgres, start the bundled service and set the Postgres URL:
+
+```bash
+docker compose up -d postgres
+```
+
+Apply migrations and run the server:
+
+```bash
+alembic upgrade head
+uvicorn backend.main:app --reload
+```
 
 Open `http://127.0.0.1:8000/`.
 
-## Database
-
-`.env.example` uses:
+## Pipeline
 
 ```text
-DATABASE_URL=postgresql+psycopg://pinegraf:pinegraf@localhost:5432/pinegraf
+crawl -> parse -> resolve -> store -> query
 ```
 
-The app uses SQLAlchemy `create_all()` for local schema creation. On Postgres it also creates a guarded GIN full-text index:
+- Crawl: `backend/pipeline/crawler.py` uses an async HTTP crawler with
+  conditional GETs, per-host concurrency, source snapshotting, and mockable
+  fetchers for tests.
+- Parse: `backend/pipeline/parser.py` extracts profiles, facts, connections,
+  projects, positions, and claim-level entity attributes from stored pages.
+- Resolve: `backend/resolution/entity_resolver.py` never merges on name alone;
+  it only reuses an entity when class year or current company context gives one
+  exact match.
+- Store: `backend/db/store.py` owns persistence and query helpers over the
+  SQLAlchemy models in `backend/db/models.py`.
+- Query: `backend/pipeline/query.py` answers strict structured questions or deep
+  raw-page RAG questions with source URLs.
 
-```sql
-CREATE INDEX IF NOT EXISTS idx_raw_pages_page_text_fts
-ON raw_pages USING GIN (to_tsvector('english', page_text));
-```
+More detail: [docs/architecture.md](docs/architecture.md) and
+[docs/data_model.md](docs/data_model.md).
 
-If Postgres is not available, Pinegraf falls back to `sqlite:///./pinegraf.db` for laptop dev and logs:
+## Migrations
 
-```text
-Running on SQLite - this is dev only. Production deployment must use Postgres.
-```
-
-Production deployment expects Postgres 14+. The schema is portable; no Postgres-specific features other than JSONB and the GIN tsvector index. The tsvector index can be dropped if FTS is not needed.
-
-## Environment Variables
-
-- `OPENAI_API_KEY`: OpenAI API key for parse and query stages.
-- `DATABASE_URL`: SQLAlchemy database URL.
-- `USE_MOCK_FETCH`, `USE_MOCK_EXTRACT`, `USE_MOCK_QUERY`: set to `true` for local deterministic mocks.
-- `CRAWL_PAGES_PER_ALUM`: maximum deduped URLs fetched per alum.
-
-## API
-
-- `POST /crawl/start`: starts the crawl stage.
-- `GET /crawl/stream`: streams crawl SSE events.
-- `POST /parse/start?force=true`: starts the parse stage; `force=true` reparses all raw pages.
-- `GET /parse/stream`: streams parse SSE events.
-- `POST /query`: accepts `{"question": "...", "mode": "strict"|"deep"}`.
-- `GET /profiles`, `/facts`, `/connections`, `/projects`: read stored structured data.
-
-## Deployment Notes For Tuck IT
-
-- Postgres 14+ is required for production.
-- Set the production connection string in `DATABASE_URL`.
-- No Postgres extensions are required. Full-text search uses built-in `tsvector`; `pgvector` is optional for future semantic search.
-- Use standard `pg_dump`/`pg_restore` for backups and restores.
-- The app server is stateless. Horizontal scaling is supported when workers share the same Postgres database.
-
-## Test
+Use Alembic for every schema change:
 
 ```bash
-pytest -v
+alembic upgrade head
+alembic downgrade -1
+alembic upgrade head
 ```
 
-## Extraction Eval
+SQLite is supported for local tests and prototypes. Production should use
+Postgres 14+.
 
-Run the seeded golden extraction eval:
+## Evaluation
+
+Run the seeded extraction eval:
 
 ```bash
 python -m scripts.eval_extraction
 ```
 
-Add new golden entries in `tests/eval/golden_set.json` and add matching page
-fixtures in `tests/eval/fixtures/`. Fixture URLs should use the slug generated
-from the entity name, for example `https://fixtures.local/jane-doe.html`.
+The script runs migrations on a temporary SQLite database, crawls fixture pages,
+parses with mock clients, compares extracted attributes to
+`tests/eval/golden_set.json`, prints per-attribute precision/recall/F1, and
+writes `eval_results.json`.
 
-## Lint/Format
+To add golden entries, edit `tests/eval/golden_set.json` and add matching JSON
+fixtures in `tests/eval/fixtures/`. Fixture URLs use the slug generated from the
+entity name, for example `https://fixtures.local/jane-doe.html`.
+
+## Benchmark
+
+Run the async crawler benchmark:
+
+```bash
+python -m scripts.bench_crawl
+```
+
+It serves 500 local fake pages across five localhost ports, crawls them with the
+async crawler, prints pages/sec and wall time, and exits non-zero if the run
+takes more than 30 seconds.
+
+## Tests And Formatting
 
 ```bash
 ruff check .
 ruff format .
+pytest -v
 ```
+
+Tests must not hit real external APIs. Use mockable fetch, extraction,
+validation, synthesis, and query clients.
+
+## API
+
+- `POST /crawl/start`, `GET /crawl/stream`: run and stream crawl jobs.
+- `POST /parse/start?force=true`, `GET /parse/stream`: run and stream parse jobs.
+- `POST /query`: answer `{"question": "...", "mode": "strict"|"deep"}`.
+- `POST /lookup`: lookup-compatible query endpoint, audited.
+- `POST /admin/login`: set the admin cookie.
+- `GET /admin/audit`: admin-only audit event listing.
+- `GET /profiles`, `/facts`, `/connections`, `/projects`: inspect stored data.
