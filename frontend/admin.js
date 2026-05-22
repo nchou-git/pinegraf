@@ -7,7 +7,6 @@ const logoutBtn = document.getElementById("logout-btn");
 const crawlBtn = document.getElementById("crawl-btn");
 const parseBtn = document.getElementById("parse-btn");
 const stopBtn = document.getElementById("stop-btn");
-const queueInfo = document.getElementById("queue-info");
 const logEl = document.getElementById("log");
 
 let evtSource = null;
@@ -70,7 +69,6 @@ function showLogin() {
 function showAdmin() {
   loginCard.hidden = true;
   adminCard.hidden = false;
-  refreshAlumniCount();
 }
 
 async function checkAuth() {
@@ -111,20 +109,6 @@ async function login() {
 async function logout() {
   await fetch("/admin/logout", { method: "POST" });
   showLogin();
-}
-
-async function refreshAlumniCount() {
-  try {
-    const res = await fetch("/admin/alumni-count");
-    if (res.status === 401) {
-      showLogin();
-      return;
-    }
-    const data = await res.json();
-    queueInfo.textContent = `${data.count} alumni queued`;
-  } catch (err) {
-    queueInfo.textContent = `queue unavailable: ${err.message}`;
-  }
 }
 
 // ---------- pipeline ----------
