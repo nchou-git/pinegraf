@@ -85,6 +85,18 @@ Production deployment expects Postgres 14+. The schema is portable; no Postgres-
 pytest -v
 ```
 
+## Extraction Eval
+
+Run the seeded golden extraction eval:
+
+```bash
+python -m scripts.eval_extraction
+```
+
+Add new golden entries in `tests/eval/golden_set.json` and add matching page
+fixtures in `tests/eval/fixtures/`. Fixture URLs should use the slug generated
+from the entity name, for example `https://fixtures.local/jane-doe.html`.
+
 ## Lint/Format
 
 ```bash

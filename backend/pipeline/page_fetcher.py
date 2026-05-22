@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -113,3 +115,36 @@ class MockPageFetcher(PageFetcher):
 
     def close(self) -> None:
         return None
+
+
+class FixturePageFetcher(PageFetcher):
+    def __init__(self, fixtures_dir: str | Path) -> None:
+        self.delay = 0.0
+        self.retry_backoff_seconds = ()
+        self.fixtures_dir = Path(fixtures_dir)
+        self._pages = self._load_fixtures(self.fixtures_dir)
+
+    def fetch(self, url: str) -> FetchedPage | None:
+        page = self._pages.get(url)
+        if page is None:
+            return None
+        return page
+
+    def close(self) -> None:
+        return None
+
+    @staticmethod
+    def _load_fixtures(fixtures_dir: Path) -> dict[str, FetchedPage]:
+        pages: dict[str, FetchedPage] = {}
+        for path in sorted(fixtures_dir.glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            url = str(payload.get("url", "")).strip()
+            text = str(payload.get("text", "")).strip()
+            if not url or not text:
+                continue
+            pages[url] = FetchedPage(
+                url=url,
+                title=str(payload.get("title", "")).strip(),
+                text=text,
+            )
+        return pages
