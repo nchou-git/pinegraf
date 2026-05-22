@@ -8,13 +8,20 @@ import queue
 import threading
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from backend.audit import (
+    AdminLoginRequest,
+    audit_events_response,
+    install_audit_middleware,
+    login_admin,
+)
 from backend.config import get_settings
 from backend.db.store import KEEP_VERDICTS, SQLITE_WARNING, Store
 from backend.pipeline.crawler import Crawler, ProgressEvent
@@ -109,6 +116,7 @@ store = Store(settings.database_url)
 store.init_db()
 if store.is_sqlite:
     logger.warning(SQLITE_WARNING)
+install_audit_middleware(app, store)
 
 crawl_job = StageJob("crawl")
 parse_job = StageJob("parse")
@@ -244,6 +252,38 @@ async def list_facts() -> dict[str, object]:
 async def query(payload: QueryRequest) -> dict[str, str]:
     answer = build_query_client(payload.mode).answer_question(payload.question)
     return {"answer": answer.answer, "mode": payload.mode}
+
+
+@app.post("/lookup")
+async def lookup(payload: QueryRequest) -> dict[str, str]:
+    return await query(payload)
+
+
+@app.post("/admin/login")
+async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
+    return login_admin(payload, response)
+
+
+@app.get("/admin/audit")
+async def admin_audit(
+    request: Request,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    actor: str | None = None,
+    action: str | None = None,
+    limit: int = 100,
+    before_id: int | None = None,
+) -> dict[str, object]:
+    return audit_events_response(
+        store=store,
+        request=request,
+        since=since,
+        until=until,
+        actor=actor,
+        action=action,
+        limit=limit,
+        before_id=before_id,
+    )
 
 
 @app.get("/")

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, joinedload, sessionmaker
 
 from backend.db.models import (
     AlumniProfile,
+    AuditEvent,
     Base,
     Connection,
     CrawlState,
@@ -966,6 +967,53 @@ class Store:
                     select(func.count()).select_from(CrawlState).where(CrawlState.status == "done")
                 ).scalar_one()
             )
+
+    def add_audit_event(
+        self,
+        *,
+        actor: str = "anon",
+        action: str,
+        payload: dict[str, object],
+        created_at: datetime | None = None,
+    ) -> AuditEvent:
+        with self._session_factory() as session:
+            event = AuditEvent(
+                actor=actor or "anon",
+                action=action,
+                payload=payload,
+                created_at=created_at or _utcnow(),
+            )
+            session.add(event)
+            session.commit()
+            return event
+
+    def list_audit_events(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        actor: str | None = None,
+        action: str | None = None,
+        limit: int = 100,
+        before_id: int | None = None,
+    ) -> list[AuditEvent]:
+        capped_limit = min(max(limit, 1), 1000)
+        with self._session_factory() as session:
+            stmt = select(AuditEvent)
+            if since is not None:
+                stmt = stmt.where(AuditEvent.created_at >= since)
+            if until is not None:
+                stmt = stmt.where(AuditEvent.created_at <= until)
+            if actor:
+                stmt = stmt.where(AuditEvent.actor == actor)
+            if action:
+                stmt = stmt.where(AuditEvent.action == action)
+            if before_id is not None:
+                stmt = stmt.where(AuditEvent.id < before_id)
+            stmt = stmt.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(
+                capped_limit
+            )
+            return list(session.execute(stmt).scalars())
 
 
 def _clean_verdict(value: object) -> str:

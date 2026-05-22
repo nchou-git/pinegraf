@@ -319,3 +319,22 @@ class CrawlState(Base):
     depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     discovered_via: Mapped[str] = mapped_column(String(255), nullable=False, default="seed")
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_actor_created_at", "actor", "created_at"),
+        Index("ix_audit_events_action_created_at", "action", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False, default="anon")
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+        index=True,
+    )

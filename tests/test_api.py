@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,8 @@ def load_mock_main(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_MOCK_QUERY", "true")
     monkeypatch.setenv("USE_MOCK_FETCH", "true")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
+    monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "test-password")
+    monkeypatch.setenv("PINEGRAF_ADMIN_COOKIE_SECRET", "test-secret")
 
     from backend.config import get_settings
 
@@ -89,3 +92,98 @@ def test_favicon_endpoint(monkeypatch, tmp_path) -> None:
         assert 'aria-label="Pinegraf logo"' in response.text
 
     asyncio.run(run_flow())
+
+
+def test_lookup_audit_preserves_request_body(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+
+    async def run_flow() -> None:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/lookup",
+                json={"question": "Who works at Acme Corp?", "mode": "strict"},
+            )
+
+        assert response.status_code == 200
+        assert "Acme alumni" in response.json()["answer"]
+
+    asyncio.run(run_flow())
+
+    events = main.store.list_audit_events(action="lookup")
+    assert len(events) == 1
+    assert events[0].actor == "anon"
+    assert events[0].payload["body"]["question"] == "Who works at Acme Corp?"
+
+
+def test_admin_login_audit_redacts_password(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+
+    async def run_flow() -> httpx.Response:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post("/admin/login", json={"password": "test-password"})
+
+    response = asyncio.run(run_flow())
+
+    assert response.status_code == 200
+    assert "pinegraf_admin" in response.headers["set-cookie"]
+    events = main.store.list_audit_events(action="admin_login")
+    assert len(events) == 1
+    assert events[0].payload["body"]["password"] == "[redacted]"
+
+
+def test_admin_audit_requires_admin_auth(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+
+    async def run_flow() -> tuple[int, int]:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            denied = await client.get("/admin/audit")
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            allowed = await client.get("/admin/audit")
+        return denied.status_code, allowed.status_code
+
+    denied_status, allowed_status = asyncio.run(run_flow())
+
+    assert denied_status == 403
+    assert allowed_status == 200
+
+
+def test_admin_audit_filters(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    main.store.add_audit_event(
+        actor="anon",
+        action="lookup",
+        payload={"method": "POST", "path": "/lookup", "body": {}},
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    main.store.add_audit_event(
+        actor="admin",
+        action="admin_login",
+        payload={"method": "POST", "path": "/admin/login", "body": {}},
+        created_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    async def run_flow() -> dict[str, object]:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            response = await client.get(
+                "/admin/audit",
+                params={
+                    "since": "2026-01-01T00:00:00Z",
+                    "actor": "anon",
+                    "action": "lookup",
+                },
+            )
+        assert response.status_code == 200
+        return response.json()
+
+    payload = asyncio.run(run_flow())
+
+    assert len(payload["events"]) == 1
+    assert payload["events"][0]["actor"] == "anon"
+    assert payload["events"][0]["action"] == "lookup"
