@@ -34,12 +34,6 @@ def test_crawl_parse_and_query_endpoints(monkeypatch, tmp_path) -> None:
     async def run_flow() -> None:
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            count_response = await client.get("/alumni-count")
-            assert count_response.status_code == 200
-            assert count_response.json() == {
-                "count": len(main.load_alumni_csv(Path("data/alumni.csv")))
-            }
-
             crawl_start = await client.post("/crawl/start")
             assert crawl_start.status_code == 200
             assert crawl_start.json()["status"] == "started"

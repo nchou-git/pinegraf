@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import json
 import logging
 import queue
@@ -116,20 +115,6 @@ async def _event_generator(job: StageJob) -> AsyncIterator[bytes]:
 
 
 # ---------- builders ----------
-
-def load_alumni_csv(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        records: list[dict[str, str]] = []
-        for row in reader:
-            name = row["name"].strip()
-            class_year = row.get("class_year", "").strip()
-            if not name or name.lower() == "name":
-                continue
-            records.append({"name": name, "class_year": class_year})
-        return records
 
 
 def build_fetcher() -> PageFetcher:
@@ -291,11 +276,6 @@ async def admin_me(request: Request) -> dict[str, bool]:
     return {"authenticated": is_admin_request(request)}
 
 
-@app.get("/admin/alumni-count")
-async def admin_alumni_count(request: Request) -> dict[str, int]:
-    _require_admin(request)
-    alumni = load_alumni_csv(Path("data/alumni.csv"))
-    return {"count": len(alumni)}
 
 
 @app.post("/admin/crawl/start")
