@@ -9,9 +9,22 @@ class FakeFetcher:
     def __init__(self) -> None:
         self.urls: list[str] = []
 
-    def fetch(self, url: str) -> FetchedPage:
+    def fetch(
+        self,
+        url: str,
+        *,
+        etag: str | None = None,
+        last_modified: str | None = None,
+    ) -> FetchedPage:
+        del etag, last_modified
         self.urls.append(url)
-        return FetchedPage(url=url, title=url.rsplit("/", 1)[-1], text=f"Text for {url}")
+        text = f"Text for {url}"
+        return FetchedPage(
+            url=url,
+            title=url.rsplit("/", 1)[-1],
+            text=text,
+            raw_html=f"<html><body>{text}</body></html>",
+        )
 
     def close(self) -> None:
         return None
@@ -54,5 +67,5 @@ def test_crawler_saves_raw_pages_and_dedupes_urls(tmp_path) -> None:
     crawler.run(seed, events.append)
 
     assert len(store.list_raw_pages()) == 2
-    assert len(fetcher.urls) == 2
+    assert len(fetcher.urls) == 4
     assert any(event.kind == "page_skipped" for event in events)

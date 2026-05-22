@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import re
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
-from hashlib import sha1
+from hashlib import sha1, sha256
 from pathlib import Path
 from typing import Any
 
@@ -270,15 +271,28 @@ class Store:
         page_title: str,
         page_text: str,
         fetched_at: datetime | None = None,
+        content_sha256: str | None = None,
+        http_etag: str | None = None,
+        http_last_modified: str | None = None,
+        http_status: int | None = None,
+        raw_html: str | None = None,
+        raw_html_gz: bytes | None = None,
+        allow_duplicate_snapshot: bool = False,
     ) -> RawPage:
         entity_uuid = _coerce_uuid(entity_id)
+        compressed_html = raw_html_gz if raw_html_gz is not None else _gzip_html(raw_html)
+        content_hash = content_sha256 or _html_sha256(raw_html)
         with self._session_factory() as session:
             where_clause = RawPage.source_url == source_url
             if entity_uuid is not None:
                 where_clause = and_(where_clause, RawPage.entity_id == entity_uuid)
             else:
                 where_clause = and_(where_clause, RawPage.alum_name == alum_name)
-            existing = session.execute(select(RawPage).where(where_clause)).scalar_one_or_none()
+            existing = None
+            if not allow_duplicate_snapshot:
+                existing = session.execute(
+                    select(RawPage).where(where_clause).order_by(RawPage.id.asc()).limit(1)
+                ).scalar_one_or_none()
             if existing:
                 if entity_uuid is not None and existing.entity_id is None:
                     existing.entity_id = entity_uuid
@@ -301,11 +315,18 @@ class Store:
                 page_text=page_text,
                 fetched_at=fetched_at or _utcnow(),
                 parsed_at=None,
+                content_sha256=content_hash,
+                http_etag=http_etag,
+                http_last_modified=http_last_modified,
+                http_status=http_status,
+                raw_html_gz=compressed_html,
             )
             session.add(raw_page)
             try:
                 session.commit()
             except IntegrityError:
+                if allow_duplicate_snapshot:
+                    raise
                 session.rollback()
                 existing = session.execute(select(RawPage).where(where_clause)).scalar_one()
                 return existing
@@ -314,6 +335,45 @@ class Store:
     def list_raw_pages(self) -> list[RawPage]:
         with self._session_factory() as session:
             return list(session.execute(select(RawPage).order_by(RawPage.id.asc())).scalars())
+
+    def get_latest_raw_page_by_url(self, source_url: str) -> RawPage | None:
+        with self._session_factory() as session:
+            return session.execute(
+                select(RawPage)
+                .where(RawPage.source_url == source_url)
+                .order_by(RawPage.fetched_at.desc(), RawPage.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def update_raw_page_fetch_metadata(
+        self,
+        raw_page_id: int,
+        *,
+        fetched_at: datetime | None = None,
+        http_etag: str | None = None,
+        http_last_modified: str | None = None,
+        http_status: int | None = None,
+    ) -> RawPage | None:
+        with self._session_factory() as session:
+            raw_page = session.get(RawPage, raw_page_id)
+            if raw_page is None:
+                return None
+            raw_page.fetched_at = fetched_at or _utcnow()
+            if http_etag is not None:
+                raw_page.http_etag = http_etag
+            if http_last_modified is not None:
+                raw_page.http_last_modified = http_last_modified
+            if http_status is not None:
+                raw_page.http_status = http_status
+            session.commit()
+            return raw_page
+
+    def get_raw_page_html(self, raw_page_id: int) -> str | None:
+        with self._session_factory() as session:
+            raw_page = session.get(RawPage, raw_page_id)
+            if raw_page is None or raw_page.raw_html_gz is None:
+                return None
+            return gzip.decompress(raw_page.raw_html_gz).decode("utf-8")
 
     def list_raw_pages_for_alum(self, alum_name: str) -> list[RawPage]:
         with self._session_factory() as session:
@@ -947,6 +1007,18 @@ def _resolve_entity_in_session(
     from backend.resolution.entity_resolver import resolve_or_create
 
     return resolve_or_create(name, session=session, context=context)
+
+
+def _html_sha256(raw_html: str | None) -> str | None:
+    if raw_html is None:
+        return None
+    return sha256(raw_html.encode("utf-8")).hexdigest()
+
+
+def _gzip_html(raw_html: str | None) -> bytes | None:
+    if raw_html is None:
+        return None
+    return gzip.compress(raw_html.encode("utf-8"))
 
 
 def _normalize_position_token(value: object) -> str:

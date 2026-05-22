@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -16,13 +17,34 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy.types import JSON
+from sqlalchemy.types import JSON, TypeDecorator
 
 JSONList = JSONB().with_variant(JSON(), "sqlite")
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: object) -> datetime | None:
+        del dialect
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def process_result_value(self, value: datetime | None, dialect: object) -> datetime | None:
+        del dialect
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 def utc_now() -> datetime:
@@ -46,12 +68,12 @@ class Entity(Base):
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         nullable=False,
         default=utc_now,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         nullable=False,
         default=utc_now,
         onupdate=utc_now,
@@ -117,7 +139,7 @@ class EntityAttribute(Base):
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     confidence: Mapped[str] = mapped_column(String(16), nullable=False)
     extracted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         nullable=False,
         default=utc_now,
     )
@@ -132,7 +154,6 @@ class EntityAttribute(Base):
 
 class RawPage(Base):
     __tablename__ = "raw_pages"
-    __table_args__ = (UniqueConstraint("entity_id", "source_url", name="uq_raw_page_entity_url"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     alum_name: Mapped[str] = mapped_column(
@@ -150,8 +171,13 @@ class RawPage(Base):
     source_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     page_title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     page_text: Mapped[str] = mapped_column(Text, nullable=False)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    parsed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    http_etag: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    http_last_modified: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    raw_html_gz: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     facts: Mapped[list[Fact]] = relationship(
         back_populates="raw_page",
@@ -193,7 +219,7 @@ class AlumniProfile(Base):
     past_companies: Mapped[list[str]] = mapped_column(JSONList, nullable=False, default=list)
     education: Mapped[list[str]] = mapped_column(JSONList, nullable=False, default=list)
     bio_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    last_parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_parsed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     discovered_via: Mapped[str] = mapped_column(String(255), nullable=False, default="seed")
     entity: Mapped[Entity | None] = relationship()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from hashlib import sha256
 from urllib.parse import quote
 
 from backend.db.store import Store
@@ -114,14 +115,27 @@ class Crawler:
         page_total = len(urls)
         for page_index, source_url in enumerate(urls, start=1):
             url = source_url.strip()
-            if self.store.raw_page_exists(alum_name, url, entity_id=entity_id):
+            latest = self.store.get_latest_raw_page_by_url(url)
+            page = self.fetcher.fetch(
+                url,
+                etag=latest.http_etag if latest else None,
+                last_modified=latest.http_last_modified if latest else None,
+            )
+            if page is not None and page.status_code == 304 and latest is not None:
+                raw_page = self.store.update_raw_page_fetch_metadata(
+                    latest.id,
+                    http_etag=page.etag,
+                    http_last_modified=page.last_modified,
+                    http_status=304,
+                )
                 emit(
                     ProgressEvent(
                         "page_skipped",
                         {
                             "name": alum_name,
                             "url": url,
-                            "reason": "already stored",
+                            "reason": "not modified",
+                            "raw_page_id": raw_page.id if raw_page else latest.id,
                             "page_index": page_index,
                             "page_total": page_total,
                         },
@@ -129,7 +143,6 @@ class Crawler:
                 )
                 continue
 
-            page = self.fetcher.fetch(url)
             if page is None or not page.text:
                 emit(
                     ProgressEvent(
@@ -144,12 +157,45 @@ class Crawler:
                 )
                 continue
 
+            content_hash = _content_sha256(page.raw_html)
+            if (
+                latest is not None
+                and latest.content_sha256
+                and latest.content_sha256 == content_hash
+            ):
+                raw_page = self.store.update_raw_page_fetch_metadata(
+                    latest.id,
+                    http_etag=page.etag,
+                    http_last_modified=page.last_modified,
+                    http_status=page.status_code,
+                )
+                emit(
+                    ProgressEvent(
+                        "page_skipped",
+                        {
+                            "name": alum_name,
+                            "url": url,
+                            "reason": "unchanged content",
+                            "raw_page_id": raw_page.id if raw_page else latest.id,
+                            "page_index": page_index,
+                            "page_total": page_total,
+                        },
+                    )
+                )
+                continue
+
             raw_page = self.store.save_raw_page(
                 alum_name=alum_name,
                 entity_id=entity_id,
                 source_url=page.url,
                 page_title=page.title,
                 page_text=page.text,
+                content_sha256=content_hash,
+                http_etag=page.etag,
+                http_last_modified=page.last_modified,
+                http_status=page.status_code,
+                raw_html=page.raw_html,
+                allow_duplicate_snapshot=latest is not None,
             )
             fetched += 1
             emit(
@@ -223,3 +269,9 @@ class Crawler:
             if len(unique) >= limit:
                 break
         return unique
+
+
+def _content_sha256(raw_html: str) -> str | None:
+    if not raw_html:
+        return None
+    return sha256(raw_html.encode("utf-8")).hexdigest()
