@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 
 import asyncio
 import csv
@@ -14,35 +13,14 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
 from pydantic import BaseModel, Field
-
-
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
-import secrets
-from fastapi import Cookie, HTTPException
 
 from backend.audit import (
     AdminLoginRequest,
     audit_events_response,
     install_audit_middleware,
+    is_admin_request,
     login_admin,
 )
 from backend.config import get_settings
@@ -70,10 +48,20 @@ logger = logging.getLogger(__name__)
 DONE_SENTINEL = "__done__"
 
 
-class QueryRequest(BaseModel):
-    question: str
-    mode: Literal["strict", "deep"] = Field(default="strict")
+# ---------- request models ----------
 
+class LookupRequest(BaseModel):
+    name: str | None = None
+    company: str | None = None
+    class_year: str | None = None
+
+
+class ResearchRequest(BaseModel):
+    question: str
+    mode: Literal["strict", "deep"] = Field(default="deep")
+
+
+# ---------- background job plumbing ----------
 
 @dataclass
 class StageJob:
@@ -81,81 +69,6 @@ class StageJob:
     queue: queue.Queue[ProgressEvent | str] = field(default_factory=queue.Queue)
     running: bool = False
     thread: threading.Thread | None = None
-
-
-def load_alumni_csv(path: Path) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        records: list[dict[str, str]] = []
-        for row in reader:
-            name = row["name"].strip()
-            class_year = row["class_year"].strip()
-            if not name or name.lower() == "name":
-                continue
-            records.append({"name": name, "class_year": class_year})
-        return records
-
-
-def build_fetcher() -> PageFetcher:
-    settings = get_settings()
-    if settings.use_mock_fetch:
-        return MockPageFetcher()
-    return PageFetcher()
-
-
-def build_parser() -> Parser:
-    settings = get_settings()
-    if settings.use_mock_extract:
-        extractor = MockExtractionClient()
-        validator = MockValidationClient()
-        synthesizer = MockSynthesisClient()
-    else:
-        extractor = OpenAIExtractionClient(api_key=settings.openai_api_key, model="gpt-5.4-mini")
-        validator = OpenAIValidationClient(api_key=settings.openai_api_key, model="gpt-5.4-mini")
-        synthesizer = OpenAISynthesisClient(api_key=settings.openai_api_key, model="gpt-5.4")
-    return Parser(
-        store=store,
-        extractor=extractor,
-        validator=validator,
-        synthesizer=synthesizer,
-    )
-
-
-def build_query_client(mode: Literal["strict", "deep"]) -> QueryClient:
-    settings = get_settings()
-    if mode == "deep":
-        if settings.use_mock_query:
-            return MockDeepQueryClient(store)
-        return DeepQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.5")
-
-    if settings.use_mock_query:
-        return MockQueryClient(store)
-    return OpenAIQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.4-mini")
-
-
-app = FastAPI(title="Pinegraf")
-
-class LoginRequest(BaseModel):
-    password: str
-
-class LookupRequest(BaseModel):
-    name: str | None = None
-    company: str | None = None
-    class_year: str | None = None
-
-class ResearchRequest(BaseModel):
-    question: str
-    mode: Literal["strict", "deep"] = Field(default="deep")
-
-settings = get_settings()
-store = Store(settings.database_url)
-store.init_db()
-if store.is_sqlite:
-    logger.warning(SQLITE_WARNING)
-install_audit_middleware(app, store)
-
-crawl_job = StageJob("crawl")
-parse_job = StageJob("parse")
 
 
 def _reset_job(job: StageJob) -> None:
@@ -202,13 +115,197 @@ async def _event_generator(job: StageJob) -> AsyncIterator[bytes]:
         yield f"data: {payload}\n\n".encode("utf-8")
 
 
-@app.post("/crawl/start")
-async def crawl_start() -> dict[str, str]:
+# ---------- builders ----------
+
+def load_alumni_csv(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        records: list[dict[str, str]] = []
+        for row in reader:
+            name = row["name"].strip()
+            class_year = row.get("class_year", "").strip()
+            if not name or name.lower() == "name":
+                continue
+            records.append({"name": name, "class_year": class_year})
+        return records
+
+
+def build_fetcher() -> PageFetcher:
     settings = get_settings()
-    seed_urls = list(getattr(settings, "crawl_seed_urls", []) or [])
-    sitemap_urls = list(getattr(settings, "crawl_sitemap_urls", []) or [])
-    allowed_domains = list(getattr(settings, "crawl_allowed_domains", []) or [])
-    max_pages = getattr(settings, "crawl_max_pages", 500)
+    if settings.use_mock_fetch:
+        return MockPageFetcher()
+    return PageFetcher()
+
+
+def build_parser() -> Parser:
+    settings = get_settings()
+    if settings.use_mock_extract:
+        return Parser(
+            store=store,
+            extractor=MockExtractionClient(),
+            validator=MockValidationClient(),
+            synthesizer=MockSynthesisClient(),
+        )
+    return Parser(
+        store=store,
+        extractor=OpenAIExtractionClient(api_key=settings.openai_api_key, model="gpt-5.4-mini"),
+        validator=OpenAIValidationClient(api_key=settings.openai_api_key, model="gpt-5.4-mini"),
+        synthesizer=OpenAISynthesisClient(api_key=settings.openai_api_key, model="gpt-5.4"),
+    )
+
+
+def build_query_client(mode: Literal["strict", "deep"]) -> QueryClient:
+    settings = get_settings()
+    if mode == "deep":
+        if settings.use_mock_query:
+            return MockDeepQueryClient(store)
+        return DeepQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.5")
+    if settings.use_mock_query:
+        return MockQueryClient(store)
+    return OpenAIQueryClient(store=store, api_key=settings.openai_api_key, model="gpt-5.4-mini")
+
+
+# ---------- app bootstrap ----------
+
+app = FastAPI(title="Pinegraf")
+settings = get_settings()
+store = Store(settings.database_url)
+store.init_db()
+if store.is_sqlite:
+    logger.warning(SQLITE_WARNING)
+install_audit_middleware(app, store)
+
+crawl_job = StageJob("crawl")
+parse_job = StageJob("parse")
+
+
+# ---------- auth helpers ----------
+
+def _require_admin(request: Request) -> None:
+    if not is_admin_request(request):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="admin auth required")
+
+
+# ---------- public read endpoints ----------
+
+@app.get("/profiles")
+async def list_profiles() -> dict[str, object]:
+    return {
+        "profiles": [
+            {
+                "name": p.name,
+                "entity_id": str(p.entity_id) if p.entity_id else None,
+                "class_year": p.class_year,
+                "current_company": p.current_company,
+                "current_title": p.current_title,
+                "past_companies": p.past_companies,
+                "education": p.education,
+                "bio_summary": p.bio_summary,
+                "discovered_via": p.discovered_via,
+                "last_parsed_at": p.last_parsed_at.isoformat() if p.last_parsed_at else None,
+            }
+            for p in store.list_profiles()
+        ]
+    }
+
+
+@app.get("/connections")
+async def list_connections() -> dict[str, object]:
+    return {"connections": store.database_context(verdicts=KEEP_VERDICTS)["connections"]}
+
+
+@app.get("/projects")
+async def list_projects() -> dict[str, object]:
+    return {"projects": store.database_context(verdicts=KEEP_VERDICTS)["projects"]}
+
+
+@app.get("/facts")
+async def list_facts() -> dict[str, object]:
+    return {"facts": store.database_context(verdicts=KEEP_VERDICTS)["facts"]}
+
+
+# ---------- user-facing endpoints ----------
+
+@app.post("/lookup")
+async def lookup(payload: LookupRequest) -> dict[str, object]:
+    name_q = (payload.name or "").strip().lower()
+    company_q = (payload.company or "").strip().lower()
+    year_q = (payload.class_year or "").strip().lower()
+
+    def matches(p) -> bool:
+        if name_q and name_q not in (p.name or "").lower():
+            return False
+        if company_q:
+            haystack = " ".join(
+                [(p.current_company or ""), " ".join(p.past_companies or [])]
+            ).lower()
+            if company_q not in haystack:
+                return False
+        if year_q and year_q not in (p.class_year or "").lower():
+            return False
+        return True
+
+    matched = [p for p in store.list_profiles() if matches(p)]
+    return {
+        "count": len(matched),
+        "results": [
+            {
+                "name": p.name,
+                "class_year": p.class_year,
+                "current_company": p.current_company,
+                "current_title": p.current_title,
+                "past_companies": p.past_companies,
+                "education": p.education,
+                "bio_summary": p.bio_summary,
+            }
+            for p in matched
+        ],
+    }
+
+
+@app.post("/research")
+async def research(payload: ResearchRequest) -> dict[str, str]:
+    answer = build_query_client(payload.mode).answer_question(payload.question)
+    return {"answer": answer.answer, "mode": payload.mode}
+
+
+# ---------- admin endpoints ----------
+
+@app.post("/admin/login")
+async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
+    return login_admin(payload, response)
+
+
+@app.post("/admin/logout")
+async def admin_logout(response: Response) -> dict[str, str]:
+    from backend.audit import ADMIN_COOKIE_NAME
+    response.delete_cookie(ADMIN_COOKIE_NAME)
+    return {"status": "ok"}
+
+
+@app.get("/admin/me")
+async def admin_me(request: Request) -> dict[str, bool]:
+    return {"authenticated": is_admin_request(request)}
+
+
+@app.get("/admin/alumni-count")
+async def admin_alumni_count(request: Request) -> dict[str, int]:
+    _require_admin(request)
+    alumni = load_alumni_csv(Path("data/alumni.csv"))
+    return {"count": len(alumni)}
+
+
+@app.post("/admin/crawl/start")
+async def admin_crawl_start(request: Request) -> dict[str, str]:
+    _require_admin(request)
+    cfg = get_settings()
+    seed_urls = list(cfg.crawl_seed_urls or [])
+    sitemap_urls = list(cfg.crawl_sitemap_urls or [])
+    allowed_domains = list(cfg.crawl_allowed_domains or [])
+    max_pages = cfg.crawl_max_pages
 
     def target(emit: Callable[[ProgressEvent], None]) -> None:
         fetcher = build_fetcher()
@@ -229,130 +326,6 @@ async def crawl_start() -> dict[str, str]:
     return {"status": _start_job(crawl_job, target)}
 
 
-@app.get("/crawl/stream")
-async def crawl_stream() -> StreamingResponse:
-    return StreamingResponse(_event_generator(crawl_job), media_type="text/event-stream")
-
-
-@app.post("/parse/start")
-async def parse_start(force: bool = False) -> dict[str, str | bool]:
-    def target(emit: Callable[[ProgressEvent], None]) -> None:
-        parser = build_parser()
-        parser.run(emit, force=force)
-
-    return {"status": _start_job(parse_job, target), "force": force}
-
-
-@app.get("/parse/stream")
-async def parse_stream() -> StreamingResponse:
-    return StreamingResponse(_event_generator(parse_job), media_type="text/event-stream")
-
-
-@app.get("/alumni-count")
-async def alumni_count() -> dict[str, int]:
-    alumni = load_alumni_csv(Path("data/alumni.csv"))
-    return {"count": len(alumni)}
-
-
-@app.get("/profiles")
-async def list_profiles() -> dict[str, object]:
-    return {
-        "profiles": [
-            {
-                "name": profile.name,
-                "entity_id": str(profile.entity_id) if profile.entity_id else None,
-                "class_year": profile.class_year,
-                "current_company": profile.current_company,
-                "current_title": profile.current_title,
-                "past_companies": profile.past_companies,
-                "education": profile.education,
-                "bio_summary": profile.bio_summary,
-                "discovered_via": profile.discovered_via,
-                "last_parsed_at": (
-                    profile.last_parsed_at.isoformat() if profile.last_parsed_at else None
-                ),
-            }
-            for profile in store.list_profiles()
-        ]
-    }
-
-
-@app.get("/connections")
-async def list_connections() -> dict[str, object]:
-    return {"connections": store.database_context(verdicts=KEEP_VERDICTS)["connections"]}
-
-
-@app.get("/projects")
-async def list_projects() -> dict[str, object]:
-    return {"projects": store.database_context(verdicts=KEEP_VERDICTS)["projects"]}
-
-
-@app.get("/facts")
-async def list_facts() -> dict[str, object]:
-    return {"facts": store.database_context(verdicts=KEEP_VERDICTS)["facts"]}
-
-
-@app.post("/query")
-async def query(payload: QueryRequest) -> dict[str, str]:
-    answer = build_query_client(payload.mode).answer_question(payload.question)
-    return {"answer": answer.answer, "mode": payload.mode}
-
-
-@app.post("/lookup")
-async def lookup(payload: LookupRequest) -> dict[str, object]:
-    profiles = store.list_profiles()
-    name_q = (payload.name or "").strip().lower()
-    company_q = (payload.company or "").strip().lower()
-    year_q = (payload.class_year or "").strip().lower()
-
-    def matches(p) -> bool:
-        if name_q and name_q not in (p.name or "").lower():
-            return False
-        if company_q:
-            haystack = " ".join([(p.current_company or ""), " ".join(p.past_companies or [])]).lower()
-            if company_q not in haystack:
-                return False
-        if year_q and year_q not in (p.class_year or "").lower():
-            return False
-        return True
-
-    matched = [p for p in profiles if matches(p)]
-    return {
-        "count": len(matched),
-        "results": [
-            {
-                "name": p.name,
-                "class_year": p.class_year,
-                "current_company": p.current_company,
-                "current_title": p.current_title,
-                "past_companies": p.past_companies,
-                "education": p.education,
-                "bio_summary": p.bio_summary,
-            }
-            for p in matched
-        ],
-    }
-
-
-
-
-@app.post("/admin/logout")
-async def admin_logout(response: Response, request: Request) -> dict[str, str]:
-    response.delete_cookie(ADMIN_COOKIE_NAME)
-    return {"status": "ok"}
-
-
-@app.get("/admin/me")
-async def admin_me(request: Request) -> dict[str, bool]:
-    return {"authenticated": _is_admin(request)}
-
-
-@app.post("/admin/crawl/start")
-async def admin_crawl_start(request: Request) -> dict[str, str]:
-    _require_admin(request)
-    return await crawl_start()
-
-
 @app.get("/admin/crawl/stream")
 async def admin_crawl_stream(request: Request) -> StreamingResponse:
     _require_admin(request)
@@ -362,7 +335,12 @@ async def admin_crawl_stream(request: Request) -> StreamingResponse:
 @app.post("/admin/parse/start")
 async def admin_parse_start(request: Request, force: bool = False) -> dict[str, str | bool]:
     _require_admin(request)
-    return await parse_start(force=force)
+
+    def target(emit: Callable[[ProgressEvent], None]) -> None:
+        parser = build_parser()
+        parser.run(emit, force=force)
+
+    return {"status": _start_job(parse_job, target), "force": force}
 
 
 @app.get("/admin/parse/stream")
@@ -371,16 +349,33 @@ async def admin_parse_stream(request: Request) -> StreamingResponse:
     return StreamingResponse(_event_generator(parse_job), media_type="text/event-stream")
 
 
-@app.get("/admin/alumni-count")
-async def admin_alumni_count(request: Request) -> dict[str, int]:
-    _require_admin(request)
-    return await alumni_count()
+@app.get("/admin/audit")
+async def admin_audit(
+    request: Request,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    actor: str | None = None,
+    action: str | None = None,
+    limit: int = 100,
+    before_id: int | None = None,
+) -> dict[str, object]:
+    return audit_events_response(
+        store=store,
+        request=request,
+        since=since,
+        until=until,
+        actor=actor,
+        action=action,
+        limit=limit,
+        before_id=before_id,
+    )
 
 
-@app.post("/research")
-async def research(payload: ResearchRequest) -> dict[str, str]:
-    answer = build_query_client(payload.mode).answer_question(payload.question)
-    return {"answer": answer.answer, "mode": payload.mode}
+# ---------- static frontends ----------
+
+@app.get("/")
+async def frontend_index() -> HTMLResponse:
+    return HTMLResponse(Path("frontend/index.html").read_text(encoding="utf-8"))
 
 
 @app.get("/admin")
@@ -388,50 +383,25 @@ async def frontend_admin() -> HTMLResponse:
     return HTMLResponse(Path("frontend/admin.html").read_text(encoding="utf-8"))
 
 
-@app.get("/admin.js")
-async def frontend_admin_js() -> Response:
-    return Response(Path("frontend/admin.js").read_text(encoding="utf-8"), media_type="application/javascript")
-
-
-# ---------- UI split additions ----------
-
-ADMIN_COOKIE_NAME = "pinegraf_admin"
-_admin_tokens: set[str] = set()
-
-
-
-
-
-
-
-
-def _is_admin(request: object) -> bool:
-    from backend.audit import is_admin_request
-    return is_admin_request(request)
-
-
-def _require_admin(request: object) -> None:
-    if not _is_admin(request):
-        raise HTTPException(status_code=401, detail='admin auth required')
-
-
-
-
-
-
-from backend.audit import AdminLoginRequest, login_admin as _audit_login_admin
-
-
-@app.post("/admin/login")
-async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
-    return _audit_login_admin(payload, response)
-
-
-@app.get("/")
-async def frontend_index() -> HTMLResponse:
-    return HTMLResponse(Path("frontend/index.html").read_text(encoding="utf-8"))
-
-
 @app.get("/app.js")
 async def frontend_app_js() -> Response:
-    return Response(Path("frontend/app.js").read_text(encoding="utf-8"), media_type="application/javascript")
+    return Response(
+        Path("frontend/app.js").read_text(encoding="utf-8"),
+        media_type="application/javascript",
+    )
+
+
+@app.get("/admin.js")
+async def frontend_admin_js() -> Response:
+    return Response(
+        Path("frontend/admin.js").read_text(encoding="utf-8"),
+        media_type="application/javascript",
+    )
+
+
+@app.get("/favicon.svg")
+async def frontend_favicon() -> Response:
+    return Response(
+        Path("frontend/favicon.svg").read_text(encoding="utf-8"),
+        media_type="image/svg+xml",
+    )
