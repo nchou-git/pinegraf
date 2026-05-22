@@ -4,10 +4,10 @@ import asyncio
 import os
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 
@@ -16,12 +16,10 @@ from backend.pipeline.page_fetcher import (
     FETCH_TIMEOUT,
     USER_AGENT,
     FetchedPage,
-    MockPageFetcher,
     PageFetcher,
     clean_html,
     should_fetch_url,
 )
-from backend.resolution.entity_resolver import resolve_or_create
 
 
 @dataclass
@@ -46,13 +44,11 @@ class SiteCrawler:
         *,
         store: Store,
         fetcher: PageFetcher | None = None,
-        pages_per_alum: int = 6,
         global_concurrency: int | None = None,
         per_host_concurrency: int | None = None,
     ) -> None:
         self.store = store
         self.fetcher = fetcher
-        self.pages_per_alum = pages_per_alum
         self.global_concurrency = global_concurrency or int(
             os.getenv("CRAWL_GLOBAL_CONCURRENCY", "50")
         )
@@ -68,133 +64,6 @@ class SiteCrawler:
         self._seen_content_hashes: set[str] = set()
         self._seen_content_lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = None
-
-    async def run(
-        self,
-        seed_alumni: list[dict[str, str]],
-        emit: Callable[[ProgressEvent], None],
-    ) -> None:
-        total = len(seed_alumni)
-        done = 0
-        emit(ProgressEvent("crawl_start", {"overall_total": total, "overall_done": done}))
-
-        async with httpx.AsyncClient(
-            timeout=FETCH_TIMEOUT,
-            follow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
-            http2=True,
-        ) as client:
-            self._client = client
-            for index, alum in enumerate(seed_alumni, start=1):
-                name = alum["name"].strip()
-                class_year = alum.get("class_year", "").strip()
-                if not name:
-                    continue
-
-                entity_id = self._resolve_seed_entity(name, class_year)
-                self.store.enqueue_crawl(name, class_year, depth=0, discovered_via="seed")
-                self.store.mark_crawl_status(name, "running", class_year=class_year)
-                self.store.upsert_profile(
-                    name=name,
-                    entity_id=entity_id,
-                    class_year=class_year,
-                    discovered_via="seed",
-                )
-                emit(
-                    ProgressEvent(
-                        "alum_start",
-                        {
-                            "name": name,
-                            "class_year": class_year,
-                            "alum_index": index,
-                            "overall_total": total,
-                            "overall_done": done,
-                        },
-                    )
-                )
-
-                try:
-                    urls = self._seed_urls(alum, name=name)
-                    fetched = await self._crawl_urls(name, entity_id, urls, emit)
-                    self.store.mark_crawl_status(name, "done", class_year=class_year)
-                    done += 1
-                    emit(
-                        ProgressEvent(
-                            "alum_done",
-                            {
-                                "name": name,
-                                "class_year": class_year,
-                                "pages_fetched": fetched,
-                                "page_total": len(urls),
-                                "overall_total": total,
-                                "overall_done": done,
-                            },
-                        )
-                    )
-                except Exception as exc:
-                    self.store.mark_crawl_status(name, "failed", class_year=class_year)
-                    done += 1
-                    emit(
-                        ProgressEvent(
-                            "alum_done",
-                            {
-                                "name": name,
-                                "class_year": class_year,
-                                "error": f"{type(exc).__name__}: {exc}",
-                                "overall_total": total,
-                                "overall_done": done,
-                            },
-                        )
-                    )
-            self._client = None
-
-        emit(ProgressEvent("done", {"overall_total": total, "overall_done": done}))
-
-    async def _crawl_urls(
-        self,
-        alum_name: str,
-        entity_id: uuid.UUID,
-        urls: list[str],
-        emit: Callable[[ProgressEvent], None],
-    ) -> int:
-        results = {"fetched": 0}
-        queue: asyncio.Queue[CrawlTask] = asyncio.Queue()
-        page_total = len(urls)
-        for page_index, source_url in enumerate(urls, start=1):
-            await queue.put(
-                CrawlTask(
-                    alum_name=alum_name,
-                    entity_id=entity_id,
-                    url=source_url.strip(),
-                    page_index=page_index,
-                    page_total=page_total,
-                )
-            )
-
-        worker_count = min(max(1, self.global_concurrency), max(1, page_total))
-        workers = [
-            asyncio.create_task(self._worker(queue, emit, results)) for _ in range(worker_count)
-        ]
-        await queue.join()
-        for worker in workers:
-            worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
-        return results["fetched"]
-
-    async def _worker(
-        self,
-        queue: asyncio.Queue[CrawlTask],
-        emit: Callable[[ProgressEvent], None],
-        results: dict[str, int],
-    ) -> None:
-        while True:
-            task = await queue.get()
-            try:
-                if await self._crawl_url(task, emit):
-                    results["fetched"] += 1
-            finally:
-                queue.task_done()
-
 
     async def run_sitemap(
         self,
@@ -546,64 +415,6 @@ class SiteCrawler:
                 return True
             self._seen_content_hashes.add(content_hash)
             return False
-
-    def _resolve_seed_entity(self, name: str, class_year: str) -> uuid.UUID:
-        context = {"source": "seed_csv"}
-        if class_year:
-            context["class_year"] = class_year
-        with self.store.session() as session:
-            entity_id = resolve_or_create(name, session=session, context=context)
-            session.commit()
-            return entity_id
-
-    def _seed_urls(self, alum: dict[str, str], *, name: str) -> list[str]:
-        urls = self._unique_urls(self._iter_seed_urls(alum), limit=self.pages_per_alum)
-        if urls or not isinstance(self.fetcher, MockPageFetcher):
-            return urls
-        slug = quote("-".join(name.lower().split()))
-        return [f"https://example.com/{slug}/profile"]
-
-    @staticmethod
-    def _iter_seed_urls(alum: dict[str, object]) -> Iterable[str]:
-        for key in ("source_url", "profile_url", "url"):
-            value = alum.get(key)
-            if isinstance(value, str):
-                for part in value.replace(";", ",").split(","):
-                    cleaned = part.strip()
-                    if cleaned:
-                        yield cleaned
-            elif isinstance(value, Iterable):
-                for item in value:
-                    cleaned = str(item).strip()
-                    if cleaned:
-                        yield cleaned
-
-        value = alum.get("urls")
-        if isinstance(value, str):
-            for part in value.replace(";", ",").split(","):
-                cleaned = part.strip()
-                if cleaned:
-                    yield cleaned
-        elif isinstance(value, Iterable):
-            for item in value:
-                cleaned = str(item).strip()
-                if cleaned:
-                    yield cleaned
-
-    @staticmethod
-    def _unique_urls(urls: Iterable[str], *, limit: int) -> list[str]:
-        seen_urls: set[str] = set()
-        unique: list[str] = []
-        for url_value in urls:
-            url = url_value.strip()
-            if not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            unique.append(url)
-            if len(unique) >= limit:
-                break
-        return unique
-
 
 def _content_sha256(raw_html: str) -> str | None:
     if not raw_html:
