@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pinegraf</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      :root {
+        color-scheme: light;
+        --accent: #00693e;
+        --accent-dark: #00543a;
+        --bg: #f7faf8;
+        --border: #d8e2dd;
+        --muted: #5e6d66;
+        --panel: #ffffff;
+        --text: #10221a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+
+      .shell {
+        width: min(100%, 1080px);
+        margin: 0 auto;
+        padding: 36px 24px 56px;
+      }
+
+      .app-header {
+        margin-bottom: 26px;
+      }
+
+      .brand-row {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+
+      .pine-logo {
+        display: block;
+        flex: 0 0 auto;
+        width: 44px;
+        height: 48px;
+        align-self: flex-end;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: clamp(2rem, 5vw, 3.2rem);
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 1.28rem;
+        line-height: 1.25;
+      }
+
+      h3 {
+        font-size: 0.95rem;
+        line-height: 1.35;
+      }
+
+      .tagline {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 1.08rem;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 16px 36px rgba(16, 34, 26, 0.08);
+      }
+
+      .stage-card,
+      .ask-card {
+        padding: 24px;
+      }
+
+      .section-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 22px;
+      }
+
+      .queue-count {
+        margin-top: 10px;
+        color: var(--accent);
+        font-size: clamp(1.25rem, 3vw, 1.75rem);
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+
+      button {
+        appearance: none;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 750;
+        min-height: 42px;
+        padding: 0 18px;
+        transition:
+          background-color 0.16s ease,
+          border-color 0.16s ease,
+          color 0.16s ease,
+          transform 0.16s ease,
+          box-shadow 0.16s ease;
+      }
+
+      button:not(:disabled):hover {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .button-primary {
+        background: var(--accent);
+        color: #ffffff;
+        box-shadow: 0 10px 20px rgba(0, 105, 62, 0.2);
+      }
+
+      .button-primary:not(:disabled):hover {
+        background: var(--accent-dark);
+      }
+
+      .button-secondary {
+        background: #ffffff;
+        border-color: #b8c8c0;
+        color: #244036;
+      }
+
+      .button-secondary:not(:disabled):hover {
+        border-color: #79948a;
+        color: #10221a;
+      }
+
+      .progress-stack {
+        display: grid;
+        gap: 18px;
+      }
+
+      .progress-group {
+        display: grid;
+        gap: 9px;
+      }
+
+      .progress-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 0.92rem;
+        overflow-wrap: anywhere;
+        text-align: right;
+      }
+
+      .progress-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 52px;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .bar {
+        background: #dce7e2;
+        border-radius: 999px;
+        height: 14px;
+        overflow: hidden;
+      }
+
+      .bar > div {
+        background: var(--accent);
+        border-radius: inherit;
+        height: 100%;
+        width: 0%;
+        transition: width 0.35s ease;
+      }
+
+      .percent {
+        color: #244036;
+        font-variant-numeric: tabular-nums;
+        font-weight: 800;
+        text-align: right;
+      }
+
+      .summary-strip {
+        margin-top: 18px;
+        border: 1px solid #9cc8b4;
+        border-radius: 8px;
+        background: #edf7f2;
+        color: #104b33;
+        font-weight: 800;
+        padding: 14px 16px;
+      }
+
+      .summary-strip[hidden] {
+        display: none;
+      }
+
+      #log {
+        margin-top: 22px;
+        padding: 16px;
+        border-radius: 8px;
+        height: 260px;
+        overflow-y: auto;
+        background: #10221a;
+        color: #e2eee9;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          monospace;
+        font-size: 0.86rem;
+        line-height: 1.55;
+      }
+
+      #log:empty::before {
+        color: #9fb1aa;
+        content: "Stage logs will appear here.";
+      }
+
+      #log div {
+        padding: 1px 0;
+      }
+
+      .log-ok {
+        color: #9be3be;
+      }
+
+      .log-event {
+        color: #dce7e2;
+      }
+
+      .log-error {
+        color: #ffaca3;
+      }
+
+      .ask-card {
+        margin-top: 28px;
+      }
+
+      .query-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 12px;
+        margin-top: 16px;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        min-height: 42px;
+        border: 1px solid #b8c8c0;
+        border-radius: 8px;
+        color: var(--text);
+        font: inherit;
+        padding: 0 14px;
+      }
+
+      input[type="text"]:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(0, 105, 62, 0.15);
+        outline: none;
+      }
+
+      .mode-toggle {
+        display: inline-grid;
+        grid-template-columns: 1fr 1fr;
+        border: 1px solid #b8c8c0;
+        border-radius: 8px;
+        overflow: hidden;
+        min-height: 42px;
+      }
+
+      .mode-toggle label {
+        align-items: center;
+        cursor: pointer;
+        display: flex;
+        font-weight: 800;
+        justify-content: center;
+        min-width: 76px;
+        padding: 0 12px;
+      }
+
+      .mode-toggle input {
+        appearance: none;
+        position: absolute;
+      }
+
+      .mode-toggle label:has(input:checked) {
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .query-progress {
+        margin-top: 14px;
+        opacity: 0;
+        transition: opacity 0.28s ease;
+      }
+
+      .query-progress.active {
+        opacity: 1;
+      }
+
+      #answer {
+        margin-top: 16px;
+        min-height: 56px;
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #f8fbf9;
+        white-space: pre-wrap;
+      }
+
+      @media (max-width: 760px) {
+        .shell {
+          padding: 28px 16px 40px;
+        }
+
+        .section-top,
+        .progress-heading {
+          display: grid;
+        }
+
+        .actions {
+          justify-content: stretch;
+        }
+
+        .actions button {
+          flex: 1 1 120px;
+        }
+
+        .meta {
+          text-align: left;
+        }
+
+        .query-row {
+          grid-template-columns: 1fr;
+        }
+
+        .mode-toggle {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="app-header">
+        <div class="brand-row">
+          <svg
+            class="pine-logo"
+            role="img"
+            aria-label="Pinegraf logo"
+            viewBox="0 0 48 48"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <polygon points="24 4 12 20 36 20" fill="#00693e" />
+            <polygon points="24 14 8 32 40 32" fill="#00693e" />
+            <polygon points="24 25 6 42 42 42" fill="#00693e" />
+            <rect x="21" y="39" width="6" height="7" rx="1" fill="#00693e" />
+          </svg>
+          <h1>Pinegraf</h1>
+        </div>
+        <p class="tagline">Where alumni stories connect.</p>
+      </header>
+
+      <section class="card stage-card" aria-labelledby="stageHeading">
+        <div class="section-top">
+          <div>
+            <h2 id="stageHeading">Pipeline</h2>
+            <p id="queueCount" class="queue-count">Loading alumni queue...</p>
+          </div>
+          <div class="actions" aria-label="Pipeline controls">
+            <button id="crawlBtn" class="button-primary" type="button" disabled>Crawl</button>
+            <button id="parseBtn" class="button-primary" type="button" disabled>Parse</button>
+            <button id="stopBtn" class="button-secondary" type="button" disabled>Stop</button>
+          </div>
+        </div>
+
+        <div class="progress-stack">
+          <section class="progress-group" aria-label="Overall stage progress">
+            <div class="progress-heading">
+              <h3>Overall</h3>
+              <div class="meta" id="overallMeta">Idle</div>
+            </div>
+            <div class="progress-row">
+              <div class="bar"><div id="overallBar"></div></div>
+              <div id="overallPct" class="percent">0%</div>
+            </div>
+          </section>
+
+          <section class="progress-group" aria-label="Current alum progress">
+            <div class="progress-heading">
+              <h3>Current Alum</h3>
+              <div class="meta" id="alumMeta">Current alum: none</div>
+            </div>
+            <div class="progress-row">
+              <div class="bar"><div id="alumBar"></div></div>
+              <div id="alumPct" class="percent">0%</div>
+            </div>
+          </section>
+
+          <section class="progress-group" aria-label="Current page progress">
+            <div class="progress-heading">
+              <h3>Current Page</h3>
+              <div class="meta" id="pageMeta">Current page: none</div>
+            </div>
+            <div class="progress-row">
+              <div class="bar"><div id="pageBar"></div></div>
+              <div id="pagePct" class="percent">0%</div>
+            </div>
+          </section>
+        </div>
+
+        <div id="summaryCard" class="summary-strip" hidden></div>
+        <div id="log"></div>
+      </section>
+
+      <section class="card ask-card" aria-labelledby="askHeading">
+        <h2 id="askHeading">Ask</h2>
+        <div class="query-row">
+          <input id="question" type="text" placeholder="Who worked on the gyrobike project?" />
+          <div class="mode-toggle" aria-label="Query mode">
+            <label><input type="radio" name="queryMode" value="strict" checked />Strict</label>
+            <label><input type="radio" name="queryMode" value="deep" />Deep</label>
+          </div>
+          <button id="queryBtn" class="button-primary" type="button">Ask</button>
+        </div>
+        <div id="queryProgress" class="query-progress">
+          <div class="progress-row">
+            <div class="bar"><div id="queryBar"></div></div>
+            <div id="queryPct" class="percent">0%</div>
+          </div>
+        </div>
+        <div id="answer">Answer will appear here.</div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

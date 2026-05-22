@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pinegraf admin</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      :root { color-scheme: light; --accent: #00693e; --accent-dark: #00543a; --bg: #f7faf8; --border: #d8e2dd; --muted: #5e6d66; --panel: #ffffff; --text: #10221a; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      .shell { width: min(100%, 1080px); margin: 0 auto; padding: 36px 24px 56px; }
+      .app-header { margin-bottom: 26px; display: flex; align-items: center; justify-content: space-between; }
+      .brand-row { display: flex; align-items: baseline; gap: 12px; }
+      .pine-logo { width: 44px; height: 48px; }
+      h1, h2, p { margin: 0; }
+      h1 { font-size: clamp(1.6rem, 4vw, 2.4rem); }
+      h2 { font-size: 1.18rem; }
+      .tag { color: var(--muted); font-size: 0.9rem; }
+      .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 16px 36px rgba(16, 34, 26, 0.08); padding: 24px; margin-bottom: 18px; }
+      input[type="password"] { width: 100%; min-height: 42px; border: 1px solid #b8c8c0; border-radius: 8px; font: inherit; padding: 0 14px; }
+      button { appearance: none; border: 1px solid transparent; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 750; min-height: 42px; padding: 0 18px; }
+      button.primary { background: var(--accent); color: #fff; }
+      button.primary:not(:disabled):hover { background: var(--accent-dark); }
+      button.secondary { background: #fff; border-color: #b8c8c0; color: #244036; }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .login-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; max-width: 480px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+      #log { margin-top: 16px; padding: 14px; border-radius: 8px; height: 320px; overflow-y: auto; background: #10221a; color: #e2eee9; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.86rem; line-height: 1.55; }
+      #log div { padding: 1px 0; }
+      .log-ok { color: #9be3be; } .log-err { color: #ffaca3; } .log-evt { color: #dce7e2; }
+      .err { color: #b03126; font-size: 0.92rem; margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="app-header">
+        <div class="brand-row">
+          <svg class="pine-logo" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="24 4 12 20 36 20" fill="#00693e" />
+            <polygon points="24 14 8 32 40 32" fill="#00693e" />
+            <polygon points="24 25 6 42 42 42" fill="#00693e" />
+            <rect x="21" y="39" width="6" height="7" rx="1" fill="#00693e" />
+          </svg>
+          <h1>Pinegraf admin</h1>
+        </div>
+        <a class="tag" href="/">&larr; back to site</a>
+      </header>
+      <section id="login-card" class="card" hidden>
+        <h2>Sign in</h2>
+        <p class="tag" style="margin: 8px 0 14px;">Enter the admin password.</p>
+        <div class="login-row">
+          <input id="pw" type="password" placeholder="Password" />
+          <button id="login-btn" class="primary" type="button">Sign in</button>
+        </div>
+        <div id="login-err" class="err"></div>
+      </section>
+      <section id="admin-card" class="card" hidden>
+        <div style="display: flex; justify-content: space-between; align-items: baseline;">
+          <h2>Pipeline</h2>
+          <button id="logout-btn" class="secondary" type="button">Sign out</button>
+        </div>
+        <p class="tag" id="queue-info" style="margin-top: 6px;">Loading queue&hellip;</p>
+        <div class="actions">
+          <button id="crawl-btn" class="primary" type="button">Crawl</button>
+          <button id="parse-btn" class="primary" type="button">Parse</button>
+          <button id="stop-btn" class="secondary" type="button" disabled>Stop</button>
+        </div>
+        <div id="log"></div>
+      </section>
+    </main>
+    <script src="/admin.js"></script>
+  </body>
+</html>

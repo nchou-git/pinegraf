@@ -22,7 +22,6 @@ class Settings(BaseModel):
     use_mock_extract: bool = Field(default=True)
     use_mock_query: bool = Field(default=True)
     use_mock_fetch: bool = Field(default=True)
-    crawl_pages_per_alum: int = Field(default=6, ge=1)
 
     @field_validator(
         "use_mock_extract",
@@ -53,7 +52,6 @@ def get_settings() -> Settings:
             use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
             use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
             use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),
-            crawl_pages_per_alum=int(os.getenv("CRAWL_PAGES_PER_ALUM", "6")),
         )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc

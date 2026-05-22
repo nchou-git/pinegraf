@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import asyncio
 import csv
@@ -13,8 +14,30 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Request
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
 from pydantic import BaseModel, Field
+
+
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
+import secrets
+from fastapi import Cookie, HTTPException
 
 from backend.audit import (
     AdminLoginRequest,
@@ -24,7 +47,7 @@ from backend.audit import (
 )
 from backend.config import get_settings
 from backend.db.store import KEEP_VERDICTS, SQLITE_WARNING, Store
-from backend.pipeline.crawler import Crawler, ProgressEvent
+from backend.pipeline.crawler import ProgressEvent, SiteCrawler
 from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher
 from backend.pipeline.parser import (
     MockExtractionClient,
@@ -111,6 +134,19 @@ def build_query_client(mode: Literal["strict", "deep"]) -> QueryClient:
 
 
 app = FastAPI(title="Pinegraf")
+
+class LoginRequest(BaseModel):
+    password: str
+
+class LookupRequest(BaseModel):
+    name: str | None = None
+    company: str | None = None
+    class_year: str | None = None
+
+class ResearchRequest(BaseModel):
+    question: str
+    mode: Literal["strict", "deep"] = Field(default="deep")
+
 settings = get_settings()
 store = Store(settings.database_url)
 store.init_db()
@@ -168,17 +204,25 @@ async def _event_generator(job: StageJob) -> AsyncIterator[bytes]:
 
 @app.post("/crawl/start")
 async def crawl_start() -> dict[str, str]:
-    alumni = load_alumni_csv(Path("data/alumni.csv"))
+    settings = get_settings()
+    seed_urls = list(getattr(settings, "crawl_seed_urls", []) or [])
+    sitemap_urls = list(getattr(settings, "crawl_sitemap_urls", []) or [])
+    allowed_domains = list(getattr(settings, "crawl_allowed_domains", []) or [])
+    max_pages = getattr(settings, "crawl_max_pages", 500)
 
     def target(emit: Callable[[ProgressEvent], None]) -> None:
         fetcher = build_fetcher()
         try:
-            crawler = Crawler(
-                store=store,
-                fetcher=fetcher,
-                pages_per_alum=get_settings().crawl_pages_per_alum,
+            crawler = SiteCrawler(store=store, fetcher=fetcher)
+            asyncio.run(
+                crawler.run_sitemap(
+                    emit,
+                    seed_urls=seed_urls,
+                    sitemap_urls=sitemap_urls,
+                    allowed_domains=allowed_domains,
+                    max_pages=max_pages,
+                )
             )
-            crawler.run(alumni, emit)
         finally:
             fetcher.close()
 
@@ -255,35 +299,132 @@ async def query(payload: QueryRequest) -> dict[str, str]:
 
 
 @app.post("/lookup")
-async def lookup(payload: QueryRequest) -> dict[str, str]:
-    return await query(payload)
+async def lookup(payload: LookupRequest) -> dict[str, object]:
+    profiles = store.list_profiles()
+    name_q = (payload.name or "").strip().lower()
+    company_q = (payload.company or "").strip().lower()
+    year_q = (payload.class_year or "").strip().lower()
+
+    def matches(p) -> bool:
+        if name_q and name_q not in (p.name or "").lower():
+            return False
+        if company_q:
+            haystack = " ".join([(p.current_company or ""), " ".join(p.past_companies or [])]).lower()
+            if company_q not in haystack:
+                return False
+        if year_q and year_q not in (p.class_year or "").lower():
+            return False
+        return True
+
+    matched = [p for p in profiles if matches(p)]
+    return {
+        "count": len(matched),
+        "results": [
+            {
+                "name": p.name,
+                "class_year": p.class_year,
+                "current_company": p.current_company,
+                "current_title": p.current_title,
+                "past_companies": p.past_companies,
+                "education": p.education,
+                "bio_summary": p.bio_summary,
+            }
+            for p in matched
+        ],
+    }
+
+
+
+
+@app.post("/admin/logout")
+async def admin_logout(response: Response, request: Request) -> dict[str, str]:
+    response.delete_cookie(ADMIN_COOKIE_NAME)
+    return {"status": "ok"}
+
+
+@app.get("/admin/me")
+async def admin_me(request: Request) -> dict[str, bool]:
+    return {"authenticated": _is_admin(request)}
+
+
+@app.post("/admin/crawl/start")
+async def admin_crawl_start(request: Request) -> dict[str, str]:
+    _require_admin(request)
+    return await crawl_start()
+
+
+@app.get("/admin/crawl/stream")
+async def admin_crawl_stream(request: Request) -> StreamingResponse:
+    _require_admin(request)
+    return StreamingResponse(_event_generator(crawl_job), media_type="text/event-stream")
+
+
+@app.post("/admin/parse/start")
+async def admin_parse_start(request: Request, force: bool = False) -> dict[str, str | bool]:
+    _require_admin(request)
+    return await parse_start(force=force)
+
+
+@app.get("/admin/parse/stream")
+async def admin_parse_stream(request: Request) -> StreamingResponse:
+    _require_admin(request)
+    return StreamingResponse(_event_generator(parse_job), media_type="text/event-stream")
+
+
+@app.get("/admin/alumni-count")
+async def admin_alumni_count(request: Request) -> dict[str, int]:
+    _require_admin(request)
+    return await alumni_count()
+
+
+@app.post("/research")
+async def research(payload: ResearchRequest) -> dict[str, str]:
+    answer = build_query_client(payload.mode).answer_question(payload.question)
+    return {"answer": answer.answer, "mode": payload.mode}
+
+
+@app.get("/admin")
+async def frontend_admin() -> HTMLResponse:
+    return HTMLResponse(Path("frontend/admin.html").read_text(encoding="utf-8"))
+
+
+@app.get("/admin.js")
+async def frontend_admin_js() -> Response:
+    return Response(Path("frontend/admin.js").read_text(encoding="utf-8"), media_type="application/javascript")
+
+
+# ---------- UI split additions ----------
+
+ADMIN_COOKIE_NAME = "pinegraf_admin"
+_admin_tokens: set[str] = set()
+
+
+
+
+
+
+
+
+def _is_admin(request: object) -> bool:
+    from backend.audit import is_admin_request
+    return is_admin_request(request)
+
+
+def _require_admin(request: object) -> None:
+    if not _is_admin(request):
+        raise HTTPException(status_code=401, detail='admin auth required')
+
+
+
+
+
+
+from backend.audit import AdminLoginRequest, login_admin as _audit_login_admin
 
 
 @app.post("/admin/login")
 async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
-    return login_admin(payload, response)
-
-
-@app.get("/admin/audit")
-async def admin_audit(
-    request: Request,
-    since: datetime | None = None,
-    until: datetime | None = None,
-    actor: str | None = None,
-    action: str | None = None,
-    limit: int = 100,
-    before_id: int | None = None,
-) -> dict[str, object]:
-    return audit_events_response(
-        store=store,
-        request=request,
-        since=since,
-        until=until,
-        actor=actor,
-        action=action,
-        limit=limit,
-        before_id=before_id,
-    )
+    return _audit_login_admin(payload, response)
 
 
 @app.get("/")
@@ -292,16 +433,5 @@ async def frontend_index() -> HTMLResponse:
 
 
 @app.get("/app.js")
-async def frontend_app() -> Response:
-    return Response(
-        Path("frontend/app.js").read_text(encoding="utf-8"),
-        media_type="application/javascript",
-    )
-
-
-@app.get("/favicon.svg")
-async def frontend_favicon() -> Response:
-    return Response(
-        Path("frontend/favicon.svg").read_text(encoding="utf-8"),
-        media_type="image/svg+xml",
-    )
+async def frontend_app_js() -> Response:
+    return Response(Path("frontend/app.js").read_text(encoding="utf-8"), media_type="application/javascript")

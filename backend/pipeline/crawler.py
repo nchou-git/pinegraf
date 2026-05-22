@@ -195,6 +195,121 @@ class SiteCrawler:
             finally:
                 queue.task_done()
 
+
+    async def run_sitemap(
+        self,
+        emit: Callable[[ProgressEvent], None],
+        *,
+        seed_urls: list[str],
+        sitemap_urls: list[str],
+        allowed_domains: list[str],
+        max_pages: int,
+    ) -> None:
+        """Whole-site crawl from sitemap URLs and/or seed URLs.
+
+        Not per-alum. Pages get attributed to entities by the parser step.
+        """
+        import xml.etree.ElementTree as ET
+
+        emit(ProgressEvent("crawl_start", {"overall_total": 0, "overall_done": 0, "max_pages": max_pages}))
+
+        async with httpx.AsyncClient(
+            timeout=FETCH_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+            http2=True,
+        ) as client:
+            self._client = client
+
+            # Collect URLs from sitemaps
+            urls: list[str] = list(seed_urls)
+            for sm_url in sitemap_urls:
+                emit(ProgressEvent("sitemap_fetch", {"url": sm_url}))
+                try:
+                    resp = await client.get(sm_url, timeout=30.0)
+                    if resp.status_code != 200:
+                        emit(ProgressEvent("sitemap_failed", {"url": sm_url, "status": resp.status_code}))
+                        continue
+                    root = ET.fromstring(resp.text)
+                    ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+                    # Sitemap index? Recurse one level.
+                    for loc in root.findall(".//sm:sitemap/sm:loc", ns):
+                        if not loc.text:
+                            continue
+                        try:
+                            sub = await client.get(loc.text.strip(), timeout=30.0)
+                            if sub.status_code == 200:
+                                sub_root = ET.fromstring(sub.text)
+                                for u in sub_root.findall(".//sm:url/sm:loc", ns):
+                                    if u.text:
+                                        urls.append(u.text.strip())
+                        except Exception as exc:
+                            emit(ProgressEvent("sitemap_failed", {"url": loc.text, "error": str(exc)}))
+                    # Direct URL set
+                    for u in root.findall(".//sm:url/sm:loc", ns):
+                        if u.text:
+                            urls.append(u.text.strip())
+                except Exception as exc:
+                    emit(ProgressEvent("sitemap_failed", {"url": sm_url, "error": str(exc)}))
+
+            # Filter: allowed domains + dedup + cap
+            def allowed(u: str) -> bool:
+                if not allowed_domains:
+                    return True
+                host = urlparse(u).netloc.lower()
+                return any(host == d or host.endswith(f".{d}") for d in allowed_domains)
+
+            seen: set[str] = set()
+            final: list[str] = []
+            for u in urls:
+                if u in seen or not allowed(u) or not should_fetch_url(u):
+                    continue
+                seen.add(u)
+                final.append(u)
+                if len(final) >= max_pages:
+                    break
+
+            emit(ProgressEvent("crawl_planned", {"overall_total": len(final), "overall_done": 0}))
+
+            if not final:
+                emit(ProgressEvent("done", {"overall_total": 0, "overall_done": 0, "error": "no URLs to crawl"}))
+                return
+
+            # Feed into the existing worker pool
+            results = {"fetched": 0, "done": 0}
+            queue: asyncio.Queue[CrawlTask] = asyncio.Queue()
+            for idx, url in enumerate(final, start=1):
+                await queue.put(
+                    CrawlTask(
+                        alum_name="",
+                        entity_id=uuid.UUID(int=0),
+                        url=url,
+                        page_index=idx,
+                        page_total=len(final),
+                    )
+                )
+
+            async def sitemap_worker() -> None:
+                while True:
+                    task = await queue.get()
+                    try:
+                        if await self._crawl_url(task, emit):
+                            results["fetched"] += 1
+                    finally:
+                        results["done"] += 1
+                        queue.task_done()
+
+            worker_count = min(max(1, self.global_concurrency), len(final))
+            workers = [asyncio.create_task(sitemap_worker()) for _ in range(worker_count)]
+            await queue.join()
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+            self._client = None
+
+        emit(ProgressEvent("done", {"overall_total": len(final), "overall_done": results["done"], "fetched_total": results["fetched"]}))
+
     async def _crawl_url(
         self,
         task: CrawlTask,
@@ -481,30 +596,6 @@ class SiteCrawler:
             if len(unique) >= limit:
                 break
         return unique
-
-
-class Crawler:
-    """Deprecated sync wrapper around SiteCrawler."""
-
-    def __init__(
-        self,
-        *,
-        store: Store,
-        fetcher: PageFetcher,
-        pages_per_alum: int = 6,
-    ) -> None:
-        self._site_crawler = SiteCrawler(
-            store=store,
-            fetcher=fetcher,
-            pages_per_alum=pages_per_alum,
-        )
-
-    def run(
-        self,
-        seed_alumni: list[dict[str, str]],
-        emit: Callable[[ProgressEvent], None],
-    ) -> None:
-        asyncio.run(self._site_crawler.run(seed_alumni, emit))
 
 
 def _content_sha256(raw_html: str) -> str | None:
