@@ -432,12 +432,23 @@ async def admin_parse_preview(
 
 
 @app.post("/admin/parse/start")
-async def admin_parse_start(request: Request, force: bool = False) -> dict[str, str | bool]:
+async def admin_parse_start(
+    request: Request,
+    payload: ParseFilterRequest | None = None,
+    force: bool = False,
+) -> dict[str, str | bool]:
     _require_admin(request)
+    parse_filter = payload or ParseFilterRequest()
 
     def target(emit: Callable[[ProgressEvent], None]) -> None:
         parser = build_parser()
-        parser.run(emit, force=force)
+        parser.run(
+            emit,
+            force=force,
+            url_pattern=parse_filter.url_pattern,
+            keywords=parse_filter.keywords,
+            limit=parse_filter.limit,
+        )
 
     return {"status": _start_job(parse_job, target), "force": force}
 

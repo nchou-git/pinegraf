@@ -1038,16 +1038,41 @@ class Parser:
         self.synthesizer = synthesizer
         self.embedding_client = embedding_client
 
-    def run(self, emit: Callable[[ProgressEvent], None], *, force: bool = False) -> None:
-        asyncio.run(self.run_async(emit, force=force))
+    def run(
+        self,
+        emit: Callable[[ProgressEvent], None],
+        *,
+        force: bool = False,
+        url_pattern: str | None = None,
+        keywords: Iterable[str] | None = None,
+        limit: int | None = None,
+    ) -> None:
+        asyncio.run(
+            self.run_async(
+                emit,
+                force=force,
+                url_pattern=url_pattern,
+                keywords=keywords,
+                limit=limit,
+            )
+        )
 
     async def run_async(
         self,
         emit: Callable[[ProgressEvent], None],
         *,
         force: bool = False,
+        url_pattern: str | None = None,
+        keywords: Iterable[str] | None = None,
+        limit: int | None = None,
     ) -> None:
-        pages = self.store.list_pages_to_parse(force=force)
+        keyword_list = list(keywords or [])
+        pages = self.store.list_pages_to_parse(
+            force=force,
+            url_pattern=url_pattern,
+            keywords=keyword_list,
+            limit=limit,
+        )
         total_pages = len(pages)
         parsed_pages = 0
         run_started_at = datetime.now(UTC)
@@ -1075,6 +1100,9 @@ class Parser:
                     "page_done": parsed_pages,
                     "chunk_total": total_chunks,
                     "force": force,
+                    "url_pattern": url_pattern,
+                    "keywords": keyword_list,
+                    "limit": limit,
                     "overall_total": total_chunks,
                     "overall_done": completed_chunks,
                 },

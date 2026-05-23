@@ -230,6 +230,38 @@ def test_admin_usage_summary_returns_llm_usage_totals(monkeypatch, tmp_path) -> 
     assert payload["by_day_model"][0]["model"] == "gpt-5.4-mini"
 
 
+def test_admin_parse_start_accepts_keyword_filter(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    main.store.save_raw_page(
+        alum_name="Errik Anderson",
+        source_url="https://example.com/gyrobike",
+        page_title="Gyrobike",
+        page_text="Errik Anderson worked on Gyrobike.",
+    )
+    main.store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/jane",
+        page_title="Jane",
+        page_text="Jane Doe works at Acme.",
+    )
+
+    async def run() -> dict[str, object]:
+        async with _client(main) as client:
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            response = await client.post("/admin/parse/start", json={"keywords": ["gyrobike"]})
+        assert response.status_code == 200
+        return response.json()
+
+    payload = asyncio.run(run())
+    assert payload["status"] == "started"
+    assert main.parse_job.thread is not None
+    main.parse_job.thread.join(timeout=5)
+    pages_by_url = {page.source_url: page for page in main.store.list_raw_pages()}
+    assert pages_by_url["https://example.com/gyrobike"].parsed_at is not None
+    assert pages_by_url["https://example.com/jane"].parsed_at is None
+
+
 # ---------- static frontends ----------
 
 

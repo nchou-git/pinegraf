@@ -303,6 +303,34 @@ def test_parser_processes_mock_pages_concurrently_with_chunk_progress(
     assert chunk_events[-1].data["overall_done"] == 50
 
 
+def test_parser_filter_keywords_only_marks_matching_unparsed_pages(tmp_path) -> None:
+    store = Store(f"sqlite:///{tmp_path / 'filtered-parse.db'}")
+    store.init_db()
+    pages = [
+        ("Errik Anderson", "https://example.com/gyrobike", "Gyrobike first-year project"),
+        ("Jane Doe", "https://example.com/jane", "General alumni profile"),
+        ("Pat Person", "https://example.com/fyp", "First-year project evidence"),
+    ]
+    for name, url, text in pages:
+        store.upsert_profile(name=name, class_year="T'24")
+        store.save_raw_page(alum_name=name, source_url=url, page_title=name, page_text=text)
+    extractor = FakeExtractionClient()
+    parser = Parser(
+        store=store,
+        extractor=extractor,
+        validator=MockValidationClient(),
+        synthesizer=MockSynthesisClient(),
+    )
+
+    parser.run(lambda event: None, keywords=["gyrobike", "first-year project"])
+
+    pages_by_url = {page.source_url: page for page in store.list_raw_pages()}
+    assert pages_by_url["https://example.com/gyrobike"].parsed_at is not None
+    assert pages_by_url["https://example.com/fyp"].parsed_at is not None
+    assert pages_by_url["https://example.com/jane"].parsed_at is None
+    assert extractor.calls == 2
+
+
 def test_chunk_page_returns_one_chunk_for_short_text() -> None:
     chunks = chunk_page("Jane Doe worked on Gyrobike.", target_tokens=4000, overlap_tokens=200)
 

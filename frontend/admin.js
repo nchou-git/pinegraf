@@ -17,6 +17,10 @@ const progressUsage = document.getElementById("progress-usage");
 const previewResult = document.getElementById("preview-result");
 const usageTotal = document.getElementById("usage-total");
 const usageModels = document.getElementById("usage-models");
+const parseFilterForm = document.getElementById("parse-filter-form");
+const parseUrlPattern = document.getElementById("parse-url-pattern");
+const parseKeywords = document.getElementById("parse-keywords");
+const parseLimit = document.getElementById("parse-limit");
 
 let evtSource = null;
 let activeStage = null;
@@ -180,6 +184,20 @@ function setRunning(running) {
   stopBtn.disabled = !running;
 }
 
+function parseFilterPayload() {
+  const payload = {};
+  const urlPattern = parseUrlPattern.value.trim();
+  const keywords = parseKeywords.value
+    .split(",")
+    .map((keyword) => keyword.trim())
+    .filter(Boolean);
+  const limit = Number.parseInt(parseLimit.value, 10);
+  if (urlPattern) payload.url_pattern = urlPattern;
+  if (keywords.length) payload.keywords = keywords;
+  if (Number.isFinite(limit) && limit > 0) payload.limit = limit;
+  return payload;
+}
+
 async function previewParse() {
   previewBtn.disabled = true;
   previewResult.hidden = true;
@@ -188,7 +206,7 @@ async function previewParse() {
     const res = await fetch("/admin/parse/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify(parseFilterPayload()),
     });
     if (res.status === 401) {
       showLogin();
@@ -242,7 +260,12 @@ async function startStage(stage) {
   showProgress(stage);
 
   try {
-    const res = await fetch(`/admin/${stage}/start`, { method: "POST" });
+    const fetchOptions = { method: "POST" };
+    if (stage === "parse") {
+      fetchOptions.headers = { "Content-Type": "application/json" };
+      fetchOptions.body = JSON.stringify(parseFilterPayload());
+    }
+    const res = await fetch(`/admin/${stage}/start`, fetchOptions);
     if (res.status === 401) {
       showLogin();
       return;
@@ -298,5 +321,9 @@ crawlBtn.addEventListener("click", () => startStage("crawl"));
 previewBtn.addEventListener("click", previewParse);
 parseBtn.addEventListener("click", () => startStage("parse"));
 stopBtn.addEventListener("click", stopStream);
+parseFilterForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  previewParse();
+});
 
 checkAuth();

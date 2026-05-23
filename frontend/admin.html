@@ -57,6 +57,11 @@
             </div>
             <div id="usage-models" class="resource-models"></div>
           </div>
+          <form id="parse-filter-form" class="parse-filter">
+            <input id="parse-url-pattern" type="text" placeholder="URL regex" />
+            <input id="parse-keywords" type="text" placeholder="keywords, comma separated" />
+            <input id="parse-limit" type="number" min="1" step="1" placeholder="limit" />
+          </form>
           <div class="actions">
             <button id="crawl-btn" class="primary" type="button">Crawl</button>
             <button id="preview-btn" class="secondary" type="button">Preview</button>
