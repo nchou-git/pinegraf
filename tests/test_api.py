@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 
 import httpx
 
+from backend.db.models import Connection, EntityAttribute
+
 
 def load_mock_main(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_MOCK_EXTRACT", "true")
@@ -335,6 +337,147 @@ def test_entity_detail_returns_attributes_relationships_and_provenance(
     assert detail_payload["attributes"][0]["source"]
     assert detail_payload["relationships"][0]["source_url"] == "https://example.com/jane"
     assert detail_payload["relationships"][0]["text_evidence"] == "Jane Doe worked with Pat Person."
+
+
+def test_entity_detail_returns_attributes_for_linked_profile(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    profile = main.store.upsert_profile(name="Jane Doe", class_year="T'24")
+    with main.store.session() as session:
+        session.add(
+            EntityAttribute(
+                entity_id=profile.entity_id,
+                attribute_name="current_company",
+                attribute_value="Acme Corp",
+                source="test",
+                confidence="high",
+                validation_verdict="keep",
+            )
+        )
+        session.commit()
+
+    async def run() -> dict[str, object]:
+        async with _client(main) as client:
+            detail = await client.get(f"/entity/{profile.entity_id}")
+        assert detail.status_code == 200
+        return detail.json()
+
+    detail_payload = asyncio.run(run())
+    assert detail_payload["attributes"]
+    assert any(
+        attr["attribute_name"] == "current_company" and attr["attribute_value"] == "Acme Corp"
+        for attr in detail_payload["attributes"]
+    )
+
+
+def test_entity_detail_surfaces_unresolved_connections(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    profile = main.store.upsert_profile(name="Jane Doe", class_year="T'24")
+    page = main.store.save_raw_page(
+        alum_name="Jane Doe",
+        entity_id=profile.entity_id,
+        source_url="https://example.com/jane",
+        page_title="Jane",
+        page_text="Jane Doe worked with Some Person.",
+    )
+    with main.store.session() as session:
+        session.add(
+            Connection(
+                alum_name="Jane Doe",
+                entity_id=profile.entity_id,
+                connected_name="Some Person",
+                source_raw_page_id=page.id,
+                relationship_type="worked_with",
+                text_evidence="Jane Doe worked with Some Person.",
+                validation_verdict="keep",
+                is_inferred=False,
+            )
+        )
+        session.commit()
+
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        async with _client(main) as client:
+            detail = await client.get(f"/entity/{profile.entity_id}")
+            debug_denied = await client.get(f"/entity/{profile.entity_id}?debug=true")
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            debug = await client.get(f"/entity/{profile.entity_id}?debug=true")
+        assert detail.status_code == 200
+        assert debug_denied.status_code == 401
+        assert debug.status_code == 200
+        return detail.json(), debug.json()
+
+    detail_payload, debug_payload = asyncio.run(run())
+    relationship = detail_payload["relationships"][0]
+    assert relationship["connected_name"] == "Some Person"
+    assert relationship["connected_entity_id"] is None
+    assert relationship["is_resolved"] is False
+    assert debug_payload["diagnostics"]["connections_unresolved"] == 1
+
+
+def test_entity_detail_hides_legacy_unresolved_misattribution(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    profile = main.store.upsert_profile(name="Errik Anderson", class_year="T'07")
+    page = main.store.save_raw_page(
+        alum_name="Errik Anderson",
+        entity_id=profile.entity_id,
+        source_url="https://example.com/eir",
+        page_title="EIR",
+        page_text="Phillips came to Tuck from the University of Southern California.",
+    )
+    with main.store.session() as session:
+        session.add(
+            Connection(
+                alum_name="Errik Anderson",
+                entity_id=profile.entity_id,
+                connected_name="University of Southern California",
+                source_raw_page_id=page.id,
+                relationship_type="came_from",
+                text_evidence="Phillips came to Tuck from the University of Southern California.",
+                validation_verdict="keep",
+                is_inferred=False,
+            )
+        )
+        session.commit()
+
+    async def run() -> dict[str, object]:
+        async with _client(main) as client:
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            detail = await client.get(f"/entity/{profile.entity_id}?debug=true")
+        assert detail.status_code == 200
+        return detail.json()
+
+    detail_payload = asyncio.run(run())
+    assert detail_payload["relationships"] == []
+    assert detail_payload["diagnostics"]["connections_unresolved"] == 1
+
+
+def test_lookup_and_entity_detail_agree(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    profile = main.store.upsert_profile(
+        name="Jane Doe",
+        class_year="T'24",
+        current_company="Acme Corp",
+        current_title="COO",
+        bio_summary="Jane has a populated lookup profile.",
+    )
+
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        async with _client(main) as client:
+            lookup = await client.post("/lookup", json={"name": "Jane"})
+            detail = await client.get(f"/entity/{profile.entity_id}")
+        assert lookup.status_code == 200
+        assert detail.status_code == 200
+        return lookup.json(), detail.json()
+
+    lookup_payload, detail_payload = asyncio.run(run())
+    lookup_result = lookup_payload["results"][0]
+    assert detail_payload["consolidated"]["current_employer"] == lookup_result["current_company"]
+    assert any(
+        attr["attribute_name"] == "bio_summary"
+        and attr["attribute_value"] == lookup_result["bio_summary"]
+        for attr in detail_payload["attributes"]
+    )
 
 
 # ---------- static frontends ----------

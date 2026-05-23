@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from backend.db.models import Connection
+from backend.db.models import Connection, Fact
 from backend.db.store import Store
 
 
@@ -138,6 +138,53 @@ def test_database_context_excludes_unresolved_explicit_connections(tmp_path) -> 
 
     assert len(store.list_connections(("keep",))) == 1
     assert store.database_context()["connections"] == []
+
+
+def test_backfill_entity_links_populates_orphans(tmp_path) -> None:
+    store = make_store(tmp_path)
+    profile = store.upsert_profile(name="Jane Doe", class_year="T'24")
+    page = store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/jane",
+        page_title="Jane",
+        page_text="Jane Doe worked with Some Person.",
+    )
+    with store.session() as session:
+        session.add(
+            Fact(
+                alum_name="Jane Doe",
+                entity_id=None,
+                source_raw_page_id=page.id,
+                category="career",
+                content="Jane Doe worked with Some Person.",
+                confidence="medium",
+                validation_verdict="keep",
+            )
+        )
+        session.add(
+            Connection(
+                alum_name="Jane Doe",
+                entity_id=None,
+                connected_name="Some Person",
+                source_raw_page_id=page.id,
+                relationship_type="worked_with",
+                validation_verdict="keep",
+            )
+        )
+        session.commit()
+
+    dry_run = store.backfill_entity_links()
+    assert dry_run["facts_linked"] == 1
+    assert dry_run["connections_linked"] == 1
+    assert store.list_facts()[0].entity_id is None
+    assert store.list_connections()[0].entity_id is None
+
+    applied = store.backfill_entity_links(dry_run=False)
+
+    assert applied["facts_linked"] == 1
+    assert applied["connections_linked"] == 1
+    assert store.list_facts()[0].entity_id == profile.entity_id
+    assert store.list_connections()[0].entity_id == profile.entity_id
 
 
 def test_position_upsert_avoids_duplicates_for_same_match_key(tmp_path) -> None:

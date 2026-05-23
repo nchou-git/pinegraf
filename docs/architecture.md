@@ -23,6 +23,18 @@ crawl -> parse -> resolve -> store -> query
 6. `backend/pipeline/query.py` answers analyst questions from structured rows in
    strict mode or from retrieved raw pages in deep mode.
 
+## Entity Detail Flow
+
+The Connections tab searches through `/lookup`, then requests `/entity/{id}`.
+That endpoint is graph-facing: it reads `entities`, `entity_consolidated`,
+`entity_attributes`, and `connections` by `entity_id`. If reconciliation has not
+resolved the far side of a raw extracted connection yet, `/entity/{id}` still
+returns the edge with `is_resolved=false` so analysts can see the source-backed
+relationship instead of an empty panel. Profile fields from `alumni_profiles`
+are used as display fallbacks when consolidated attributes have not been built
+yet. Admins can call `/entity/{id}?debug=true` to see counts for dropped,
+unresolved, and otherwise hidden rows.
+
 ## Modules
 
 - `backend/main.py`: FastAPI route declarations and stage streaming.

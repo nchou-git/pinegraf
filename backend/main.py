@@ -360,8 +360,19 @@ async def lookup(payload: LookupRequest) -> dict[str, object]:
 
 
 @app.get("/entity/{entity_id}")
-async def entity_detail(entity_id: str) -> dict[str, object]:
-    detail = store.entity_detail(entity_id)
+async def entity_detail(
+    entity_id: str,
+    request: Request,
+    debug: bool = False,
+    include_dropped: bool = False,
+) -> dict[str, object]:
+    if (debug or include_dropped) and not is_admin_request(request):
+        raise HTTPException(status_code=401, detail="admin auth required")
+    detail = store.entity_detail_with_options(
+        entity_id,
+        include_dropped=include_dropped,
+        include_diagnostics=debug,
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail="entity not found")
     return detail

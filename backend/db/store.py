@@ -786,6 +786,15 @@ class Store:
             return list(session.execute(stmt).scalars())
 
     def entity_detail(self, entity_id: uuid.UUID | str) -> dict[str, object] | None:
+        return self.entity_detail_with_options(entity_id)
+
+    def entity_detail_with_options(
+        self,
+        entity_id: uuid.UUID | str,
+        *,
+        include_dropped: bool = False,
+        include_diagnostics: bool = False,
+    ) -> dict[str, object] | None:
         entity_uuid = _coerce_uuid(entity_id)
         if entity_uuid is None:
             return None
@@ -794,43 +803,119 @@ class Store:
             if entity is None:
                 return None
             consolidated = session.get(EntityConsolidated, entity_uuid)
+            profile = (
+                session.execute(
+                    select(AlumniProfile)
+                    .where(AlumniProfile.entity_id == entity_uuid)
+                    .order_by(AlumniProfile.id.asc())
+                )
+                .scalars()
+                .first()
+            )
+            attribute_filters = [EntityAttribute.entity_id == entity_uuid]
+            if not include_dropped:
+                attribute_filters.append(EntityAttribute.validation_verdict != "drop")
             attributes = list(
                 session.execute(
                     select(EntityAttribute)
-                    .where(
-                        EntityAttribute.entity_id == entity_uuid,
-                        EntityAttribute.validation_verdict != "drop",
-                    )
+                    .where(*attribute_filters)
                     .order_by(EntityAttribute.attribute_name.asc(), EntityAttribute.id.asc())
                 ).scalars()
             )
+            relationship_filters = [
+                (Connection.entity_id == entity_uuid)
+                | (Connection.connected_entity_id == entity_uuid)
+            ]
+            if not include_dropped:
+                relationship_filters.append(Connection.validation_verdict != "drop")
             relationships = list(
                 session.execute(
                     select(Connection)
                     .options(joinedload(Connection.raw_page))
-                    .where(
-                        Connection.validation_verdict != "drop",
-                        (
-                            Connection.connected_entity_id.is_not(None)
-                            | Connection.is_inferred.is_(True)
-                        ),
-                        (
-                            (Connection.entity_id == entity_uuid)
-                            | (Connection.connected_entity_id == entity_uuid)
-                        ),
-                    )
+                    .where(*relationship_filters)
                     .order_by(Connection.relationship_type.asc(), Connection.id.asc())
                 ).scalars()
             )
-            return {
+            visible_relationships = [
+                connection
+                for connection in relationships
+                if _should_surface_entity_relationship(connection, entity_uuid)
+            ]
+            attribute_dicts = [_entity_attribute_to_dict(attr) for attr in attributes]
+            attribute_dicts.extend(_profile_attribute_dicts(profile, attribute_dicts))
+            output = {
                 "entity_id": str(entity.id),
-                "name": consolidated.name if consolidated else entity.canonical_name,
-                "consolidated": _consolidated_to_dict(consolidated),
-                "attributes": [_entity_attribute_to_dict(attr) for attr in attributes],
+                "name": (
+                    consolidated.name
+                    if consolidated
+                    else profile.name
+                    if profile
+                    else entity.canonical_name
+                ),
+                "consolidated": _consolidated_to_dict(consolidated, profile),
+                "attributes": attribute_dicts,
                 "relationships": [
                     _entity_relationship_to_dict(connection, entity_uuid)
-                    for connection in relationships
+                    for connection in visible_relationships
                 ],
+            }
+            if include_diagnostics:
+                output["diagnostics"] = _entity_detail_diagnostics(session, entity_uuid)
+            return output
+
+    def backfill_entity_links(self, *, dry_run: bool = True) -> dict[str, object]:
+        with self._session_factory() as session:
+            profile_rows = list(
+                session.execute(
+                    select(AlumniProfile.name, AlumniProfile.entity_id).where(
+                        AlumniProfile.entity_id.is_not(None)
+                    )
+                ).all()
+            )
+            profiles_by_name: dict[str, set[uuid.UUID]] = {}
+            for name, entity_id in profile_rows:
+                if entity_id is None:
+                    continue
+                profiles_by_name.setdefault(_normalize_position_token(name), set()).add(entity_id)
+
+            unique_profiles = {
+                name: next(iter(entity_ids))
+                for name, entity_ids in profiles_by_name.items()
+                if len(entity_ids) == 1
+            }
+            facts = list(session.execute(select(Fact).where(Fact.entity_id.is_(None))).scalars())
+            connections = list(
+                session.execute(select(Connection).where(Connection.entity_id.is_(None))).scalars()
+            )
+            facts_linked = 0
+            connections_linked = 0
+            facts_skipped = 0
+            connections_skipped = 0
+            for fact in facts:
+                entity_id = unique_profiles.get(_normalize_position_token(fact.alum_name))
+                if entity_id is None:
+                    facts_skipped += 1
+                    continue
+                facts_linked += 1
+                if not dry_run:
+                    fact.entity_id = entity_id
+            for connection in connections:
+                entity_id = unique_profiles.get(_normalize_position_token(connection.alum_name))
+                if entity_id is None:
+                    connections_skipped += 1
+                    continue
+                connections_linked += 1
+                if not dry_run:
+                    connection.entity_id = entity_id
+            if not dry_run:
+                session.commit()
+            return {
+                "dry_run": dry_run,
+                "facts_linked": facts_linked,
+                "connections_linked": connections_linked,
+                "entity_attributes_linked": 0,
+                "facts_skipped_ambiguous_or_missing_profile": facts_skipped,
+                "connections_skipped_ambiguous_or_missing_profile": connections_skipped,
             }
 
     def replace_structured_items(
@@ -1715,15 +1800,29 @@ def fact_to_dict(fact: Fact) -> dict[str, object]:
     }
 
 
-def _consolidated_to_dict(row: EntityConsolidated | None) -> dict[str, object]:
+def _consolidated_to_dict(
+    row: EntityConsolidated | None,
+    profile: AlumniProfile | None = None,
+) -> dict[str, object]:
     if row is None:
-        return {}
+        if profile is None:
+            return {}
+        return {
+            "entity_id": str(profile.entity_id) if profile.entity_id else None,
+            "name": profile.name,
+            "current_employer": profile.current_company,
+            "current_title": profile.current_title,
+            "class_year": profile.class_year,
+            "location": "",
+            "source_ids": {"profile": [f"alumni_profile:{profile.id}"]},
+            "updated_at": profile.last_parsed_at.isoformat() if profile.last_parsed_at else None,
+        }
     return {
         "entity_id": str(row.entity_id),
         "name": row.name,
-        "current_employer": row.current_employer,
-        "current_title": row.current_title,
-        "class_year": row.class_year,
+        "current_employer": row.current_employer or (profile.current_company if profile else ""),
+        "current_title": row.current_title or (profile.current_title if profile else ""),
+        "class_year": row.class_year or (profile.class_year if profile else ""),
         "location": row.location,
         "source_ids": row.source_ids,
         "updated_at": row.updated_at.isoformat(),
@@ -1746,6 +1845,123 @@ def _entity_attribute_to_dict(attribute: EntityAttribute) -> dict[str, object]:
     }
 
 
+def _profile_attribute_dicts(
+    profile: AlumniProfile | None,
+    existing_attributes: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if profile is None:
+        return []
+    existing = {
+        (str(attr.get("attribute_name", "")), str(attr.get("attribute_value", "")))
+        for attr in existing_attributes
+    }
+    candidates: list[tuple[str, str]] = [
+        ("class_year", profile.class_year),
+        ("current_company", profile.current_company),
+        ("current_title", profile.current_title),
+        ("bio_summary", profile.bio_summary),
+    ]
+    candidates.extend(("past_company", value) for value in profile.past_companies)
+    candidates.extend(("education", value) for value in profile.education)
+    output: list[dict[str, object]] = []
+    for attribute_name, attribute_value in candidates:
+        cleaned = str(attribute_value or "").strip()
+        if not cleaned or (attribute_name, cleaned) in existing:
+            continue
+        output.append(
+            {
+                "id": None,
+                "attribute_name": attribute_name,
+                "attribute_value": cleaned,
+                "source": "alumni_profiles",
+                "source_url": None,
+                "as_of_date": None,
+                "confidence": "medium",
+                "last_verified_at": None,
+                "validation_verdict": "keep",
+            }
+        )
+    return output
+
+
+def _entity_detail_diagnostics(session: Session, entity_id: uuid.UUID) -> dict[str, int]:
+    total_attributes = int(
+        session.execute(
+            select(func.count())
+            .select_from(EntityAttribute)
+            .where(EntityAttribute.entity_id == entity_id)
+        ).scalar_one()
+    )
+    attributes_dropped = int(
+        session.execute(
+            select(func.count())
+            .select_from(EntityAttribute)
+            .where(
+                EntityAttribute.entity_id == entity_id,
+                EntityAttribute.validation_verdict == "drop",
+            )
+        ).scalar_one()
+    )
+    connection_filter = (Connection.entity_id == entity_id) | (
+        Connection.connected_entity_id == entity_id
+    )
+    total_connections = int(
+        session.execute(
+            select(func.count()).select_from(Connection).where(connection_filter)
+        ).scalar_one()
+    )
+    connections_unresolved = int(
+        session.execute(
+            select(func.count())
+            .select_from(Connection)
+            .where(
+                Connection.entity_id == entity_id,
+                Connection.connected_entity_id.is_(None),
+                Connection.is_inferred.is_(False),
+            )
+        ).scalar_one()
+    )
+    connections_dropped = int(
+        session.execute(
+            select(func.count())
+            .select_from(Connection)
+            .where(
+                connection_filter,
+                Connection.validation_verdict == "drop",
+            )
+        ).scalar_one()
+    )
+    return {
+        "total_attributes_any_verdict": total_attributes,
+        "attributes_dropped_by_audit": attributes_dropped,
+        "total_connections_any_verdict": total_connections,
+        "connections_unresolved": connections_unresolved,
+        "connections_dropped_by_audit": connections_dropped,
+    }
+
+
+def _should_surface_entity_relationship(connection: Connection, entity_id: uuid.UUID) -> bool:
+    if connection.is_inferred:
+        return True
+    if connection.connected_entity_id is not None:
+        return connection.entity_id == entity_id or connection.connected_entity_id == entity_id
+    if connection.entity_id != entity_id:
+        return False
+    return _connection_evidence_mentions_subject(connection)
+
+
+def _connection_evidence_mentions_subject(connection: Connection) -> bool:
+    subject_tokens = [
+        token
+        for token in re.findall(r"[a-z0-9']+", connection.alum_name.casefold())
+        if len(token) >= 4
+    ]
+    if not subject_tokens:
+        return False
+    haystack = " ".join([connection.text_evidence, connection.context]).casefold()
+    return any(token in haystack for token in subject_tokens)
+
+
 def _entity_relationship_to_dict(
     connection: Connection,
     entity_id: uuid.UUID,
@@ -1761,6 +1977,7 @@ def _entity_relationship_to_dict(
         "entity_id": str(connection.entity_id) if connection.entity_id else None,
         "connected_entity_id": str(other_entity_id) if other_entity_id else None,
         "connected_name": other_name,
+        "is_resolved": other_entity_id is not None,
         "relationship_type": connection.relationship_type,
         "context": connection.context,
         "confidence_score": connection.confidence_score,

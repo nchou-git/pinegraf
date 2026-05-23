@@ -161,6 +161,18 @@ document.getElementById("rs-question").addEventListener("keydown", (e) => {
 
 const cnResults = document.getElementById("cn-results");
 const cnDetail = document.getElementById("cn-detail");
+let cnAdminAuthenticated = false;
+
+async function refreshConnectionAdminState() {
+  try {
+    const res = await fetch("/admin/me");
+    if (!res.ok) return;
+    const data = await res.json();
+    cnAdminAuthenticated = Boolean(data.authenticated);
+  } catch (_err) {
+    cnAdminAuthenticated = false;
+  }
+}
 
 async function searchConnections() {
   const name = document.getElementById("cn-name").value.trim();
@@ -198,7 +210,9 @@ async function loadEntity(entityId) {
   if (!entityId) return;
   cnDetail.innerHTML = '<div class="empty">Loading...</div>';
   try {
-    const res = await fetch(`/entity/${encodeURIComponent(entityId)}`);
+    await refreshConnectionAdminState();
+    const debug = cnAdminAuthenticated ? "?debug=true" : "";
+    const res = await fetch(`/entity/${encodeURIComponent(entityId)}${debug}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderEntity(await res.json());
   } catch (err) {
@@ -210,6 +224,7 @@ function renderEntity(entity) {
   const consolidated = entity.consolidated || {};
   const attrs = entity.attributes || [];
   const relationships = entity.relationships || [];
+  const diagnostics = entity.diagnostics || null;
   const grouped = relationships.reduce((acc, rel) => {
     (acc[rel.relationship_type] ||= []).push(rel);
     return acc;
@@ -234,13 +249,17 @@ function renderEntity(entity) {
         </div>
       `).join("") || '<div class="empty">No attributes.</div>'}
     </div>
+    ${renderDiagnostics(diagnostics)}
     <h3>Connected Entities</h3>
     ${Object.entries(grouped).map(([type, rels]) => `
       <div class="connection-group">
         <div class="role">${esc(type)}</div>
         ${rels.map((rel) => `
           <div class="result-row">
-            <div class="name">${esc(rel.connected_name)}</div>
+            <div class="name">
+              ${esc(rel.connected_name)}
+              ${rel.is_resolved === false ? '<span class="meta">(unresolved)</span>' : ""}
+            </div>
             <div class="meta">confidence ${rel.confidence_score ?? ""}</div>
             ${rel.derivation ? `<div class="meta">${esc(rel.derivation)}</div>` : ""}
             ${rel.source_url ? `<a class="meta" href="${esc(rel.source_url)}" target="_blank" rel="noreferrer">${esc(rel.source_url)}</a>` : ""}
@@ -250,6 +269,14 @@ function renderEntity(entity) {
       </div>
     `).join("") || '<div class="empty">No relationships.</div>'}
   `;
+}
+
+function renderDiagnostics(diagnostics) {
+  if (!diagnostics) return "";
+  const rows = Object.entries(diagnostics)
+    .map(([key, value]) => `<div class="source-line">${esc(key)}: ${esc(value)}</div>`)
+    .join("");
+  return `<details class="sources"><summary>debug</summary>${rows}</details>`;
 }
 
 document.getElementById("cn-go").addEventListener("click", searchConnections);
