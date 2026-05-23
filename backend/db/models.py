@@ -122,7 +122,7 @@ class EntityAttribute(Base):
             "'current_company', 'current_title', 'past_company', 'education', "
             "'class_year', 'bio_summary', 'internship_company', 'internship_location', "
             "'current_employer', 'current_employer_website', 'current_location', "
-            "'eship_notes'"
+            "'eship_notes', 'date_of_birth', 'occupation', 'notable_for'"
             ")",
             name="ck_entity_attributes_attribute_name",
         ),
