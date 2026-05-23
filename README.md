@@ -1,45 +1,76 @@
 # Pinegraf
 
-People-OSINT prototype. Crawls public web pages, extracts structured profile data and relationships, and answers natural-language questions about the resulting corpus with citations.
+People-OSINT prototype for building a source-linked alumni knowledge graph.
+Pinegraf crawls public pages, imports structured seed data, extracts graph facts
+with cost-tracked LLM calls, reconciles entities, and answers analyst questions
+from structured rows or cited raw-page chunks.
 
-Status: early prototype. Schema and API will change.
+Status: prototype. Schema and APIs are still expected to change.
 
-## What it does
+## What It Does
 
-- **Crawl** — fetches pages from configured sitemaps and seed URLs, stores raw HTML and extracted text in Postgres. Respects robots.txt, conditional GETs (ETag / Last-Modified), per-host pacing.
-- **Parse** — LLM extracts profiles, companies, positions, education, and relationships from each page; validates and stores structured rows.
-- **Lookup** — structured DB filter by name / company / class year. No AI.
-- **Research** — natural-language questions answered from the raw page corpus with source citations.
-- **Admin** — password-gated panel to trigger crawl/parse jobs and watch live progress.
+- **Seed** - imports `data/alum_data.xlsx` into `entities` and
+  `entity_attributes` with `source='alumni_xlsx_v2'`.
+- **Crawl** - fetches configured public pages, stores raw HTML snapshots and
+  cleaned text in `raw_pages`, and keeps conditional-fetch metadata.
+- **Clean** - strips noisy HTML and learns per-host prefix/suffix boilerplate in
+  `host_boilerplate`.
+- **Parse** - chunks pages with `tiktoken`, triages chunks, extracts people,
+  organizations, relationships, and projects, caches chunk responses, records
+  token spend in `llm_usage`, and emits progress events for the admin UI.
+- **Resolve** - conservatively resolves entities with deterministic context
+  rules plus optional pgvector-backed name/context embeddings.
+- **Reconcile** - consolidates attributes and infers `co_worked_on`,
+  `co_worked_at`, and `classmate` relationships with derivation metadata.
+- **Research** - expands analyst questions, retrieves chunk evidence with
+  trigram plus vector search, and answers with inline source citations.
+- **Enrich** - can add Wikidata attributes using idempotent
+  `source='wikidata:<qid>'` rows.
 
 ## Architecture
 
 ```text
-Sitemap/seed URLs
-       |
-       v
-   SiteCrawler (async, per-host pacing)
-       |
-       v
-   raw_pages (Postgres)
-       |
-       v
-     Parser (OpenAI)
-       |
-       v
-   entities, attributes, connections, projects
-       |
-       v
-   FastAPI /lookup    (structured query, no LLM)
-   FastAPI /research  (deep query, LLM over raw pages with citations)
+data/alum_data.xlsx      sitemap/seed URLs         Wikidata
+        |                       |                     |
+        v                       v                     v
+ entities + attributes      SiteCrawler        enrich_wikidata.py
+        |                       |
+        |                  raw_pages + snapshots
+        |                       |
+        |          clean_html + host_boilerplate
+        |                       |
+        |           chunk_page + page_chunks
+        |                       |
+        |       extraction_cache + llm_usage
+        |                       |
+        +------------> facts, projects, connections
+                             |
+                 reconcile_entities.py
+                             |
+             entity_consolidated + inferred edges
+                             |
+       FastAPI /lookup /research /entity/{id} /admin/*
 ```
 
-See `docs/architecture.md` and `docs/data_model.md` for details.
+See `docs/graph_schema.md`, `docs/query_examples.md`, and `docs/sources.md`
+for the current graph details.
 
 ## Requirements
 
 - Python 3.11+
-- Postgres 14+ (SQLite fallback for local dev only)
+- Postgres 14+ for production
+- `pgvector` and `pg_trgm` extensions for embedding resolution and hybrid
+  retrieval
+- SQLite is supported for tests and local mock-mode development
+
+The included Docker service uses `pgvector/pgvector:pg16`:
+
+```bash
+docker compose up -d postgres
+```
+
+If you use a host Postgres install, make sure `CREATE EXTENSION vector` works
+before running migrations that add vector columns.
 
 ## Setup
 
@@ -63,15 +94,31 @@ uvicorn backend.main:app --reload
 
 Open:
 
-- `http://127.0.0.1:8000` — user UI (Lookup + Research)
-- `http://127.0.0.1:8000/admin` — admin panel (Crawl + Parse), password from `PINEGRAF_ADMIN_PASSWORD`
+- `http://127.0.0.1:8000` - Lookup, Research, and Connections UI
+- `http://127.0.0.1:8000/admin` - admin panel for crawl, parse, preview,
+  resource usage, and extraction audits
 
-## Configure a crawl
+## Pipeline Commands
 
-In `.env`:
+```bash
+python -m scripts.import_alumni_xlsx
+python -m scripts.rebuild_page_text
+python -m scripts.backfill_entity_embeddings
+python -m scripts.reconcile_entities
+python -m scripts.audit_extraction --sample-size 30
+python -m scripts.enrich_wikidata --limit 100
+```
+
+## Configuration
+
+Common `.env` settings:
 
 ```env
 USE_MOCK_FETCH=false
+USE_MOCK_EXTRACT=false
+USE_MOCK_QUERY=false
+EXTRACTION_TIER_MODE=cascade
+PARSE_CONCURRENCY=8
 CRAWL_SITEMAP_URLS=https://example.edu/sitemap.xml
 CRAWL_SEED_URLS=https://example.edu/
 CRAWL_ALLOWED_DOMAINS=example.edu
@@ -80,13 +127,22 @@ CRAWL_MAX_PAGES=5000
 
 Settings are cached at process start; restart uvicorn after changing `.env`.
 
-## Mock mode
+`EXTRACTION_TIER_MODE` accepts `mini_only`, `cascade`, or `frontier_only`.
+Cascade uses `gpt-5.4-mini` first and escalates low-confidence chunks to
+`gpt-5.4`. Research answers use the frontier model configured in
+`backend/pipeline/query.py`.
 
-`USE_MOCK_FETCH=true`, `USE_MOCK_EXTRACT=true`, `USE_MOCK_QUERY=true` run the full pipeline against canned data with no external HTTP / OpenAI calls. Useful for UI testing and offline dev.
+## Mock Mode
+
+`USE_MOCK_FETCH=true`, `USE_MOCK_EXTRACT=true`, `USE_MOCK_QUERY=true` run the
+full pipeline against canned data with no external HTTP or OpenAI calls. Tests
+use mockable clients and should never require real API calls.
 
 ## Tests
 
 ```bash
+ruff format .
+ruff check .
 pytest -v
 ```
 
@@ -94,37 +150,51 @@ pytest -v
 
 Tables of note:
 
-- `raw_pages` — one row per fetched page. Includes `page_text`, `raw_html_gz`, `content_sha256`, ETag/Last-Modified, fetch timestamp.
-- `entities`, `entity_aliases`, `entity_attributes` — canonical entity layer with claim-level provenance.
-- `alumni_profiles` — denormalized profile view used by `/lookup`. Kept in sync by the parser.
-- `audit_events` — append-only log of every `/lookup`, `/research`, and `/admin/*` request.
+- `raw_pages` - fetched page snapshots with cleaned text and compressed raw HTML.
+- `host_boilerplate` - per-host learned prefix/suffix boilerplate.
+- `page_chunks` - chunk text and optional embeddings used for hybrid retrieval.
+- `entities`, `entity_aliases`, `entity_attributes` - canonical identity and
+  source-linked claims.
+- `facts`, `projects`, `connections` - extracted and inferred graph evidence.
+- `entity_consolidated` - reconciled profile fields with source row ids.
+- `extraction_cache` - chunk-level triage and extraction cache.
+- `llm_usage` - one row per LLM or embedding call with token and dollar totals.
+- `audit_runs` and `audit_events` - quality-audit outputs and request audit log.
 
 ## Layout
 
 ```text
 backend/
-  main.py              FastAPI routes (thin)
-  config.py            env-driven settings
-  audit.py             auth + audit middleware
+  main.py                 FastAPI route declarations
+  config.py               env-driven settings
+  audit.py                auth + audit middleware
   db/
-    models.py          SQLAlchemy models
-    store.py           DB queries and writes
+    models.py             SQLAlchemy models
+    store.py              DB queries and writes
   pipeline/
-    crawler.py         async sitemap crawler
-    page_fetcher.py    sync httpx client used inside crawler
-    parser.py          extractor + validator + synthesizer (LLM)
-    query.py           strict / deep query clients
+    crawler.py            async sitemap crawler
+    page_fetcher.py       fetchers and HTML text extraction
+    parser.py             chunking, extraction, validation, parse orchestration
+    query.py              strict and hybrid research query clients
+    reconcile.py          consolidation and graph inference
   resolution/
-    entity_resolver.py name -> entity_id resolution
+    entity_resolver.py    context + embedding entity resolution
+    embeddings.py         mockable embedding clients
+  sources/
+    wikidata.py           Wikidata enrichment source
 frontend/
-  index.html, app.js   user-facing UI
-  admin.html, admin.js admin panel
-alembic/               migrations
-tests/                 pytest suite
+  index.html, app.js      user-facing UI
+  admin.html, admin.js    admin panel
+scripts/                  one-shot ingest, rebuild, audit, enrichment scripts
+alembic/                  migrations
+tests/                    pytest suite
 ```
 
-## Security note
+## Security Note
 
-The current admin auth is a single shared password compared in constant time, with a session cookie signed by HMAC. It is sufficient for a single-user prototype. It is **not** sufficient for multi-user production — replace with per-user accounts (bcrypt/argon2) and a real session store before deploying.
+The current admin auth is a single shared password compared in constant time,
+with a session cookie signed by HMAC. It is sufficient for a single-user
+prototype. It is **not** sufficient for multi-user production; replace it with
+per-user accounts and a real session store before deploying.
 
 `.env` is gitignored. Never commit secrets.
