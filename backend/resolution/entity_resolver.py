@@ -72,8 +72,20 @@ def resolve_or_create(
             source=context.get("source", "resolver"),
         )
     )
-    _add_context_attribute(session, entity.id, "class_year", class_year)
-    _add_context_attribute(session, entity.id, "current_company", current_company)
+    _add_context_attribute(
+        session,
+        entity.id,
+        "class_year",
+        class_year,
+        source=context.get("source", "resolver"),
+    )
+    _add_context_attribute(
+        session,
+        entity.id,
+        "current_company",
+        current_company,
+        source=context.get("source", "resolver"),
+    )
     session.flush()
     return entity.id
 
@@ -109,6 +121,8 @@ def _add_context_attribute(
     entity_id: uuid.UUID,
     attribute_name: str,
     attribute_value: str | None,
+    *,
+    source: str,
 ) -> None:
     cleaned = _normalize_display_name(attribute_value or "")
     if not cleaned:
@@ -118,6 +132,7 @@ def _add_context_attribute(
             entity_id=entity_id,
             attribute_name=attribute_name,
             attribute_value=cleaned,
+            source=source,
             source_url=None,
             confidence="medium",
             extracted_at=datetime.now(UTC),

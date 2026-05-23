@@ -22,6 +22,7 @@ dependencies = [
   "selectolax",
   "beautifulsoup4",
   "lxml",
+  "openpyxl",
 ]
 
 [build-system]

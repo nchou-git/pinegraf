@@ -33,6 +33,7 @@ def _client(main) -> httpx.AsyncClient:
 
 # ---------- public endpoints ----------
 
+
 def test_lookup_returns_results(monkeypatch, tmp_path) -> None:
     main = load_mock_main(monkeypatch, tmp_path)
     main.store.upsert_profile(name="Jane Doe", class_year="T'24", discovered_via="test")
@@ -88,6 +89,7 @@ def test_lookup_audit_preserves_request_body(monkeypatch, tmp_path) -> None:
 
 
 # ---------- admin auth ----------
+
 
 def test_admin_login_audit_redacts_password(monkeypatch, tmp_path) -> None:
     main = load_mock_main(monkeypatch, tmp_path)
@@ -169,6 +171,7 @@ def test_admin_audit_filters(monkeypatch, tmp_path) -> None:
 
 
 # ---------- static frontends ----------
+
 
 def test_favicon_endpoint(monkeypatch, tmp_path) -> None:
     main = load_mock_main(monkeypatch, tmp_path)

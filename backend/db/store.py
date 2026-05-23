@@ -440,11 +440,20 @@ class Store:
                         entity_id=entity_uuid,
                         attribute_name=attribute_name,
                         attribute_value=attribute_value,
+                        source=(
+                            str(attribute.get("source") or source_url or "store").strip() or "store"
+                        ),
                         source_url=source_url,
+                        as_of_date=attribute.get("as_of_date")
+                        if isinstance(attribute.get("as_of_date"), date)
+                        else None,
                         confidence=str(attribute.get("confidence", "medium")).strip() or "medium",
                         extracted_at=attribute.get("extracted_at")
                         if isinstance(attribute.get("extracted_at"), datetime)
                         else _utcnow(),
+                        last_verified_at=attribute.get("last_verified_at")
+                        if isinstance(attribute.get("last_verified_at"), datetime)
+                        else None,
                         validation_verdict=_clean_verdict(
                             attribute.get("validation_verdict", "keep")
                         ),

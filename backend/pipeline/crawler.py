@@ -80,7 +80,11 @@ class SiteCrawler:
         """
         import xml.etree.ElementTree as ET
 
-        emit(ProgressEvent("crawl_start", {"overall_total": 0, "overall_done": 0, "max_pages": max_pages}))
+        emit(
+            ProgressEvent(
+                "crawl_start", {"overall_total": 0, "overall_done": 0, "max_pages": max_pages}
+            )
+        )
 
         async with httpx.AsyncClient(
             timeout=FETCH_TIMEOUT,
@@ -97,7 +101,11 @@ class SiteCrawler:
                 try:
                     resp = await client.get(sm_url, timeout=30.0)
                     if resp.status_code != 200:
-                        emit(ProgressEvent("sitemap_failed", {"url": sm_url, "status": resp.status_code}))
+                        emit(
+                            ProgressEvent(
+                                "sitemap_failed", {"url": sm_url, "status": resp.status_code}
+                            )
+                        )
                         continue
                     root = ET.fromstring(resp.text)
                     ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -113,7 +121,11 @@ class SiteCrawler:
                                     if u.text:
                                         urls.append(u.text.strip())
                         except Exception as exc:
-                            emit(ProgressEvent("sitemap_failed", {"url": loc.text, "error": str(exc)}))
+                            emit(
+                                ProgressEvent(
+                                    "sitemap_failed", {"url": loc.text, "error": str(exc)}
+                                )
+                            )
                     # Direct URL set
                     for u in root.findall(".//sm:url/sm:loc", ns):
                         if u.text:
@@ -141,7 +153,11 @@ class SiteCrawler:
             emit(ProgressEvent("crawl_planned", {"overall_total": len(final), "overall_done": 0}))
 
             if not final:
-                emit(ProgressEvent("done", {"overall_total": 0, "overall_done": 0, "error": "no URLs to crawl"}))
+                emit(
+                    ProgressEvent(
+                        "done", {"overall_total": 0, "overall_done": 0, "error": "no URLs to crawl"}
+                    )
+                )
                 return
 
             # Feed into the existing worker pool
@@ -166,11 +182,17 @@ class SiteCrawler:
                             results["fetched"] += 1
                     except Exception as exc:
                         import traceback
-                        emit(ProgressEvent("page_error", {
-                            "url": task.url,
-                            "error": f"{type(exc).__name__}: {exc}",
-                            "traceback": traceback.format_exc()[-1000:],
-                        }))
+
+                        emit(
+                            ProgressEvent(
+                                "page_error",
+                                {
+                                    "url": task.url,
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                    "traceback": traceback.format_exc()[-1000:],
+                                },
+                            )
+                        )
                     finally:
                         results["done"] += 1
                         queue.task_done()
@@ -184,7 +206,16 @@ class SiteCrawler:
 
             self._client = None
 
-        emit(ProgressEvent("done", {"overall_total": len(final), "overall_done": results["done"], "fetched_total": results["fetched"]}))
+        emit(
+            ProgressEvent(
+                "done",
+                {
+                    "overall_total": len(final),
+                    "overall_done": results["done"],
+                    "fetched_total": results["fetched"],
+                },
+            )
+        )
 
     async def _crawl_url(
         self,
@@ -415,6 +446,7 @@ class SiteCrawler:
                 return True
             self._seen_content_hashes.add(content_hash)
             return False
+
 
 def _content_sha256(raw_html: str) -> str | None:
     if not raw_html:

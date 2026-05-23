@@ -65,9 +65,7 @@ def get_settings() -> Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
             pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf"),
-            pinegraf_admin_cookie_secret=os.getenv(
-                "PINEGRAF_ADMIN_COOKIE_SECRET", "dev-secret"
-            ),
+            pinegraf_admin_cookie_secret=os.getenv("PINEGRAF_ADMIN_COOKIE_SECRET", "dev-secret"),
             use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
             use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
             use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),

@@ -49,6 +49,7 @@ DONE_SENTINEL = "__done__"
 
 # ---------- request models ----------
 
+
 class LookupRequest(BaseModel):
     name: str | None = None
     company: str | None = None
@@ -61,6 +62,7 @@ class ResearchRequest(BaseModel):
 
 
 # ---------- background job plumbing ----------
+
 
 @dataclass
 class StageJob:
@@ -168,13 +170,16 @@ parse_job = StageJob("parse")
 
 # ---------- auth helpers ----------
 
+
 def _require_admin(request: Request) -> None:
     if not is_admin_request(request):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=401, detail="admin auth required")
 
 
 # ---------- public read endpoints ----------
+
 
 @app.get("/profiles")
 async def list_profiles() -> dict[str, object]:
@@ -213,6 +218,7 @@ async def list_facts() -> dict[str, object]:
 
 
 # ---------- user-facing endpoints ----------
+
 
 @app.post("/lookup")
 async def lookup(payload: LookupRequest) -> dict[str, object]:
@@ -259,6 +265,7 @@ async def research(payload: ResearchRequest) -> dict[str, str]:
 
 # ---------- admin endpoints ----------
 
+
 @app.post("/admin/login")
 async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
     return login_admin(payload, response)
@@ -267,6 +274,7 @@ async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[st
 @app.post("/admin/logout")
 async def admin_logout(response: Response) -> dict[str, str]:
     from backend.audit import ADMIN_COOKIE_NAME
+
     response.delete_cookie(ADMIN_COOKIE_NAME)
     return {"status": "ok"}
 
@@ -274,8 +282,6 @@ async def admin_logout(response: Response) -> dict[str, str]:
 @app.get("/admin/me")
 async def admin_me(request: Request) -> dict[str, bool]:
     return {"authenticated": is_admin_request(request)}
-
-
 
 
 @app.post("/admin/crawl/start")
@@ -352,6 +358,7 @@ async def admin_audit(
 
 
 # ---------- static frontends ----------
+
 
 @app.get("/")
 async def frontend_index() -> HTMLResponse:

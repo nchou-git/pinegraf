@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -112,7 +113,9 @@ class EntityAttribute(Base):
         CheckConstraint(
             "attribute_name IN ("
             "'current_company', 'current_title', 'past_company', 'education', "
-            "'class_year', 'bio_summary'"
+            "'class_year', 'bio_summary', 'internship_company', 'internship_location', "
+            "'current_employer', 'current_employer_website', 'current_location', "
+            "'eship_notes'"
             ")",
             name="ck_entity_attributes_attribute_name",
         ),
@@ -125,6 +128,7 @@ class EntityAttribute(Base):
             name="ck_entity_attributes_validation_verdict",
         ),
         Index("ix_entity_attributes_entity_name", "entity_id", "attribute_name"),
+        Index("ix_entity_attributes_source", "source"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -136,13 +140,16 @@ class EntityAttribute(Base):
     )
     attribute_name: Mapped[str] = mapped_column(String(64), nullable=False)
     attribute_value: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(255), nullable=False, default="legacy")
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    as_of_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
     confidence: Mapped[str] = mapped_column(String(16), nullable=False)
     extracted_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,
         default=utc_now,
     )
+    last_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     validation_verdict: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
