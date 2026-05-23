@@ -406,3 +406,19 @@ class LLMUsage(Base):
         ForeignKey("entities.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+
+class AuditRun(Base):
+    __tablename__ = "audit_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+        index=True,
+    )
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    thrifty_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+    frontier_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+    diff_summary: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)

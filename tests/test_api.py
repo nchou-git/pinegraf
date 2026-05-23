@@ -262,6 +262,31 @@ def test_admin_parse_start_accepts_keyword_filter(monkeypatch, tmp_path) -> None
     assert pages_by_url["https://example.com/jane"].parsed_at is None
 
 
+def test_admin_audit_run_and_last(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    main.store.save_raw_page(
+        alum_name="Errik Anderson",
+        source_url="https://example.com/gyrobike",
+        page_title="Gyrobike",
+        page_text="Errik Anderson and Daniella Reichstetter worked on Gyrobike. T'07 T'07 " * 90,
+    )
+
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        async with _client(main) as client:
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            run_response = await client.post("/admin/audit/run", json={"sample_size": 1})
+            last_response = await client.get("/admin/audit/last")
+        assert run_response.status_code == 200
+        assert last_response.status_code == 200
+        return run_response.json(), last_response.json()
+
+    run_payload, last_payload = asyncio.run(run())
+    assert run_payload["sample_size"] == 1
+    assert run_payload["diff_summary"]["per_page"][0]["thrifty_count"] >= 1
+    assert last_payload["audit"]["id"] == run_payload["id"]
+
+
 # ---------- static frontends ----------
 
 

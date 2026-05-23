@@ -241,6 +241,37 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.audit-result {
+  margin-top: 12px;
+  overflow-x: auto;
+}
+
+.audit-heading {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.86rem;
+}
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.audit-table th,
+.audit-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.audit-table th {
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .login-row {
   display: grid;
   grid-template-columns: 1fr auto;

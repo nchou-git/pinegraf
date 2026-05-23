@@ -7,6 +7,7 @@ const logoutBtn = document.getElementById("logout-btn");
 const crawlBtn = document.getElementById("crawl-btn");
 const previewBtn = document.getElementById("preview-btn");
 const parseBtn = document.getElementById("parse-btn");
+const auditBtn = document.getElementById("audit-btn");
 const stopBtn = document.getElementById("stop-btn");
 const logEl = document.getElementById("log");
 const progressWrap = document.getElementById("progress-wrap");
@@ -15,6 +16,7 @@ const progressCount = document.getElementById("progress-count");
 const progressFill = document.getElementById("progress-fill");
 const progressUsage = document.getElementById("progress-usage");
 const previewResult = document.getElementById("preview-result");
+const auditResult = document.getElementById("audit-result");
 const usageTotal = document.getElementById("usage-total");
 const usageModels = document.getElementById("usage-models");
 const parseFilterForm = document.getElementById("parse-filter-form");
@@ -133,6 +135,7 @@ function showAdmin() {
   loginCard.hidden = true;
   adminCard.hidden = false;
   loadUsageSummary();
+  loadLastAudit();
 }
 
 async function checkAuth() {
@@ -181,6 +184,7 @@ function setRunning(running) {
   crawlBtn.disabled = running;
   previewBtn.disabled = running;
   parseBtn.disabled = running;
+  auditBtn.disabled = running;
   stopBtn.disabled = !running;
 }
 
@@ -252,6 +256,89 @@ async function loadUsageSummary() {
   }
 }
 
+function renderAudit(audit) {
+  auditResult.innerHTML = "";
+  if (!audit) {
+    auditResult.hidden = true;
+    return;
+  }
+  const summary = audit.diff_summary || {};
+  const heading = document.createElement("div");
+  heading.className = "audit-heading";
+  heading.textContent =
+    `audit ${audit.id} | sample ${audit.sample_size} | ` +
+    `jaccard ${Number(summary.global_jaccard ?? 0).toFixed(2)}`;
+  auditResult.appendChild(heading);
+
+  const table = document.createElement("table");
+  table.className = "audit-table";
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["page", "thrifty", "frontier", "jaccard"].forEach((label) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    headerRow.appendChild(th);
+  });
+  thead.appendChild(headerRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  (summary.per_page || []).forEach((row) => {
+    const tr = document.createElement("tr");
+    [
+      row.page || row.raw_page_id || "",
+      row.thrifty_count ?? 0,
+      row.frontier_count ?? 0,
+      Number(row.jaccard ?? 0).toFixed(2),
+    ].forEach((value) => {
+      const td = document.createElement("td");
+      td.textContent = String(value);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  auditResult.appendChild(table);
+  auditResult.hidden = false;
+}
+
+async function loadLastAudit() {
+  try {
+    const res = await fetch("/admin/audit/last");
+    if (!res.ok) return;
+    const data = await res.json();
+    renderAudit(data.audit);
+  } catch {
+    auditResult.hidden = true;
+  }
+}
+
+async function runAudit() {
+  auditBtn.disabled = true;
+  auditResult.hidden = false;
+  auditResult.textContent = "audit running";
+  try {
+    const res = await fetch("/admin/audit/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sample_size: 30 }),
+    });
+    if (res.status === 401) {
+      showLogin();
+      return;
+    }
+    if (!res.ok) {
+      auditResult.textContent = `Audit failed: HTTP ${res.status}`;
+      return;
+    }
+    const data = await res.json();
+    renderAudit(data);
+  } catch (err) {
+    auditResult.textContent = `Audit failed: ${err.message}`;
+  } finally {
+    auditBtn.disabled = false;
+  }
+}
+
 async function startStage(stage) {
   if (evtSource) evtSource.close();
   logEl.innerHTML = "";
@@ -320,6 +407,7 @@ logoutBtn.addEventListener("click", logout);
 crawlBtn.addEventListener("click", () => startStage("crawl"));
 previewBtn.addEventListener("click", previewParse);
 parseBtn.addEventListener("click", () => startStage("parse"));
+auditBtn.addEventListener("click", runAudit);
 stopBtn.addEventListener("click", stopStream);
 parseFilterForm.addEventListener("submit", (event) => {
   event.preventDefault();

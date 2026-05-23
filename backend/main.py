@@ -27,6 +27,7 @@ from backend.config import get_settings
 from backend.db.models import RawPage
 from backend.db.store import KEEP_VERDICTS, SQLITE_WARNING, Store
 from backend.pipeline.crawler import ProgressEvent, SiteCrawler
+from backend.pipeline.extraction_audit import run_extraction_audit
 from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher, TextBoilerplate
 from backend.pipeline.parser import (
     MockExtractionClient,
@@ -71,6 +72,10 @@ class ParseFilterRequest(BaseModel):
     url_pattern: str | None = None
     keywords: list[str] = Field(default_factory=list)
     limit: int | None = Field(default=None, ge=1)
+
+
+class AuditRunRequest(BaseModel):
+    sample_size: int = Field(default=30, ge=1, le=300)
 
 
 # ---------- background job plumbing ----------
@@ -471,6 +476,39 @@ async def admin_usage_summary(request: Request) -> dict[str, object]:
         "dollars": sum(float(row["dollars"]) for row in rows),
     }
     return {"days": 30, "totals": totals, "by_day_model": rows}
+
+
+@app.post("/admin/audit/run")
+async def admin_run_extraction_audit(
+    request: Request,
+    payload: AuditRunRequest | None = None,
+) -> dict[str, object]:
+    _require_admin(request)
+    settings = get_settings()
+    audit_request = payload or AuditRunRequest()
+    return await asyncio.to_thread(
+        run_extraction_audit,
+        store,
+        sample_size=audit_request.sample_size,
+        use_mock_extract=settings.use_mock_extract,
+        openai_api_key=settings.openai_api_key,
+    )
+
+
+@app.get("/admin/audit/last")
+async def admin_last_extraction_audit(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    row = store.latest_audit_run()
+    if row is None:
+        return {"audit": None}
+    return {
+        "audit": {
+            "id": row.id,
+            "run_at": row.run_at.isoformat(),
+            "sample_size": row.sample_size,
+            "diff_summary": row.diff_summary,
+        }
+    }
 
 
 @app.get("/admin/audit")

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, joinedload, sessionmaker
 from backend.db.models import (
     AlumniProfile,
     AuditEvent,
+    AuditRun,
     Base,
     Connection,
     CrawlState,
@@ -611,6 +612,33 @@ class Store:
             _add_usage_row(bucket, row)
         totals["by_model"] = [by_model[model] for model in sorted(by_model)]
         return totals
+
+    def create_audit_run(
+        self,
+        *,
+        sample_size: int,
+        thrifty_results: dict[str, object],
+        frontier_results: dict[str, object],
+        diff_summary: dict[str, object],
+        run_at: datetime | None = None,
+    ) -> AuditRun:
+        with self._session_factory() as session:
+            row = AuditRun(
+                run_at=run_at or _utcnow(),
+                sample_size=sample_size,
+                thrifty_results=thrifty_results,
+                frontier_results=frontier_results,
+                diff_summary=diff_summary,
+            )
+            session.add(row)
+            session.commit()
+            return row
+
+    def latest_audit_run(self) -> AuditRun | None:
+        with self._session_factory() as session:
+            return session.execute(
+                select(AuditRun).order_by(AuditRun.run_at.desc(), AuditRun.id.desc()).limit(1)
+            ).scalar_one_or_none()
 
     def replace_entity_attributes(
         self,
