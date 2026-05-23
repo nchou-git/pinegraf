@@ -47,6 +47,7 @@ from backend.pipeline.query import (
     QueryClient,
 )
 from backend.pricing import estimate_llm_dollars
+from backend.resolution.embeddings import OpenAIEmbeddingClient
 
 logger = logging.getLogger(__name__)
 DONE_SENTINEL = "__done__"
@@ -166,6 +167,7 @@ def build_parser() -> Parser:
             model="gpt-5.4",
             store=store,
         ),
+        embedding_client=OpenAIEmbeddingClient(api_key=settings.openai_api_key, store=store),
     )
 
 

@@ -24,6 +24,7 @@ dependencies = [
   "lxml",
   "openpyxl",
   "tiktoken",
+  "pgvector",
 ]
 
 [build-system]

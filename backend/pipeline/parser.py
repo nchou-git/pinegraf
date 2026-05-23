@@ -23,6 +23,7 @@ from backend.db.store import SYNTHESIS_VERDICTS, Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.openai_retry import async_retry_openai_call, retry_openai_call
 from backend.pricing import estimate_llm_dollars
+from backend.resolution.embeddings import EmbeddingClient
 from backend.resolution.entity_resolver import resolve_or_create
 
 MAX_EXTRACTION_CHARS = 30_000
@@ -1029,11 +1030,13 @@ class Parser:
         extractor: ExtractionClient,
         validator: ValidationClient,
         synthesizer: SynthesisClient,
+        embedding_client: EmbeddingClient | None = None,
     ) -> None:
         self.store = store
         self.extractor = extractor
         self.validator = validator
         self.synthesizer = synthesizer
+        self.embedding_client = embedding_client
 
     def run(self, emit: Callable[[ProgressEvent], None], *, force: bool = False) -> None:
         asyncio.run(self.run_async(emit, force=force))
@@ -1454,7 +1457,12 @@ class Parser:
         if class_year:
             context["class_year"] = class_year
         with self.store.session() as session:
-            entity_id = resolve_or_create(raw_page.alum_name, session=session, context=context)
+            entity_id = resolve_or_create(
+                raw_page.alum_name,
+                session=session,
+                context=context,
+                embedding_client=self.embedding_client,
+            )
             session.commit()
         self.store.set_raw_page_entity(raw_page.id, entity_id)
         raw_page.entity_id = entity_id

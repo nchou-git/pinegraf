@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session
 from backend.config import get_settings
 from backend.db.models import AlumniProfile, Entity, EntityAlias, EntityAttribute
 from backend.db.store import Store
+from backend.resolution.embeddings import (
+    DeterministicEmbeddingClient,
+    EmbeddingClient,
+    OpenAIEmbeddingClient,
+)
 from backend.resolution.entity_resolver import resolve_or_create
 
 SOURCE_ID = "alumni_xlsx_v2"
@@ -113,11 +118,17 @@ class ImportSummary:
     attributes_written: int
 
 
-def import_workbook(path: Path, store: Store) -> ImportSummary:
+def import_workbook(
+    path: Path,
+    store: Store,
+    *,
+    embedding_client: EmbeddingClient | None = None,
+) -> ImportSummary:
     rows = read_workbook(path)
     entity_attributes: dict[uuid.UUID, list[tuple[str, str]]] = {}
     profile_rows: dict[uuid.UUID, AlumniRow] = {}
     skipped = 0
+    embedding_client = embedding_client or DeterministicEmbeddingClient()
 
     with store.session() as session:
         for row in rows:
@@ -129,6 +140,7 @@ def import_workbook(path: Path, store: Store) -> ImportSummary:
                 row=row,
                 class_year=class_year,
                 current_employer=current_employer,
+                embedding_client=embedding_client,
             )
             entity_attributes.setdefault(entity_id, [])
             profile_rows[entity_id] = row
@@ -185,6 +197,7 @@ def _resolve_entity_for_row(
     row: AlumniRow,
     class_year: str,
     current_employer: str,
+    embedding_client: EmbeddingClient,
 ) -> uuid.UUID:
     if not class_year:
         existing = _entity_from_source_alias(session, row.name)
@@ -196,7 +209,12 @@ def _resolve_entity_for_row(
         context["class_year"] = class_year
     if current_employer:
         context["current_company"] = current_employer
-    return resolve_or_create(row.name, session=session, context=context)
+    return resolve_or_create(
+        row.name,
+        session=session,
+        context=context,
+        embedding_client=embedding_client,
+    )
 
 
 def _entity_from_source_alias(session: Session, name: str) -> uuid.UUID | None:
@@ -436,11 +454,21 @@ def main(argv: list[str] | None = None) -> int:
         default=get_settings().database_url,
         help="Database URL. Defaults to DATABASE_URL from .env.",
     )
+    parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local embeddings instead of OpenAI.",
+    )
     args = parser.parse_args(argv)
 
     store = Store(args.database_url)
+    settings = get_settings()
+    if args.mock_embeddings or not settings.openai_api_key:
+        embedding_client: EmbeddingClient = DeterministicEmbeddingClient()
+    else:
+        embedding_client = OpenAIEmbeddingClient(api_key=settings.openai_api_key, store=store)
     try:
-        summary = import_workbook(args.path, store)
+        summary = import_workbook(args.path, store, embedding_client=embedding_client)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 2

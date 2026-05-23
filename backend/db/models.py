@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     Date,
@@ -23,6 +24,7 @@ from sqlalchemy.types import JSON, TypeDecorator
 
 JSONList = JSONB().with_variant(JSON(), "sqlite")
 JSONDict = JSONB().with_variant(JSON(), "sqlite")
+EmbeddingVector = Vector(1536).with_variant(JSON(), "sqlite")
 
 
 class Base(DeclarativeBase):
@@ -70,6 +72,8 @@ class Entity(Base):
     )
     entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
     canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name_embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector, nullable=True)
+    context_embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,

@@ -10,6 +10,7 @@ class ModelPrice:
 
 
 MODEL_PRICES: dict[str, ModelPrice] = {
+    "text-embedding-3-small": ModelPrice(input_per_million=0.02, output_per_million=0.0),
     "gpt-5.4-mini": ModelPrice(input_per_million=0.25, output_per_million=2.00),
     "gpt-5.4": ModelPrice(input_per_million=3.00, output_per_million=15.00),
     "gpt-5.5": ModelPrice(input_per_million=5.00, output_per_million=20.00),
