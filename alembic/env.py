@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 from logging.config import fileConfig
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
