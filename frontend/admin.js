@@ -5,6 +5,7 @@ const loginErr = document.getElementById("login-err");
 const loginBtn = document.getElementById("login-btn");
 const logoutBtn = document.getElementById("logout-btn");
 const crawlBtn = document.getElementById("crawl-btn");
+const previewBtn = document.getElementById("preview-btn");
 const parseBtn = document.getElementById("parse-btn");
 const stopBtn = document.getElementById("stop-btn");
 const logEl = document.getElementById("log");
@@ -12,6 +13,10 @@ const progressWrap = document.getElementById("progress-wrap");
 const progressLabel = document.getElementById("progress-label");
 const progressCount = document.getElementById("progress-count");
 const progressFill = document.getElementById("progress-fill");
+const progressUsage = document.getElementById("progress-usage");
+const previewResult = document.getElementById("preview-result");
+const usageTotal = document.getElementById("usage-total");
+const usageModels = document.getElementById("usage-models");
 
 let evtSource = null;
 let activeStage = null;
@@ -30,6 +35,7 @@ function showProgress(stage) {
   progressWrap.hidden = false;
   progressLabel.textContent = stage === "crawl" ? "Crawling" : "Parsing";
   progressCount.textContent = "0 / ?";
+  progressUsage.textContent = "";
   progressFill.style.width = "0%";
   progressFill.classList.remove("done", "err");
 }
@@ -47,6 +53,20 @@ function updateProgress(ev) {
     progressFill.classList.add(ev.error ? "err" : "done");
     progressLabel.textContent = ev.error ? "Failed" : "Complete";
   }
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("en-US").format(value ?? 0);
+}
+
+function formatMoney(value) {
+  return `$${Number(value ?? 0).toFixed(4)}`;
+}
+
+function updateRunUsage(ev) {
+  progressUsage.textContent =
+    `${formatNumber(ev.calls)} calls | ${formatNumber(ev.total_tokens)} tokens | ` +
+    `${formatMoney(ev.dollars)}`;
 }
 
 function formatEvent(ev) {
@@ -71,6 +91,18 @@ function formatEvent(ev) {
       return `parse_start: ${ev.page_total ?? "?"} pages`;
     case "page_parsed":
       return `parsed ${ev.url}`;
+    case "chunk_done":
+      return `chunk ${ev.chunk_index ?? "?"} parsed ${ev.url}`;
+    case "chunk_skipped_cache":
+      return `chunk ${ev.chunk_index ?? "?"} cache ${ev.url}`;
+    case "chunk_skipped_triage":
+      return `chunk ${ev.chunk_index ?? "?"} skipped ${ev.url}`;
+    case "chunk_escalated":
+      return `chunk ${ev.chunk_index ?? "?"} escalated ${ev.url}`;
+    case "rate_limit_pause":
+      return `rate_limit_pause ${ev.pause_seconds ?? "?"}s`;
+    case "usage_tick":
+      return `usage ${formatNumber(ev.calls)} calls ${formatMoney(ev.dollars)}`;
     case "alum_start":
       return `> ${ev.name}`;
     case "alum_done":
@@ -96,6 +128,7 @@ function showLogin() {
 function showAdmin() {
   loginCard.hidden = true;
   adminCard.hidden = false;
+  loadUsageSummary();
 }
 
 async function checkAuth() {
@@ -142,8 +175,63 @@ async function logout() {
 
 function setRunning(running) {
   crawlBtn.disabled = running;
+  previewBtn.disabled = running;
   parseBtn.disabled = running;
   stopBtn.disabled = !running;
+}
+
+async function previewParse() {
+  previewBtn.disabled = true;
+  previewResult.hidden = true;
+  previewResult.textContent = "";
+  try {
+    const res = await fetch("/admin/parse/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (res.status === 401) {
+      showLogin();
+      return;
+    }
+    if (!res.ok) {
+      previewResult.textContent = `Preview failed: HTTP ${res.status}`;
+      previewResult.hidden = false;
+      return;
+    }
+    const data = await res.json();
+    previewResult.textContent =
+      `${formatNumber(data.page_count)} pages | ` +
+      `${formatNumber(data.total_estimated_tokens)} tokens | ` +
+      `${formatMoney(data.estimated_dollar_cost)} | ` +
+      `${formatNumber(data.estimated_wall_clock_seconds)}s`;
+    previewResult.hidden = false;
+  } catch (err) {
+    previewResult.textContent = `Preview failed: ${err.message}`;
+    previewResult.hidden = false;
+  } finally {
+    previewBtn.disabled = false;
+  }
+}
+
+async function loadUsageSummary() {
+  try {
+    const res = await fetch("/admin/usage/summary");
+    if (!res.ok) return;
+    const data = await res.json();
+    usageTotal.textContent =
+      `${formatNumber(data.totals.calls)} calls | ` +
+      `${formatNumber(data.totals.total_tokens)} tokens | ${formatMoney(data.totals.dollars)}`;
+    const dollarsByModel = (data.by_day_model || []).reduce((acc, row) => {
+      acc[row.model] = (acc[row.model] || 0) + row.dollars;
+      return acc;
+    }, {});
+    usageModels.textContent = Object.entries(dollarsByModel)
+      .map(([model, dollars]) => `${model}: ${formatMoney(dollars)}`)
+      .join(" | ");
+  } catch {
+    usageTotal.textContent = "usage unavailable";
+  }
 }
 
 async function startStage(stage) {
@@ -173,8 +261,12 @@ async function startStage(stage) {
       const summary = formatEvent(data);
       const cls = data.error || data.kind === "page_error" ? "log-err" : "log-evt";
       appendLog(summary, cls);
+      if (data.kind === "usage_tick") updateRunUsage(data);
       updateProgress(data);
-      if (data.kind === "done") stopStream();
+      if (data.kind === "done") {
+        loadUsageSummary();
+        stopStream();
+      }
     };
     evtSource.onerror = () => {
       appendLog("[stream closed]", "log-evt");
@@ -203,6 +295,7 @@ pwInput.addEventListener("keydown", (e) => {
 });
 logoutBtn.addEventListener("click", logout);
 crawlBtn.addEventListener("click", () => startStage("crawl"));
+previewBtn.addEventListener("click", previewParse);
 parseBtn.addEventListener("click", () => startStage("parse"));
 stopBtn.addEventListener("click", stopStream);
 

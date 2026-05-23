@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import queue
 import threading
 from collections.abc import AsyncIterator, Callable
@@ -11,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,7 @@ from backend.audit import (
     login_admin,
 )
 from backend.config import get_settings
+from backend.db.models import RawPage
 from backend.db.store import KEEP_VERDICTS, SQLITE_WARNING, Store
 from backend.pipeline.crawler import ProgressEvent, SiteCrawler
 from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher, TextBoilerplate
@@ -34,6 +36,8 @@ from backend.pipeline.parser import (
     OpenAISynthesisClient,
     OpenAIValidationClient,
     Parser,
+    _extraction_tier_mode,
+    _parse_concurrency,
 )
 from backend.pipeline.query import (
     DeepQueryClient,
@@ -42,6 +46,7 @@ from backend.pipeline.query import (
     OpenAIQueryClient,
     QueryClient,
 )
+from backend.pricing import estimate_llm_dollars
 
 logger = logging.getLogger(__name__)
 DONE_SENTINEL = "__done__"
@@ -59,6 +64,12 @@ class LookupRequest(BaseModel):
 class ResearchRequest(BaseModel):
     question: str
     mode: Literal["strict", "deep"] = Field(default="deep")
+
+
+class ParseFilterRequest(BaseModel):
+    url_pattern: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    limit: int | None = Field(default=None, ge=1)
 
 
 # ---------- background job plumbing ----------
@@ -188,9 +199,63 @@ parse_job = StageJob("parse")
 
 def _require_admin(request: Request) -> None:
     if not is_admin_request(request):
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=401, detail="admin auth required")
+
+
+def _pages_for_parse_filter(payload: ParseFilterRequest) -> list[RawPage]:
+    try:
+        return store.list_pages_to_parse(
+            url_pattern=payload.url_pattern,
+            keywords=payload.keywords,
+            limit=payload.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _estimated_page_tokens(page_text: str) -> int:
+    return max(0, math.ceil(len(page_text or "") / 4))
+
+
+def _estimated_parse_dollars(
+    total_tokens: int,
+    page_count: int,
+    *,
+    tier_mode: str,
+) -> float:
+    triage_completion = page_count * 20
+    extraction_completion = max(page_count * 120, math.ceil(total_tokens * 0.15))
+    validation_completion = page_count * 80
+    synthesis_completion = page_count * 120
+    mini_cost = estimate_llm_dollars(
+        "gpt-5.4-mini",
+        prompt_tokens=total_tokens,
+        completion_tokens=triage_completion + validation_completion,
+    )
+    if tier_mode == "frontier_only":
+        extraction_cost = estimate_llm_dollars(
+            "gpt-5.4",
+            prompt_tokens=total_tokens,
+            completion_tokens=extraction_completion,
+        )
+    else:
+        extraction_cost = estimate_llm_dollars(
+            "gpt-5.4-mini",
+            prompt_tokens=total_tokens,
+            completion_tokens=extraction_completion,
+        )
+        if tier_mode == "cascade":
+            extraction_cost += estimate_llm_dollars(
+                "gpt-5.4",
+                prompt_tokens=math.ceil(total_tokens * 0.25),
+                completion_tokens=math.ceil(extraction_completion * 0.25),
+            )
+    synthesis_cost = estimate_llm_dollars(
+        "gpt-5.4",
+        prompt_tokens=math.ceil(total_tokens * 0.2),
+        completion_tokens=synthesis_completion,
+    )
+    return round(mini_cost + extraction_cost + synthesis_cost, 6)
 
 
 # ---------- public read endpoints ----------
@@ -333,6 +398,37 @@ async def admin_crawl_stream(request: Request) -> StreamingResponse:
     return StreamingResponse(_event_generator(crawl_job), media_type="text/event-stream")
 
 
+@app.post("/admin/parse/preview")
+async def admin_parse_preview(
+    request: Request,
+    payload: ParseFilterRequest | None = None,
+) -> dict[str, object]:
+    _require_admin(request)
+    pages = _pages_for_parse_filter(payload or ParseFilterRequest())
+    total_estimated_tokens = sum(_estimated_page_tokens(page.page_text) for page in pages)
+    estimated_chunks = sum(
+        max(1, math.ceil(_estimated_page_tokens(page.page_text) / 4000)) for page in pages
+    )
+    tier_mode = _extraction_tier_mode()
+    concurrency = _parse_concurrency()
+    return {
+        "page_count": len(pages),
+        "total_estimated_tokens": total_estimated_tokens,
+        "estimated_dollar_cost": _estimated_parse_dollars(
+            total_estimated_tokens,
+            len(pages),
+            tier_mode=tier_mode,
+        ),
+        "estimated_wall_clock_seconds": round(
+            (estimated_chunks / max(1, concurrency)) * 1.5,
+            1,
+        ),
+        "estimated_chunks": estimated_chunks,
+        "tier_mode": tier_mode,
+        "parse_concurrency": concurrency,
+    }
+
+
 @app.post("/admin/parse/start")
 async def admin_parse_start(request: Request, force: bool = False) -> dict[str, str | bool]:
     _require_admin(request)
@@ -348,6 +444,20 @@ async def admin_parse_start(request: Request, force: bool = False) -> dict[str, 
 async def admin_parse_stream(request: Request) -> StreamingResponse:
     _require_admin(request)
     return StreamingResponse(_event_generator(parse_job), media_type="text/event-stream")
+
+
+@app.get("/admin/usage/summary")
+async def admin_usage_summary(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    rows = store.llm_usage_summary(days=30)
+    totals = {
+        "calls": sum(int(row["calls"]) for row in rows),
+        "prompt_tokens": sum(int(row["prompt_tokens"]) for row in rows),
+        "completion_tokens": sum(int(row["completion_tokens"]) for row in rows),
+        "total_tokens": sum(int(row["total_tokens"]) for row in rows),
+        "dollars": sum(float(row["dollars"]) for row in rows),
+    }
+    return {"days": 30, "totals": totals, "by_day_model": rows}
 
 
 @app.get("/admin/audit")

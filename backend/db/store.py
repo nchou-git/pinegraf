@@ -6,7 +6,7 @@ import logging
 import re
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha1, sha256
 from pathlib import Path
 from typing import Any
@@ -388,12 +388,37 @@ class Store:
                 ).scalars()
             )
 
-    def list_pages_to_parse(self, *, force: bool = False) -> list[RawPage]:
+    def list_pages_to_parse(
+        self,
+        *,
+        force: bool = False,
+        url_pattern: str | None = None,
+        keywords: Iterable[str] | None = None,
+        limit: int | None = None,
+    ) -> list[RawPage]:
         with self._session_factory() as session:
             stmt = select(RawPage).order_by(RawPage.alum_name.asc(), RawPage.id.asc())
             if not force:
                 stmt = stmt.where(RawPage.parsed_at.is_(None))
-            return list(session.execute(stmt).scalars())
+            pages = list(session.execute(stmt).scalars())
+        if url_pattern:
+            try:
+                url_regex = re.compile(url_pattern)
+            except re.error as exc:
+                raise ValueError(f"invalid url_pattern regex: {exc}") from exc
+            pages = [page for page in pages if url_regex.search(page.source_url)]
+        cleaned_keywords = [
+            keyword.strip().lower() for keyword in keywords or [] if keyword.strip()
+        ]
+        if cleaned_keywords:
+            pages = [
+                page
+                for page in pages
+                if any(keyword in _page_keyword_haystack(page) for keyword in cleaned_keywords)
+            ]
+        if limit is not None and limit > 0:
+            pages = pages[:limit]
+        return pages
 
     def mark_raw_page_parsed(
         self,
@@ -527,6 +552,65 @@ class Store:
                 )
             )
             session.commit()
+
+    def llm_usage_summary(self, *, days: int = 30) -> list[dict[str, object]]:
+        cutoff = _utcnow() - timedelta(days=days)
+        with self._session_factory() as session:
+            rows = list(
+                session.execute(
+                    select(LLMUsage).where(LLMUsage.ts >= cutoff).order_by(LLMUsage.ts.asc())
+                ).scalars()
+            )
+        buckets: dict[tuple[str, str], dict[str, object]] = {}
+        for row in rows:
+            day = row.ts.date().isoformat()
+            key = (day, row.model)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "day": day,
+                    "model": row.model,
+                    "calls": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "dollars": 0.0,
+                },
+            )
+            _add_usage_row(bucket, row)
+        return [buckets[key] for key in sorted(buckets)]
+
+    def llm_usage_totals_since(self, since: datetime) -> dict[str, object]:
+        with self._session_factory() as session:
+            rows = list(
+                session.execute(
+                    select(LLMUsage).where(LLMUsage.ts >= since).order_by(LLMUsage.ts.asc())
+                ).scalars()
+            )
+        totals: dict[str, object] = {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "dollars": 0.0,
+        }
+        by_model: dict[str, dict[str, object]] = {}
+        for row in rows:
+            _add_usage_row(totals, row)
+            bucket = by_model.setdefault(
+                row.model,
+                {
+                    "model": row.model,
+                    "calls": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "dollars": 0.0,
+                },
+            )
+            _add_usage_row(bucket, row)
+        totals["by_model"] = [by_model[model] for model in sorted(by_model)]
+        return totals
 
     def replace_entity_attributes(
         self,
@@ -1214,6 +1298,20 @@ def _parse_position_content(content: str) -> dict[str, object]:
     if not isinstance(loaded, dict):
         return {}
     return loaded
+
+
+def _page_keyword_haystack(page: RawPage) -> str:
+    return " ".join([page.source_url, page.page_title, page.page_text]).lower()
+
+
+def _add_usage_row(bucket: dict[str, object], row: LLMUsage) -> None:
+    prompt_tokens = int(bucket["prompt_tokens"]) + row.prompt_tokens
+    completion_tokens = int(bucket["completion_tokens"]) + row.completion_tokens
+    bucket["calls"] = int(bucket["calls"]) + 1
+    bucket["prompt_tokens"] = prompt_tokens
+    bucket["completion_tokens"] = completion_tokens
+    bucket["total_tokens"] = prompt_tokens + completion_tokens
+    bucket["dollars"] = float(bucket["dollars"]) + row.dollars
 
 
 def _date_ordinal(value: date | None) -> int:

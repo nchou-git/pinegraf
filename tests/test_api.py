@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import math
 import sys
 from datetime import UTC, datetime
 
@@ -168,6 +169,65 @@ def test_admin_audit_filters(monkeypatch, tmp_path) -> None:
     assert len(payload["events"]) == 1
     assert payload["events"][0]["actor"] == "anon"
     assert payload["events"][0]["action"] == "lookup"
+
+
+def test_admin_parse_preview_counts_filtered_unparsed_pages(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    gyrobike_text = "Errik Anderson worked on Gyrobike at Tuck."
+    main.store.save_raw_page(
+        alum_name="Errik Anderson",
+        source_url="https://example.com/gyrobike",
+        page_title="Gyrobike",
+        page_text=gyrobike_text,
+    )
+    main.store.save_raw_page(
+        alum_name="Jane Doe",
+        source_url="https://example.com/jane",
+        page_title="Jane",
+        page_text="Jane Doe works at Acme.",
+    )
+
+    async def run() -> dict[str, object]:
+        async with _client(main) as client:
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            response = await client.post(
+                "/admin/parse/preview",
+                json={"keywords": ["gyrobike"], "limit": 10},
+            )
+        assert response.status_code == 200
+        return response.json()
+
+    payload = asyncio.run(run())
+    assert payload["page_count"] == 1
+    assert payload["total_estimated_tokens"] == math.ceil(len(gyrobike_text) / 4)
+    assert payload["estimated_dollar_cost"] >= 0
+    assert payload["parse_concurrency"] >= 1
+
+
+def test_admin_usage_summary_returns_llm_usage_totals(monkeypatch, tmp_path) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    main.store.record_llm_usage(
+        model="gpt-5.4-mini",
+        prompt_tokens=100,
+        completion_tokens=50,
+        dollars=0.01,
+        purpose="test",
+    )
+
+    async def run() -> dict[str, object]:
+        async with _client(main) as client:
+            login = await client.post("/admin/login", json={"password": "test-password"})
+            client.cookies.update(login.cookies)
+            response = await client.get("/admin/usage/summary")
+        assert response.status_code == 200
+        return response.json()
+
+    payload = asyncio.run(run())
+    assert payload["totals"]["calls"] == 1
+    assert payload["totals"]["total_tokens"] == 150
+    assert payload["totals"]["dollars"] == 0.01
+    assert payload["by_day_model"][0]["model"] == "gpt-5.4-mini"
 
 
 # ---------- static frontends ----------

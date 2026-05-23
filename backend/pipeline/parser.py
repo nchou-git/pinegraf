@@ -1047,6 +1047,7 @@ class Parser:
         pages = self.store.list_pages_to_parse(force=force)
         total_pages = len(pages)
         parsed_pages = 0
+        run_started_at = datetime.now(UTC)
 
         pages_by_alum: dict[tuple[str, uuid.UUID], list[RawPage]] = defaultdict(list)
         page_entity_ids: dict[int, uuid.UUID] = {}
@@ -1124,6 +1125,27 @@ class Parser:
                 )
             )
 
+        usage_ticker_done = asyncio.Event()
+
+        async def emit_usage_ticks() -> None:
+            while not usage_ticker_done.is_set():
+                try:
+                    await asyncio.wait_for(usage_ticker_done.wait(), timeout=5.0)
+                except TimeoutError:
+                    emit(
+                        ProgressEvent(
+                            "usage_tick",
+                            self.store.llm_usage_totals_since(run_started_at),
+                        )
+                    )
+            emit(
+                ProgressEvent(
+                    "usage_tick",
+                    self.store.llm_usage_totals_since(run_started_at),
+                )
+            )
+
+        usage_ticker = asyncio.create_task(emit_usage_ticks())
         page_semaphore = asyncio.Semaphore(_parse_concurrency())
 
         async def parse_page(
@@ -1248,6 +1270,8 @@ class Parser:
                 )
             )
         finally:
+            usage_ticker_done.set()
+            await usage_ticker
             await self.extractor.aclose()
             await self.validator.aclose()
             await self.synthesizer.aclose()
