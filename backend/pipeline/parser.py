@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -10,14 +12,16 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal, TypeVar
 
+import httpx
+import openai
 import tiktoken
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel, Field, model_validator
 
 from backend.db.models import RawPage
 from backend.db.store import SYNTHESIS_VERDICTS, Store
 from backend.pipeline.crawler import ProgressEvent
-from backend.pipeline.openai_retry import retry_openai_call
+from backend.pipeline.openai_retry import async_retry_openai_call, retry_openai_call
 from backend.pricing import estimate_llm_dollars
 from backend.resolution.entity_resolver import resolve_or_create
 
@@ -48,6 +52,27 @@ class Chunk:
     @property
     def sha256(self) -> str:
         return sha256(self.text.encode("utf-8")).hexdigest()
+
+
+ChunkEventEmitter = Callable[[str, RawPage, Chunk | None, dict[str, object], bool], None]
+
+
+@dataclass(frozen=True)
+class TriageOutcome:
+    result: TriageResult
+    cache_hit: bool = False
+
+
+@dataclass(frozen=True)
+class ModelExtractionOutcome:
+    extraction: ChunkExtraction
+    cache_hit: bool = False
+
+
+@dataclass(frozen=True)
+class ChunkExtractionOutcome:
+    extraction: ChunkExtraction
+    cache_hit: bool = False
 
 
 class ExtractedProfile(BaseModel):
@@ -178,6 +203,19 @@ class SynthesizedProfile(BaseModel):
 
 
 class ExtractionClient:
+    async def extract_page_async(
+        self,
+        raw_page: RawPage,
+        chunks: list[Chunk],
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> PageExtraction:
+        extraction = await asyncio.to_thread(self.extract_page, raw_page, chunks)
+        if emit_chunk_event is not None:
+            for chunk in chunks:
+                emit_chunk_event("chunk_done", raw_page, chunk, {}, True)
+        return extraction
+
     def extract_page(self, raw_page: RawPage, chunks: list[Chunk]) -> PageExtraction:
         del chunks
         return self.extract(raw_page)
@@ -185,13 +223,37 @@ class ExtractionClient:
     def extract(self, raw_page: RawPage) -> PageExtraction:
         raise NotImplementedError
 
+    async def aclose(self) -> None:
+        return None
+
 
 class ValidationClient:
+    async def validate_async(
+        self,
+        raw_page: RawPage,
+        extraction: PageExtraction,
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> ValidationResult:
+        del emit_chunk_event
+        return await asyncio.to_thread(self.validate, raw_page, extraction)
+
     def validate(self, raw_page: RawPage, extraction: PageExtraction) -> ValidationResult:
         raise NotImplementedError
 
+    async def aclose(self) -> None:
+        return None
+
 
 class SynthesisClient:
+    async def synthesize_async(
+        self,
+        alum_name: str,
+        class_year: str,
+        evidence: dict[str, object],
+    ) -> SynthesizedProfile:
+        return await asyncio.to_thread(self.synthesize, alum_name, class_year, evidence)
+
     def synthesize(
         self,
         alum_name: str,
@@ -199,6 +261,9 @@ class SynthesisClient:
         evidence: dict[str, object],
     ) -> SynthesizedProfile:
         raise NotImplementedError
+
+    async def aclose(self) -> None:
+        return None
 
 
 class OpenAIExtractionClient(ExtractionClient):
@@ -210,16 +275,30 @@ class OpenAIExtractionClient(ExtractionClient):
         mini_model: str = "gpt-5.4-mini",
         frontier_model: str = "gpt-5.4",
     ) -> None:
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, max_retries=0)
+        self.http_client = httpx.AsyncClient(http2=True, timeout=60.0)
+        self.async_client = AsyncOpenAI(
+            api_key=api_key,
+            max_retries=0,
+            http_client=self.http_client,
+        )
         self.store = store
         self.mini_model = mini_model
         self.frontier_model = frontier_model
         self.tier_mode = _extraction_tier_mode()
 
+    async def aclose(self) -> None:
+        await self.http_client.aclose()
+
     def extract(self, raw_page: RawPage) -> PageExtraction:
         return self.extract_page(raw_page, chunk_page(raw_page.page_text))
 
     def extract_page(self, raw_page: RawPage, chunks: list[Chunk]) -> PageExtraction:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.extract_page_async(raw_page, chunks))
+
         if not chunks:
             return PageExtraction()
 
@@ -237,6 +316,58 @@ class OpenAIExtractionClient(ExtractionClient):
             self._extract_chunk(raw_page, chunks[index]) for index in sorted(full_indices)
         ]
         return page_extraction_from_chunks(raw_page, chunk_extractions)
+
+    async def extract_page_async(
+        self,
+        raw_page: RawPage,
+        chunks: list[Chunk],
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> PageExtraction:
+        if not chunks:
+            return PageExtraction()
+
+        triage_outcomes = await _run_chunk_queue(
+            chunks,
+            lambda _index, chunk: self._triage_chunk_async(
+                raw_page,
+                chunk,
+                emit_chunk_event=emit_chunk_event,
+            ),
+        )
+        triage_results = [outcome.result for outcome in triage_outcomes]
+        any_person = any(result.has_person for result in triage_results)
+        full_indices = {
+            index
+            for index, result in enumerate(triage_results)
+            if any_person or result.has_person or result.confidence <= 0.8
+        }
+        skipped_indices = set(range(len(chunks))) - full_indices
+        for index in sorted(skipped_indices):
+            result = triage_results[index]
+            if emit_chunk_event is not None:
+                emit_chunk_event(
+                    "chunk_skipped_triage",
+                    raw_page,
+                    chunks[index],
+                    {"has_person": result.has_person, "confidence": result.confidence},
+                    True,
+                )
+        if not full_indices:
+            return PageExtraction()
+
+        extraction_outcomes = await _run_chunk_queue(
+            [chunks[index] for index in sorted(full_indices)],
+            lambda _index, chunk: self._extract_chunk_async(
+                raw_page,
+                chunk,
+                emit_chunk_event=emit_chunk_event,
+            ),
+        )
+        return page_extraction_from_chunks(
+            raw_page,
+            [outcome.extraction for outcome in extraction_outcomes],
+        )
 
     def _triage_chunk(self, raw_page: RawPage, chunk: Chunk) -> TriageResult:
         model = self.mini_model
@@ -279,6 +410,55 @@ class OpenAIExtractionClient(ExtractionClient):
         )
         return parsed
 
+    async def _triage_chunk_async(
+        self,
+        raw_page: RawPage,
+        chunk: Chunk,
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> TriageOutcome:
+        model = self.mini_model
+        prompt_version = _prompt_version(TRIAGE_PROMPT, TriageResult)
+        cached = self.store.get_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+        )
+        if cached is not None:
+            return TriageOutcome(result=TriageResult.model_validate(cached), cache_hit=True)
+
+        response = await _parse_openai_response_async(
+            self.async_client,
+            model=model,
+            input_messages=[
+                {
+                    "role": "system",
+                    "content": TRIAGE_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Page URL: {raw_page.source_url}\n"
+                        f"Chunk index: {chunk.chunk_index}\n\n"
+                        f"Chunk text:\n{chunk.text}"
+                    ),
+                },
+            ],
+            text_format=TriageResult,
+            raw_page=raw_page,
+            chunk=chunk,
+            emit_chunk_event=emit_chunk_event,
+        )
+        parsed = response.output_parsed or TriageResult()
+        self._record_usage(response, model=model, purpose="extract_triage", raw_page=raw_page)
+        self.store.set_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+            response_json=parsed.model_dump(),
+        )
+        return TriageOutcome(result=parsed, cache_hit=False)
+
     def _extract_chunk(self, raw_page: RawPage, chunk: Chunk) -> ChunkExtraction:
         if self.tier_mode == "frontier_only":
             return self._extract_chunk_with_model(raw_page, chunk, self.frontier_model)
@@ -289,6 +469,62 @@ class OpenAIExtractionClient(ExtractionClient):
 
         frontier_result = self._extract_chunk_with_model(raw_page, chunk, self.frontier_model)
         return merge_chunk_extractions(mini_result, frontier_result)
+
+    async def _extract_chunk_async(
+        self,
+        raw_page: RawPage,
+        chunk: Chunk,
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> ChunkExtractionOutcome:
+        if self.tier_mode == "frontier_only":
+            outcome = await self._extract_chunk_with_model_async(
+                raw_page,
+                chunk,
+                self.frontier_model,
+                emit_chunk_event=emit_chunk_event,
+            )
+            _emit_full_chunk_terminal(emit_chunk_event, raw_page, chunk, outcome.cache_hit)
+            return ChunkExtractionOutcome(
+                extraction=outcome.extraction,
+                cache_hit=outcome.cache_hit,
+            )
+
+        mini_outcome = await self._extract_chunk_with_model_async(
+            raw_page,
+            chunk,
+            self.mini_model,
+            emit_chunk_event=emit_chunk_event,
+        )
+        if self.tier_mode == "mini_only" or not _has_low_confidence(mini_outcome.extraction):
+            _emit_full_chunk_terminal(emit_chunk_event, raw_page, chunk, mini_outcome.cache_hit)
+            return ChunkExtractionOutcome(
+                extraction=mini_outcome.extraction,
+                cache_hit=mini_outcome.cache_hit,
+            )
+
+        if emit_chunk_event is not None:
+            emit_chunk_event(
+                "chunk_escalated", raw_page, chunk, {"model": self.frontier_model}, False
+            )
+        frontier_outcome = await self._extract_chunk_with_model_async(
+            raw_page,
+            chunk,
+            self.frontier_model,
+            emit_chunk_event=emit_chunk_event,
+        )
+        _emit_full_chunk_terminal(
+            emit_chunk_event,
+            raw_page,
+            chunk,
+            mini_outcome.cache_hit and frontier_outcome.cache_hit,
+        )
+        return ChunkExtractionOutcome(
+            extraction=merge_chunk_extractions(
+                mini_outcome.extraction, frontier_outcome.extraction
+            ),
+            cache_hit=mini_outcome.cache_hit and frontier_outcome.cache_hit,
+        )
 
     def _extract_chunk_with_model(
         self,
@@ -335,6 +571,58 @@ class OpenAIExtractionClient(ExtractionClient):
         )
         return parsed
 
+    async def _extract_chunk_with_model_async(
+        self,
+        raw_page: RawPage,
+        chunk: Chunk,
+        model: str,
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> ModelExtractionOutcome:
+        prompt_version = _prompt_version(CHUNK_PROMPT, ChunkExtraction)
+        cached = self.store.get_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+        )
+        if cached is not None:
+            return ModelExtractionOutcome(
+                extraction=ChunkExtraction.model_validate(cached),
+                cache_hit=True,
+            )
+
+        response = await _parse_openai_response_async(
+            self.async_client,
+            model=model,
+            input_messages=[
+                {"role": "system", "content": CHUNK_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Primary target alumnus, if known: {raw_page.alum_name or 'unknown'}\n"
+                        f"Page URL: {raw_page.source_url}\n"
+                        f"Page title: {raw_page.page_title}\n"
+                        f"Chunk index: {chunk.chunk_index}\n"
+                        f"Chunk char span: {chunk.char_start}-{chunk.char_end}\n\n"
+                        f"Chunk text:\n{chunk.text}"
+                    ),
+                },
+            ],
+            text_format=ChunkExtraction,
+            raw_page=raw_page,
+            chunk=chunk,
+            emit_chunk_event=emit_chunk_event,
+        )
+        parsed = response.output_parsed or ChunkExtraction()
+        self._record_usage(response, model=model, purpose="extract_full", raw_page=raw_page)
+        self.store.set_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+            response_json=parsed.model_dump(),
+        )
+        return ModelExtractionOutcome(extraction=parsed, cache_hit=False)
+
     def _record_usage(
         self,
         response: object,
@@ -366,9 +654,18 @@ class OpenAIValidationClient(ValidationClient):
         model: str = "gpt-5.4-mini",
         store: Store | None = None,
     ) -> None:
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, max_retries=0)
+        self.http_client = httpx.AsyncClient(http2=True, timeout=60.0)
+        self.async_client = AsyncOpenAI(
+            api_key=api_key,
+            max_retries=0,
+            http_client=self.http_client,
+        )
         self.model = model
         self.store = store
+
+    async def aclose(self) -> None:
+        await self.http_client.aclose()
 
     def validate(self, raw_page: RawPage, extraction: PageExtraction) -> ValidationResult:
         payload = {
@@ -438,12 +735,97 @@ class OpenAIValidationClient(ValidationClient):
             )
         return response.output_parsed or ValidationResult()
 
+    async def validate_async(
+        self,
+        raw_page: RawPage,
+        extraction: PageExtraction,
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> ValidationResult:
+        payload = {
+            "connections": [
+                connection.model_dump(exclude={"validation_verdict"})
+                for connection in extraction.connections
+            ],
+            "projects": [
+                project.model_dump(exclude={"validation_verdict"})
+                for project in extraction.projects
+            ],
+            "facts": [fact.model_dump(exclude={"validation_verdict"}) for fact in extraction.facts],
+            "positions": [
+                position.model_dump(exclude={"validation_verdict"})
+                for position in extraction.positions
+            ],
+        }
+        if (
+            not payload["connections"]
+            and not payload["projects"]
+            and not payload["facts"]
+            and not payload["positions"]
+        ):
+            return ValidationResult()
+
+        response = await _parse_openai_response_async(
+            self.async_client,
+            model=self.model,
+            input_messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You validate extracted alumni evidence against the source page. "
+                        "For every item, return a verdict: keep when directly supported, "
+                        "uncertain when plausibly supported but weak or ambiguous, and drop "
+                        "when unsupported, misattributed, or about someone else. Use the "
+                        "same zero-based indices from the input arrays."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Alumnus: {raw_page.alum_name}\n"
+                        f"Source URL: {raw_page.source_url}\n\n"
+                        f"Page text:\n{raw_page.page_text[:MAX_EXTRACTION_CHARS]}\n\n"
+                        f"Extracted items:\n{json.dumps(payload, indent=2)}"
+                    ),
+                },
+            ],
+            text_format=ValidationResult,
+            raw_page=raw_page,
+            chunk=None,
+            emit_chunk_event=emit_chunk_event,
+        )
+        if self.store is not None:
+            prompt_tokens, completion_tokens = _usage_tokens(response)
+            self.store.record_llm_usage(
+                model=self.model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                dollars=estimate_llm_dollars(
+                    self.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+                purpose="extract_validation",
+                raw_page_id=raw_page.id,
+                entity_id=raw_page.entity_id,
+            )
+        return response.output_parsed or ValidationResult()
+
 
 class OpenAISynthesisClient(SynthesisClient):
     def __init__(self, api_key: str, model: str = "gpt-5.4", store: Store | None = None) -> None:
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, max_retries=0)
+        self.http_client = httpx.AsyncClient(http2=True, timeout=60.0)
+        self.async_client = AsyncOpenAI(
+            api_key=api_key,
+            max_retries=0,
+            http_client=self.http_client,
+        )
         self.model = model
         self.store = store
+
+    async def aclose(self) -> None:
+        await self.http_client.aclose()
 
     def synthesize(
         self,
@@ -476,6 +858,55 @@ class OpenAISynthesisClient(SynthesisClient):
                 ],
                 text_format=SynthesizedProfile,
             )
+        )
+        if self.store is not None:
+            prompt_tokens, completion_tokens = _usage_tokens(response)
+            self.store.record_llm_usage(
+                model=self.model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                dollars=estimate_llm_dollars(
+                    self.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+                purpose="profile_synthesis",
+            )
+        return response.output_parsed or SynthesizedProfile()
+
+    async def synthesize_async(
+        self,
+        alum_name: str,
+        class_year: str,
+        evidence: dict[str, object],
+    ) -> SynthesizedProfile:
+        response = await _parse_openai_response_async(
+            self.async_client,
+            model=self.model,
+            input_messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Synthesize one concise canonical alumni profile from validated "
+                        "structured evidence. Use keep and uncertain evidence only. Do not "
+                        "introduce facts that are absent from the evidence. Prefer specific "
+                        "recent evidence, leave fields blank when evidence conflicts, and "
+                        "keep the bio summary to two or three sentences."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Alumnus: {alum_name}\n"
+                        f"Class year: {class_year}\n\n"
+                        f"Evidence:\n{json.dumps(evidence, indent=2, default=str)}"
+                    ),
+                },
+            ],
+            text_format=SynthesizedProfile,
+            raw_page=None,
+            chunk=None,
+            emit_chunk_event=None,
         )
         if self.store is not None:
             prompt_tokens, completion_tokens = _usage_tokens(response)
@@ -605,20 +1036,78 @@ class Parser:
         self.synthesizer = synthesizer
 
     def run(self, emit: Callable[[ProgressEvent], None], *, force: bool = False) -> None:
+        asyncio.run(self.run_async(emit, force=force))
+
+    async def run_async(
+        self,
+        emit: Callable[[ProgressEvent], None],
+        *,
+        force: bool = False,
+    ) -> None:
         pages = self.store.list_pages_to_parse(force=force)
         total_pages = len(pages)
         parsed_pages = 0
+
+        pages_by_alum: dict[tuple[str, uuid.UUID], list[RawPage]] = defaultdict(list)
+        page_entity_ids: dict[int, uuid.UUID] = {}
+        for page in pages:
+            entity_id = self._entity_id_for_raw_page(page)
+            page_entity_ids[page.id] = entity_id
+            pages_by_alum[(page.alum_name, entity_id)].append(page)
+
+        chunks_by_page_id = {page.id: chunk_page(page.page_text) for page in pages}
+        total_chunks = sum(len(chunks) for chunks in chunks_by_page_id.values())
+        completed_chunks = 0
+        page_metadata: dict[int, tuple[int, int]] = {}
+        for _group_key, alum_pages in pages_by_alum.items():
+            for page_index, page in enumerate(alum_pages, start=1):
+                page_metadata[page.id] = (page_index, len(alum_pages))
+
         emit(
             ProgressEvent(
                 "parse_start",
-                {"page_total": total_pages, "page_done": parsed_pages, "force": force},
+                {
+                    "page_total": total_pages,
+                    "page_done": parsed_pages,
+                    "chunk_total": total_chunks,
+                    "force": force,
+                    "overall_total": total_chunks,
+                    "overall_done": completed_chunks,
+                },
             )
         )
 
-        pages_by_alum: dict[tuple[str, uuid.UUID], list[RawPage]] = defaultdict(list)
-        for page in pages:
-            entity_id = self._entity_id_for_raw_page(page)
-            pages_by_alum[(page.alum_name, entity_id)].append(page)
+        def emit_chunk_event(
+            kind: str,
+            raw_page: RawPage,
+            chunk: Chunk | None,
+            data: dict[str, object],
+            terminal: bool,
+        ) -> None:
+            nonlocal completed_chunks
+            if terminal:
+                completed_chunks += 1
+            page_index, page_total = page_metadata.get(raw_page.id, (0, 0))
+            payload: dict[str, object] = {
+                "raw_page_id": raw_page.id,
+                "name": raw_page.alum_name,
+                "url": raw_page.source_url,
+                "page_index": page_index,
+                "page_total": page_total,
+                "page_done": parsed_pages,
+                "overall_total": total_chunks,
+                "overall_done": completed_chunks,
+            }
+            if chunk is not None:
+                payload.update(
+                    {
+                        "chunk_index": chunk.chunk_index,
+                        "chunk_char_start": chunk.char_start,
+                        "chunk_char_end": chunk.char_end,
+                    }
+                )
+            payload.update(data)
+            emit(ProgressEvent(kind, payload))
 
         for alum_index, ((alum_name, entity_id), alum_pages) in enumerate(
             pages_by_alum.items(), start=1
@@ -634,11 +1123,28 @@ class Parser:
                     },
                 )
             )
-            page_profiles: list[ExtractedProfile] = []
-            for page_index, raw_page in enumerate(alum_pages, start=1):
-                chunks = chunk_page(raw_page.page_text)
-                extraction = self.extractor.extract_page(raw_page, chunks)
-                validation = self.validator.validate(raw_page, extraction)
+
+        page_semaphore = asyncio.Semaphore(_parse_concurrency())
+
+        async def parse_page(
+            raw_page: RawPage,
+        ) -> tuple[tuple[str, uuid.UUID], int, ExtractedProfile]:
+            nonlocal parsed_pages
+            async with page_semaphore:
+                entity_id = page_entity_ids[raw_page.id]
+                group_key = (raw_page.alum_name, entity_id)
+                page_index, page_total = page_metadata[raw_page.id]
+                chunks = chunks_by_page_id[raw_page.id]
+                extraction = await self.extractor.extract_page_async(
+                    raw_page,
+                    chunks,
+                    emit_chunk_event=emit_chunk_event,
+                )
+                validation = await self.validator.validate_async(
+                    raw_page,
+                    extraction,
+                    emit_chunk_event=emit_chunk_event,
+                )
                 apply_validation(extraction, validation)
                 self.store.replace_structured_items(
                     raw_page_id=raw_page.id,
@@ -678,41 +1184,73 @@ class Parser:
                     attributes=extracted_profile_attributes(extraction.profile),
                 )
                 self.store.mark_raw_page_parsed(raw_page.id)
-                page_profiles.append(extraction.profile)
                 parsed_pages += 1
                 emit(
                     ProgressEvent(
                         "page_parsed",
                         {
-                            "name": alum_name,
+                            "name": raw_page.alum_name,
                             "raw_page_id": raw_page.id,
                             "url": raw_page.source_url,
                             "page_index": page_index,
-                            "page_total": len(alum_pages),
+                            "page_total": page_total,
                             "page_done": parsed_pages,
-                            "overall_total": total_pages,
-                            "overall_done": parsed_pages,
+                            "overall_total": total_chunks,
+                            "overall_done": completed_chunks,
                             "chunk_total": len(chunks),
                             "verdict_counts": verdict_counts(extraction),
                         },
                     )
                 )
+                return group_key, page_index, extraction.profile
 
-            profile = self._synthesize_alum(alum_name, entity_id, page_profiles)
+        try:
+            page_results = await asyncio.gather(*(parse_page(page) for page in pages))
+            page_profiles_by_alum: dict[
+                tuple[str, uuid.UUID], list[tuple[int, ExtractedProfile]]
+            ] = defaultdict(list)
+            for group_key, page_index, page_profile in page_results:
+                page_profiles_by_alum[group_key].append((page_index, page_profile))
+
+            for alum_name, entity_id in pages_by_alum:
+                page_profiles = [
+                    profile
+                    for _page_index, profile in sorted(
+                        page_profiles_by_alum[(alum_name, entity_id)],
+                        key=lambda item: item[0],
+                    )
+                ]
+                profile = await self._synthesize_alum_async(alum_name, entity_id, page_profiles)
+                emit(
+                    ProgressEvent(
+                        "alum_done",
+                        {
+                            "name": alum_name,
+                            "page_total": len(pages_by_alum[(alum_name, entity_id)]),
+                            "overall_total": total_chunks,
+                            "overall_done": completed_chunks,
+                            "page_done": parsed_pages,
+                            "page_total_all": total_pages,
+                            "current_company": profile.current_company,
+                        },
+                    )
+                )
+
             emit(
                 ProgressEvent(
-                    "alum_done",
+                    "done",
                     {
-                        "name": alum_name,
-                        "page_total": len(alum_pages),
-                        "overall_total": total_pages,
-                        "overall_done": parsed_pages,
-                        "current_company": profile.current_company,
+                        "overall_total": total_chunks,
+                        "overall_done": completed_chunks,
+                        "page_total": total_pages,
+                        "page_done": parsed_pages,
                     },
                 )
             )
-
-        emit(ProgressEvent("done", {"overall_total": total_pages, "overall_done": parsed_pages}))
+        finally:
+            await self.extractor.aclose()
+            await self.validator.aclose()
+            await self.synthesizer.aclose()
 
     def _synthesize_alum(
         self,
@@ -799,6 +1337,91 @@ class Parser:
         )
         return profile
 
+    async def _synthesize_alum_async(
+        self,
+        alum_name: str,
+        entity_id: uuid.UUID,
+        page_profiles: list[ExtractedProfile],
+    ) -> SynthesizedProfile:
+        class_year = self.store.get_class_year_for_entity(
+            entity_id
+        ) or self.store.get_class_year_for_alum(alum_name)
+        positions = self.store.get_positions_for_alum(
+            alum_name,
+            set(SYNTHESIS_VERDICTS),
+            entity_id=entity_id,
+        )
+        evidence = {
+            "page_profiles": [profile.model_dump() for profile in page_profiles],
+            "positions": positions,
+            "facts": [
+                {
+                    "category": fact.category,
+                    "content": fact.content,
+                    "confidence": fact.confidence,
+                    "confidence_score": fact.confidence_score,
+                    "text_evidence": fact.text_evidence,
+                    "validation_verdict": fact.validation_verdict,
+                    "source_url": fact.raw_page.source_url if fact.raw_page else "",
+                }
+                for fact in self.store.list_facts_for_alum(
+                    alum_name,
+                    SYNTHESIS_VERDICTS,
+                    entity_id=entity_id,
+                )
+            ],
+            "connections": [
+                {
+                    "connected_name": connection.connected_name,
+                    "context": connection.context,
+                    "relationship_type": connection.relationship_type,
+                    "confidence_score": connection.confidence_score,
+                    "text_evidence": connection.text_evidence,
+                    "validation_verdict": connection.validation_verdict,
+                    "source_url": connection.raw_page.source_url if connection.raw_page else "",
+                }
+                for connection in self.store.list_connections_for_alum(
+                    alum_name,
+                    SYNTHESIS_VERDICTS,
+                    entity_id=entity_id,
+                )
+            ],
+            "projects": [
+                {
+                    "project_name": project.project_name,
+                    "description": project.description,
+                    "confidence_score": project.confidence_score,
+                    "text_evidence": project.text_evidence,
+                    "validation_verdict": project.validation_verdict,
+                    "source_url": project.raw_page.source_url if project.raw_page else "",
+                }
+                for project in self.store.list_projects_for_alum(
+                    alum_name,
+                    SYNTHESIS_VERDICTS,
+                    entity_id=entity_id,
+                )
+            ],
+        }
+        profile = await self.synthesizer.synthesize_async(alum_name, class_year, evidence)
+        first_current = next(
+            (position for position in positions if position.get("is_current")),
+            None,
+        )
+        self.store.upsert_profile(
+            name=alum_name,
+            entity_id=entity_id,
+            class_year=class_year,
+            current_company=str((first_current or {}).get("company", "")).strip()
+            or profile.current_company,
+            current_title=str((first_current or {}).get("title", "")).strip()
+            or profile.current_title,
+            past_companies=profile.past_companies,
+            education=profile.education,
+            bio_summary=profile.bio_summary,
+            last_parsed_at=datetime.now(UTC),
+        )
+        return profile
+
     def _entity_id_for_raw_page(self, raw_page: RawPage) -> uuid.UUID:
         if raw_page.entity_id is not None:
             return raw_page.entity_id
@@ -812,6 +1435,160 @@ class Parser:
         self.store.set_raw_page_entity(raw_page.id, entity_id)
         raw_page.entity_id = entity_id
         return entity_id
+
+
+class OpenAIRateLimiter:
+    def __init__(self) -> None:
+        self._pause_until_monotonic = 0.0
+        self._lock = asyncio.Lock()
+
+    async def wait_if_paused(
+        self,
+        *,
+        raw_page: RawPage | None,
+        chunk: Chunk | None,
+        emit_chunk_event: ChunkEventEmitter | None,
+    ) -> None:
+        while True:
+            async with self._lock:
+                delay = self._pause_until_monotonic - time.monotonic()
+            if delay <= 0:
+                return
+            if emit_chunk_event is not None and raw_page is not None:
+                emit_chunk_event(
+                    "rate_limit_pause",
+                    raw_page,
+                    chunk,
+                    {"pause_seconds": round(delay, 3)},
+                    False,
+                )
+            await asyncio.sleep(delay)
+
+    async def observe_headers(self, headers: object) -> None:
+        request_limit = _header_float(headers, "x-ratelimit-limit-requests")
+        request_remaining = _header_float(headers, "x-ratelimit-remaining-requests")
+        token_limit = _header_float(headers, "x-ratelimit-limit-tokens")
+        token_remaining = _header_float(headers, "x-ratelimit-remaining-tokens")
+        request_low = (
+            request_limit is not None
+            and request_limit > 0
+            and request_remaining is not None
+            and request_remaining / request_limit < 0.1
+        )
+        token_low = (
+            token_limit is not None
+            and token_limit > 0
+            and token_remaining is not None
+            and token_remaining / token_limit < 0.1
+        )
+        if not request_low and not token_low:
+            return
+        pause_seconds = max(1.0, 60.0 - (time.time() % 60.0))
+        async with self._lock:
+            self._pause_until_monotonic = max(
+                self._pause_until_monotonic,
+                time.monotonic() + pause_seconds,
+            )
+
+
+_OPENAI_RATE_LIMITER = OpenAIRateLimiter()
+_OPENAI_SEMAPHORES: dict[int, tuple[int, asyncio.Semaphore]] = {}
+
+
+async def _run_chunk_queue(
+    chunks: list[Chunk],
+    worker_fn: Callable[[int, Chunk], object],
+) -> list[object]:
+    queue: asyncio.Queue[tuple[int, Chunk]] = asyncio.Queue()
+    for index, chunk in enumerate(chunks):
+        queue.put_nowait((index, chunk))
+
+    results: dict[int, object] = {}
+
+    async def worker() -> None:
+        while True:
+            try:
+                index, chunk = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                result = worker_fn(index, chunk)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                results[index] = result
+            finally:
+                queue.task_done()
+
+    worker_count = min(max(1, _parse_concurrency()), max(1, len(chunks)))
+    await asyncio.gather(*(worker() for _ in range(worker_count)))
+    return [results[index] for index in sorted(results)]
+
+
+async def _parse_openai_response_async(
+    client: AsyncOpenAI,
+    *,
+    model: str,
+    input_messages: list[dict[str, str]],
+    text_format: type[BaseModel],
+    raw_page: RawPage | None,
+    chunk: Chunk | None,
+    emit_chunk_event: ChunkEventEmitter | None,
+    rate_limiter: OpenAIRateLimiter = _OPENAI_RATE_LIMITER,
+) -> object:
+    def on_backoff(exc: BaseException, delay: float) -> None:
+        if not isinstance(exc, openai.RateLimitError):
+            return
+        if emit_chunk_event is None or raw_page is None:
+            return
+        emit_chunk_event(
+            "rate_limit_pause",
+            raw_page,
+            chunk,
+            {"pause_seconds": delay, "reason": "429"},
+            False,
+        )
+
+    async def call() -> object:
+        await rate_limiter.wait_if_paused(
+            raw_page=raw_page,
+            chunk=chunk,
+            emit_chunk_event=emit_chunk_event,
+        )
+        async with _openai_dispatch_semaphore():
+            raw_response = await client.responses.with_raw_response.parse(
+                model=model,
+                input=input_messages,
+                text_format=text_format,
+            )
+        await rate_limiter.observe_headers(raw_response.headers)
+        return raw_response.parse()
+
+    return await async_retry_openai_call(call, on_backoff=on_backoff)
+
+
+def _openai_dispatch_semaphore() -> asyncio.Semaphore:
+    loop_id = id(asyncio.get_running_loop())
+    concurrency = _parse_concurrency()
+    existing = _OPENAI_SEMAPHORES.get(loop_id)
+    if existing is None or existing[0] != concurrency:
+        semaphore = asyncio.Semaphore(concurrency)
+        _OPENAI_SEMAPHORES[loop_id] = (concurrency, semaphore)
+        return semaphore
+    return existing[1]
+
+
+def _emit_full_chunk_terminal(
+    emit_chunk_event: ChunkEventEmitter | None,
+    raw_page: RawPage,
+    chunk: Chunk,
+    cache_hit: bool,
+) -> None:
+    if emit_chunk_event is None:
+        return
+    if cache_hit:
+        emit_chunk_event("chunk_skipped_cache", raw_page, chunk, {}, True)
+    else:
+        emit_chunk_event("chunk_done", raw_page, chunk, {}, True)
 
 
 def chunk_page(
@@ -1138,6 +1915,26 @@ def _extraction_tier_mode() -> ExtractionTierMode:
     if value in {"mini_only", "cascade", "frontier_only"}:
         return value  # type: ignore[return-value]
     return "cascade"
+
+
+def _parse_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("PARSE_CONCURRENCY", "8")))
+    except ValueError:
+        return 8
+
+
+def _header_float(headers: object, name: str) -> float | None:
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    value = getter(name)
+    if value is None:
+        return None
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
 
 
 def dedupe_strings(values: Iterable[object]) -> list[str]:

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 from backend.db.models import RawPage
 from backend.db.store import Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.parser import (
+    Chunk,
+    ChunkEventEmitter,
     ChunkExtraction,
     ExtractedConnection,
     ExtractedFact,
@@ -16,6 +21,8 @@ from backend.pipeline.parser import (
     ExtractedRelationship,
     ExtractionClient,
     ItemVerdict,
+    MockSynthesisClient,
+    MockValidationClient,
     PageExtraction,
     Parser,
     SynthesisClient,
@@ -133,6 +140,40 @@ class FakeSynthesisClient(SynthesisClient):
         )
 
 
+class SlowAsyncExtractionClient(ExtractionClient):
+    def __init__(self, delay_seconds: float) -> None:
+        self.delay_seconds = delay_seconds
+        self.calls = 0
+        self.active = 0
+        self.max_active = 0
+
+    async def extract_page_async(
+        self,
+        raw_page: RawPage,
+        chunks: list[Chunk],
+        *,
+        emit_chunk_event: ChunkEventEmitter | None = None,
+    ) -> PageExtraction:
+        self.calls += 1
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(self.delay_seconds)
+            if emit_chunk_event is not None:
+                for chunk in chunks:
+                    emit_chunk_event("chunk_done", raw_page, chunk, {}, True)
+            return PageExtraction(
+                profile=ExtractedProfile(
+                    bio_summary=f"{raw_page.alum_name} was parsed concurrently."
+                )
+            )
+        finally:
+            self.active -= 1
+
+    def extract(self, raw_page: RawPage) -> PageExtraction:
+        raise AssertionError(f"sync extract should not run for {raw_page.source_url}")
+
+
 def make_parser(tmp_path) -> tuple[Store, FakeExtractionClient, FakeSynthesisClient, Parser]:
     store = Store(f"sqlite:///{tmp_path / 'parse.db'}")
     store.init_db()
@@ -222,6 +263,44 @@ def test_parser_returns_multiple_positions_with_correct_type_and_currentness(tmp
         "full_time",
     ]
     assert [position["is_current"] for position in positions].count(True) == 2
+
+
+def test_parser_processes_mock_pages_concurrently_with_chunk_progress(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PARSE_CONCURRENCY", "8")
+    store = Store(f"sqlite:///{tmp_path / 'parallel-parse.db'}")
+    store.init_db()
+    for index in range(50):
+        name = f"Person {index}"
+        store.upsert_profile(name=name, class_year="T'24")
+        store.save_raw_page(
+            alum_name=name,
+            source_url=f"https://example.com/person-{index}",
+            page_title=name,
+            page_text=f"{name} works at Acme Corp.",
+        )
+    extractor = SlowAsyncExtractionClient(delay_seconds=0.05)
+    parser = Parser(
+        store=store,
+        extractor=extractor,
+        validator=MockValidationClient(),
+        synthesizer=MockSynthesisClient(),
+    )
+    events: list[ProgressEvent] = []
+
+    started_at = time.perf_counter()
+    parser.run(events.append)
+    elapsed_seconds = time.perf_counter() - started_at
+
+    assert elapsed_seconds < 5.0
+    assert extractor.calls == 50
+    assert extractor.max_active > 1
+    chunk_events = [event for event in events if event.kind == "chunk_done"]
+    assert len(chunk_events) == 50
+    assert chunk_events[-1].data["overall_total"] == 50
+    assert chunk_events[-1].data["overall_done"] == 50
 
 
 def test_chunk_page_returns_one_chunk_for_short_text() -> None:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TypeVar
 
 import httpx
@@ -10,6 +11,7 @@ import openai
 T = TypeVar("T")
 
 OPENAI_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
+OPENAI_ASYNC_RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0, 16.0)
 
 
 def is_insufficient_quota_error(exc: BaseException) -> bool:
@@ -59,4 +61,24 @@ def retry_openai_call(
             if attempt >= len(backoff_seconds) or not is_retryable_openai_error(exc):
                 raise
             sleep(backoff_seconds[attempt])
+    raise RuntimeError("unreachable OpenAI retry state")
+
+
+async def async_retry_openai_call(
+    call: Callable[[], Awaitable[T]],
+    *,
+    backoff_seconds: Sequence[float] = OPENAI_ASYNC_RETRY_BACKOFF_SECONDS,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    on_backoff: Callable[[BaseException, float], None] | None = None,
+) -> T:
+    for attempt in range(len(backoff_seconds) + 1):
+        try:
+            return await call()
+        except Exception as exc:
+            if attempt >= len(backoff_seconds) or not is_retryable_openai_error(exc):
+                raise
+            delay = backoff_seconds[attempt]
+            if on_backoff is not None:
+                on_backoff(exc, delay)
+            await sleep(delay)
     raise RuntimeError("unreachable OpenAI retry state")
