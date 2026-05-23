@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Literal, TypeVar
+from urllib.parse import urlparse
 
 import httpx
 import openai
@@ -23,6 +24,7 @@ from backend.db.models import RawPage
 from backend.db.store import SYNTHESIS_VERDICTS, Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.openai_retry import async_retry_openai_call, retry_openai_call
+from backend.pipeline.relationship_types import normalize_relationship_type
 from backend.pricing import estimate_llm_dollars
 from backend.resolution.embeddings import EmbeddingClient
 from backend.resolution.entity_resolver import resolve_or_create
@@ -112,6 +114,7 @@ class ExtractedConnection(BaseModel):
     relationship_type: str = "associate"
     confidence_score: float | None = None
     text_evidence: str = ""
+    derivation: str = ""
     validation_verdict: ValidationVerdict = "keep"
 
 
@@ -986,7 +989,8 @@ class OpenAISynthesisClient(SynthesisClient):
 class MockExtractionClient(ExtractionClient):
     def extract(self, raw_page: RawPage) -> PageExtraction:
         lower = raw_page.page_text.lower()
-        first_name = raw_page.alum_name.split()[0].lower()
+        subject_name = _raw_page_subject_name(raw_page)
+        first_name = subject_name.split()[0].lower() if subject_name.split() else ""
         connections: list[ExtractedConnection] = []
         projects: list[ExtractedProject] = []
 
@@ -994,7 +998,7 @@ class MockExtractionClient(ExtractionClient):
             connected_name = "Daniella Reichstetter" if first_name == "errik" else "Errik Anderson"
             connections.append(
                 ExtractedConnection(
-                    subject_name=raw_page.alum_name,
+                    subject_name=subject_name,
                     connected_name=connected_name,
                     context="Worked together on the Gyrobike first-year project at Tuck.",
                     relationship_type="project collaborator",
@@ -1007,7 +1011,7 @@ class MockExtractionClient(ExtractionClient):
             )
             projects.append(
                 ExtractedProject(
-                    subject_name=raw_page.alum_name,
+                    subject_name=subject_name,
                     project_name="Gyrobike FYP",
                     description="Tuck first-year project involving gyrobike work.",
                     confidence_score=0.9,
@@ -1022,8 +1026,7 @@ class MockExtractionClient(ExtractionClient):
                 past_companies=["Beta Inc", "Gamma LLC"] if "beta" in lower else [],
                 education=["Dartmouth Tuck MBA"] if "tuck" in lower else [],
                 bio_summary=(
-                    f"{raw_page.alum_name} has stored public-page evidence from Pinegraf's "
-                    "mock parser."
+                    f"{subject_name} has stored public-page evidence from Pinegraf's mock parser."
                 ),
             ),
             connections=connections,
@@ -1031,10 +1034,10 @@ class MockExtractionClient(ExtractionClient):
             facts=[
                 ExtractedFact(
                     category="career",
-                    content=f"{raw_page.alum_name} is described in a public page.",
+                    content=f"{subject_name} is described in a public page.",
                     confidence="medium",
                     confidence_score=0.7,
-                    text_evidence=f"{raw_page.alum_name} has stored public-page evidence.",
+                    text_evidence=f"{subject_name} has stored public-page evidence.",
                 )
             ],
             positions=[],
@@ -1143,10 +1146,13 @@ class Parser:
 
         pages_by_alum: dict[tuple[str, uuid.UUID], list[RawPage]] = defaultdict(list)
         page_entity_ids: dict[int, uuid.UUID] = {}
+        page_subject_names: dict[int, str] = {}
         for page in pages:
+            subject_name = _raw_page_subject_name(page)
             entity_id = self._entity_id_for_raw_page(page)
+            page_subject_names[page.id] = subject_name
             page_entity_ids[page.id] = entity_id
-            pages_by_alum[(page.alum_name, entity_id)].append(page)
+            pages_by_alum[(subject_name, entity_id)].append(page)
 
         chunks_by_page_id = {page.id: chunk_page(page.page_text) for page in pages}
         total_chunks = sum(len(chunks) for chunks in chunks_by_page_id.values())
@@ -1186,7 +1192,7 @@ class Parser:
             page_index, page_total = page_metadata.get(raw_page.id, (0, 0))
             payload: dict[str, object] = {
                 "raw_page_id": raw_page.id,
-                "name": raw_page.alum_name,
+                "name": page_subject_names.get(raw_page.id, raw_page.alum_name),
                 "url": raw_page.source_url,
                 "page_index": page_index,
                 "page_total": page_total,
@@ -1249,7 +1255,8 @@ class Parser:
             nonlocal parsed_pages
             async with page_semaphore:
                 entity_id = page_entity_ids[raw_page.id]
-                group_key = (raw_page.alum_name, entity_id)
+                subject_name = page_subject_names[raw_page.id]
+                group_key = (subject_name, entity_id)
                 page_index, page_total = page_metadata[raw_page.id]
                 chunks = chunks_by_page_id[raw_page.id]
                 embeddings = await asyncio.to_thread(
@@ -1276,7 +1283,7 @@ class Parser:
                 self._resolve_extraction_entities(raw_page, extraction)
                 self.store.replace_structured_items(
                     raw_page_id=raw_page.id,
-                    alum_name=raw_page.alum_name,
+                    alum_name=subject_name,
                     entity_id=entity_id,
                     facts=[
                         *[fact.model_dump() for fact in extraction.facts],
@@ -1318,7 +1325,7 @@ class Parser:
                     ProgressEvent(
                         "page_parsed",
                         {
-                            "name": raw_page.alum_name,
+                            "name": subject_name,
                             "raw_page_id": raw_page.id,
                             "url": raw_page.source_url,
                             "page_index": page_index,
@@ -1556,13 +1563,14 @@ class Parser:
     def _entity_id_for_raw_page(self, raw_page: RawPage) -> uuid.UUID:
         if raw_page.entity_id is not None:
             return raw_page.entity_id
-        class_year = self.store.get_class_year_for_alum(raw_page.alum_name)
+        subject_name = _raw_page_subject_name(raw_page)
+        class_year = self.store.get_class_year_for_alum(subject_name)
         context = {"source": "extracted_from_page"}
         if class_year:
             context["class_year"] = class_year
         with self.store.session() as session:
             entity_id = resolve_or_create(
-                raw_page.alum_name,
+                subject_name,
                 session=session,
                 context=context,
                 embedding_client=self.embedding_client,
@@ -1973,6 +1981,8 @@ def _append_claim_projection(
     object_value = claim.object_value.strip()
     if not subject_name or not predicate or not (object_name or object_value):
         return
+    normalized_type = normalize_relationship_type(predicate)
+    predicate = normalized_type.relationship_type
     object_key = object_name or object_value
     claim_key = (
         subject_name.casefold(),
@@ -2013,6 +2023,7 @@ def _append_claim_projection(
                     relationship_type=predicate,
                     confidence_score=claim.confidence,
                     text_evidence=claim.text_evidence,
+                    derivation=normalized_type.derivation,
                 )
             )
 
@@ -2219,6 +2230,8 @@ def _ensure_projection_items_for_claims(extraction: PageExtraction) -> None:
         subject_name = claim.subject_name.strip()
         object_name = claim.object_name.strip()
         predicate = claim.predicate.strip() or "associate"
+        normalized_type = normalize_relationship_type(predicate)
+        predicate = normalized_type.relationship_type
         if not subject_name or not object_name:
             continue
         if claim.object_type in {"person", "organization", "project"}:
@@ -2240,6 +2253,7 @@ def _ensure_projection_items_for_claims(extraction: PageExtraction) -> None:
                         relationship_type=predicate,
                         confidence_score=claim.confidence,
                         text_evidence=claim.text_evidence,
+                        derivation=normalized_type.derivation,
                         validation_verdict=claim.validation_verdict,
                     )
                 )
@@ -2418,6 +2432,16 @@ def _parse_concurrency() -> int:
         return max(1, int(os.getenv("PARSE_CONCURRENCY", "8")))
     except ValueError:
         return 8
+
+
+def _raw_page_subject_name(raw_page: RawPage) -> str:
+    for value in (raw_page.alum_name, raw_page.page_title):
+        cleaned = str(value or "").strip()
+        if cleaned:
+            return cleaned
+    slug = urlparse(raw_page.source_url).path.rstrip("/").split("/")[-1]
+    cleaned_slug = re.sub(r"[-_]+", " ", slug).strip()
+    return cleaned_slug.title() if cleaned_slug else "Unknown"
 
 
 def _header_float(headers: object, name: str) -> float | None:

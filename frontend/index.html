@@ -43,7 +43,13 @@
             <input id="lk-year" type="text" placeholder="Class year (T'24)" />
             <button id="lk-go" class="primary" type="button">Search</button>
           </div>
+          <div id="lk-counts" class="counts-footer"></div>
           <div id="lk-results" class="results"></div>
+          <div id="lk-pagination" class="pagination" hidden>
+            <button id="lk-prev" class="secondary" type="button">Prev</button>
+            <span id="lk-page" class="meta"></span>
+            <button id="lk-next" class="secondary" type="button">Next</button>
+          </div>
         </div>
 
         <div class="panel" id="panel-research" hidden>
@@ -55,6 +61,7 @@
             <input id="rs-question" type="text" placeholder="Who worked on gyrobike?" />
             <button id="rs-go" class="primary" type="button">Ask</button>
           </div>
+          <div id="rs-counts" class="counts-footer"></div>
           <div id="answer">Answer will appear here.</div>
         </div>
 
@@ -64,6 +71,7 @@
             <input id="cn-name" type="text" placeholder="Entity name" />
             <button id="cn-go" class="primary" type="button">Search</button>
           </div>
+          <div id="cn-counts" class="counts-footer"></div>
           <div id="cn-results" class="results"></div>
           <div id="cn-detail" class="entity-detail"></div>
         </div>

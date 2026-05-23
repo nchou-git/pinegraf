@@ -222,6 +222,11 @@ button:disabled {
   margin-top: 3px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 0.92rem;
+  transition: background-color 0.4s ease;
+}
+
+.resource-value.flash {
+  background: var(--border);
 }
 
 .resource-models {
@@ -229,6 +234,39 @@ button:disabled {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 0.82rem;
   text-align: right;
+}
+
+.status-banner {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  font-weight: 700;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+  padding: 12px 14px;
+}
+
+.advanced-panel {
+  margin-top: 16px;
+}
+
+@media (max-width: 720px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .preview-result {
@@ -239,6 +277,43 @@ button:disabled {
   background: var(--panel-soft);
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 0.9rem;
+}
+
+.counts-footer {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.skeleton-list {
+  display: grid;
+  gap: 10px;
+}
+
+.skeleton-row {
+  height: 64px;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, var(--panel-soft), var(--border), var(--panel-soft));
+  background-size: 200% 100%;
+  animation: skeleton-pulse 1.2s linear infinite;
+}
+
+.typing {
+  color: var(--muted);
+  font-style: italic;
+}
+
+@keyframes skeleton-pulse {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }
 
 .audit-result {
@@ -400,7 +475,7 @@ h3 {
 }
 
 #log:empty::before {
-  content: "Click Crawl or Parse to start.";
+  content: "Run the pipeline to start.";
   color: var(--muted);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   font-style: italic;

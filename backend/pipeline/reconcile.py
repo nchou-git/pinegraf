@@ -9,15 +9,28 @@ from datetime import UTC, date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.db.models import Connection, Entity, EntityAttribute, EntityConsolidated, Fact, Project
+from backend.db.models import (
+    AlumniProfile,
+    Connection,
+    Entity,
+    EntityAlias,
+    EntityAttribute,
+    EntityConsolidated,
+    Fact,
+    Project,
+)
 from backend.db.store import Store
 from backend.pipeline.position_dates import date_ranges_overlap, parse_position_date
+from backend.pipeline.relationship_types import normalize_relationship_type
+from backend.resolution.entity_resolver import _normalize_match_value
 
 
 @dataclass(frozen=True)
 class ReconcileSummary:
     entities_consolidated: int
     inferred_connections: int
+    explicit_connections_resolved: int = 0
+    explicit_projects_resolved: int = 0
 
 
 def reconcile_graph(store: Store) -> ReconcileSummary:
@@ -28,6 +41,11 @@ def reconcile_graph(store: Store) -> ReconcileSummary:
         consolidated = consolidate_entities(session)
         for row in consolidated:
             session.add(row)
+        session.flush()
+
+        explicit_entities_resolved, explicit_projects_resolved = resolve_explicit_connections(
+            session
+        )
         session.flush()
 
         inferred = [
@@ -41,7 +59,44 @@ def reconcile_graph(store: Store) -> ReconcileSummary:
         return ReconcileSummary(
             entities_consolidated=len(consolidated),
             inferred_connections=len(_dedupe_inferred(inferred)),
+            explicit_connections_resolved=explicit_entities_resolved,
+            explicit_projects_resolved=explicit_projects_resolved,
         )
+
+
+def resolve_explicit_connections(session: Session) -> tuple[int, int]:
+    entity_index = _entity_name_index(session)
+    project_index = _project_name_index(session)
+    rows = list(
+        session.execute(
+            select(Connection).where(
+                Connection.is_inferred.is_(False),
+                Connection.validation_verdict != "drop",
+            )
+        ).scalars()
+    )
+    entity_resolved = 0
+    project_resolved = 0
+    for connection in rows:
+        normalized = normalize_relationship_type(connection.relationship_type)
+        if connection.relationship_type != normalized.relationship_type:
+            connection.derivation = _merge_derivation(
+                connection.derivation,
+                normalized.derivation,
+            )
+            connection.relationship_type = normalized.relationship_type
+        if connection.connected_entity_id is None:
+            entity_id = _resolve_existing_entity_id(entity_index, connection.connected_name)
+            if entity_id is not None:
+                connection.connected_entity_id = entity_id
+                entity_resolved += 1
+                continue
+        if connection.connected_project_id is None:
+            project_id = _resolve_existing_project_id(project_index, connection)
+            if project_id is not None:
+                connection.connected_project_id = project_id
+                project_resolved += 1
+    return entity_resolved, project_resolved
 
 
 def consolidate_entities(session: Session) -> list[EntityConsolidated]:
@@ -300,6 +355,81 @@ def _field_sources(row: EntityConsolidated, field_name: str) -> list[str]:
     if not isinstance(values, list):
         return []
     return [str(value) for value in values]
+
+
+def _entity_name_index(session: Session) -> dict[str, set]:
+    index: dict[str, set] = {}
+    for entity_id, canonical_name in session.execute(select(Entity.id, Entity.canonical_name)):
+        _add_index_value(index, canonical_name, entity_id)
+    for entity_id, alias in session.execute(select(EntityAlias.entity_id, EntityAlias.alias)):
+        _add_index_value(index, alias, entity_id)
+    for entity_id, name in session.execute(
+        select(AlumniProfile.entity_id, AlumniProfile.name).where(
+            AlumniProfile.entity_id.is_not(None)
+        )
+    ):
+        _add_index_value(index, name, entity_id)
+    return index
+
+
+def _project_name_index(session: Session) -> dict[str, list[Project]]:
+    index: dict[str, list[Project]] = {}
+    projects = list(
+        session.execute(select(Project).where(Project.validation_verdict != "drop")).scalars()
+    )
+    for project in projects:
+        index.setdefault(_normalize_project_name(project.project_name), []).append(project)
+    return index
+
+
+def _add_index_value(index: dict[str, set], value: str, entity_id) -> None:
+    key = _normalize_match_value(value)
+    if key:
+        index.setdefault(key, set()).add(entity_id)
+
+
+def _resolve_existing_entity_id(index: dict[str, set], value: str):
+    entity_ids = index.get(_normalize_match_value(value), set())
+    if len(entity_ids) != 1:
+        return None
+    return next(iter(entity_ids))
+
+
+def _resolve_existing_project_id(
+    index: dict[str, list[Project]],
+    connection: Connection,
+) -> int | None:
+    projects = index.get(_normalize_project_name(connection.connected_name), [])
+    if not projects:
+        return None
+    same_source = [
+        project
+        for project in projects
+        if project.source_raw_page_id == connection.source_raw_page_id
+    ]
+    if len(same_source) == 1:
+        return same_source[0].id
+    if connection.relationship_type == "worked_on_project" and len(projects) == 1:
+        return projects[0].id
+    if len(projects) == 1 and _looks_project_relationship(connection.relationship_type):
+        return projects[0].id
+    return None
+
+
+def _looks_project_relationship(relationship_type: str) -> bool:
+    return relationship_type in {"worked_on_project", "co_worked_on", "founded", "related_to"}
+
+
+def _normalize_project_name(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
+
+
+def _merge_derivation(existing: str, incoming: str) -> str:
+    existing = existing.strip()
+    incoming = incoming.strip()
+    if existing and incoming and incoming not in existing:
+        return f"{existing}; {incoming}"
+    return existing or incoming
 
 
 def _dedupe_inferred(connections: list[Connection]) -> list[Connection]:

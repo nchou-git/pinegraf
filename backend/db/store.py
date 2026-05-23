@@ -34,10 +34,12 @@ from backend.db.models import (
     HostBoilerplate,
     LLMUsage,
     PageChunk,
+    PipelineRun,
     Project,
     RawPage,
 )
 from backend.pipeline.position_dates import date_ranges_overlap, parse_position_date
+from backend.pipeline.relationship_types import normalize_relationship_type
 
 logger = logging.getLogger(__name__)
 
@@ -665,6 +667,34 @@ class Store:
             _add_usage_row(bucket, row)
         return [buckets[key] for key in sorted(buckets)]
 
+    def llm_usage_live(self) -> dict[str, object]:
+        with self._session_factory() as session:
+            total_row = session.execute(
+                select(
+                    func.count(LLMUsage.id),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0),
+                    func.coalesce(func.sum(LLMUsage.dollars), 0.0),
+                )
+            ).one()
+            model_rows = session.execute(
+                select(LLMUsage.model, func.coalesce(func.sum(LLMUsage.dollars), 0.0))
+                .group_by(LLMUsage.model)
+                .order_by(LLMUsage.model.asc())
+            ).all()
+        prompt_tokens = int(total_row[1] or 0)
+        completion_tokens = int(total_row[2] or 0)
+        return {
+            "totals": {
+                "calls": int(total_row[0] or 0),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "dollars": float(total_row[3] or 0.0),
+            },
+            "by_model": {str(model): float(dollars or 0.0) for model, dollars in model_rows},
+        }
+
     def llm_usage_totals_since(self, since: datetime) -> dict[str, object]:
         with self._session_factory() as session:
             rows = list(
@@ -723,6 +753,124 @@ class Store:
             return session.execute(
                 select(AuditRun).order_by(AuditRun.run_at.desc(), AuditRun.id.desc()).limit(1)
             ).scalar_one_or_none()
+
+    def admin_stats(self) -> dict[str, int]:
+        with self._session_factory() as session:
+            return {
+                "alumni": int(
+                    session.execute(select(func.count()).select_from(AlumniProfile)).scalar_one()
+                ),
+                "pages_crawled": int(
+                    session.execute(select(func.count()).select_from(RawPage)).scalar_one()
+                ),
+                "pages_parsed": int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(RawPage)
+                        .where(RawPage.parsed_at.is_not(None))
+                    ).scalar_one()
+                ),
+                "entities": int(
+                    session.execute(select(func.count()).select_from(Entity)).scalar_one()
+                ),
+                "connections": int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(Connection)
+                        .where(Connection.connected_entity_id.is_not(None))
+                    ).scalar_one()
+                ),
+            }
+
+    def pipeline_cost_estimate(self) -> dict[str, float]:
+        stats = self.admin_stats()
+        with self._session_factory() as session:
+            total_dollars = float(
+                session.execute(select(func.coalesce(func.sum(LLMUsage.dollars), 0.0))).scalar_one()
+            )
+        parsed_pages = max(0, stats["pages_parsed"])
+        average = total_dollars / parsed_pages if parsed_pages and total_dollars > 0 else 0.02
+        return {
+            "average_cost_per_page": round(average, 6),
+            "estimated_next_run_cost": round(stats["pages_crawled"] * average, 6),
+        }
+
+    def table_counts(self) -> dict[str, int]:
+        with self._session_factory() as session:
+            return {
+                table.name: int(
+                    session.execute(select(func.count()).select_from(table)).scalar_one()
+                )
+                for table in Base.metadata.sorted_tables
+            }
+
+    def reset_extraction_data(self) -> dict[str, int]:
+        models = [
+            Claim,
+            Connection,
+            Fact,
+            Project,
+            PageChunk,
+            RawPage,
+            ExtractionCache,
+            HostBoilerplate,
+        ]
+        deleted: dict[str, int] = {}
+        with self._session_factory() as session:
+            for model in models:
+                deleted[model.__tablename__] = int(
+                    session.query(model).delete(synchronize_session=False)
+                )
+            session.commit()
+        return deleted
+
+    def create_pipeline_run(self, *, started_at: datetime | None = None) -> PipelineRun:
+        with self._session_factory() as session:
+            row = PipelineRun(
+                started_at=started_at or _utcnow(),
+                status="running",
+                error_message="",
+            )
+            session.add(row)
+            session.commit()
+            return row
+
+    def latest_pipeline_run(self) -> PipelineRun | None:
+        with self._session_factory() as session:
+            return session.execute(
+                select(PipelineRun)
+                .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def active_pipeline_run(self) -> PipelineRun | None:
+        with self._session_factory() as session:
+            return session.execute(
+                select(PipelineRun)
+                .where(PipelineRun.status == "running", PipelineRun.finished_at.is_(None))
+                .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+    def finish_pipeline_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        error_message: str = "",
+        finished_at: datetime | None = None,
+    ) -> PipelineRun | None:
+        if status not in {"complete", "failed", "canceled"}:
+            raise ValueError("pipeline run status must be complete, failed, or canceled")
+        with self._session_factory() as session:
+            row = session.get(PipelineRun, run_id)
+            if row is None:
+                return None
+            row.status = status
+            row.error_message = error_message
+            row.finished_at = finished_at or _utcnow()
+            session.commit()
+            return row
 
     def replace_entity_attributes(
         self,
@@ -1026,29 +1174,34 @@ class Store:
                     connection.get("entity_id") or connection.get("subject_entity_id")
                 )
                 connected_entity_id = _coerce_uuid(connection.get("connected_entity_id"))
+                connected_project_id = _coerce_int(connection.get("connected_project_id"))
                 if subject_entity_id is None or connected_entity_id is None:
-                    continue
+                    if subject_entity_id is None or connected_project_id is None:
+                        continue
                 subject_name = (
                     str(connection.get("subject_name", "")).strip()
                     or str(connection.get("alum_name", "")).strip()
                     or alum_name
                 )
+                normalized_type = normalize_relationship_type(
+                    str(connection.get("relationship_type", "associate"))
+                )
+                existing_derivation = str(connection.get("derivation", "")).strip()
+                derivation = _merge_derivation(existing_derivation, normalized_type.derivation)
                 session.add(
                     Connection(
                         alum_name=subject_name,
                         entity_id=subject_entity_id,
                         connected_entity_id=connected_entity_id,
+                        connected_project_id=connected_project_id,
                         connected_name=connected_name,
                         source_raw_page_id=raw_page_id,
                         context=str(connection.get("context", "")).strip(),
-                        relationship_type=(
-                            str(connection.get("relationship_type", "associate")).strip()
-                            or "associate"
-                        ),
+                        relationship_type=normalized_type.relationship_type,
                         confidence_score=_as_float_or_none(connection.get("confidence_score")),
                         text_evidence=str(connection.get("text_evidence", "")).strip(),
                         is_inferred=bool(connection.get("is_inferred", False)),
-                        derivation=str(connection.get("derivation", "")).strip(),
+                        derivation=derivation,
                         source_ids=_as_string_list(connection.get("source_ids")),
                         validation_verdict=_clean_verdict(connection.get("validation_verdict")),
                     )
@@ -1233,7 +1386,9 @@ class Store:
                 stmt = stmt.where(Connection.validation_verdict.in_(verdicts))
             if resolved_only:
                 stmt = stmt.where(
-                    Connection.connected_entity_id.is_not(None) | Connection.is_inferred.is_(True)
+                    Connection.connected_entity_id.is_not(None)
+                    | Connection.connected_project_id.is_not(None)
+                    | Connection.is_inferred.is_(True)
                 )
             return list(session.execute(stmt).scalars())
 
@@ -1685,6 +1840,12 @@ def _as_string_list(value: object) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _merge_derivation(existing: str, normalized: str) -> str:
+    if existing and normalized and normalized not in existing:
+        return f"{existing}; {normalized}"
+    return existing or normalized
+
+
 def _page_as_chunk(page: RawPage) -> SimpleNamespace:
     return SimpleNamespace(
         raw_page_id=page.id,
@@ -1917,6 +2078,7 @@ def _entity_detail_diagnostics(session: Session, entity_id: uuid.UUID) -> dict[s
             .where(
                 Connection.entity_id == entity_id,
                 Connection.connected_entity_id.is_(None),
+                Connection.connected_project_id.is_(None),
                 Connection.is_inferred.is_(False),
             )
         ).scalar_one()
@@ -1943,7 +2105,7 @@ def _entity_detail_diagnostics(session: Session, entity_id: uuid.UUID) -> dict[s
 def _should_surface_entity_relationship(connection: Connection, entity_id: uuid.UUID) -> bool:
     if connection.is_inferred:
         return True
-    if connection.connected_entity_id is not None:
+    if connection.connected_entity_id is not None or connection.connected_project_id is not None:
         return connection.entity_id == entity_id or connection.connected_entity_id == entity_id
     if connection.entity_id != entity_id:
         return False
@@ -1968,16 +2130,22 @@ def _entity_relationship_to_dict(
 ) -> dict[str, object]:
     if connection.entity_id == entity_id:
         other_entity_id = connection.connected_entity_id
+        other_project_id = connection.connected_project_id
         other_name = connection.connected_name
     else:
         other_entity_id = connection.entity_id
+        other_project_id = None
         other_name = connection.alum_name
     return {
         "id": connection.id,
         "entity_id": str(connection.entity_id) if connection.entity_id else None,
         "connected_entity_id": str(other_entity_id) if other_entity_id else None,
+        "connected_project_id": other_project_id,
+        "connected_type": (
+            "entity" if other_entity_id else "project" if other_project_id else "unresolved"
+        ),
         "connected_name": other_name,
-        "is_resolved": other_entity_id is not None,
+        "is_resolved": other_entity_id is not None or other_project_id is not None,
         "relationship_type": connection.relationship_type,
         "context": connection.context,
         "confidence_score": connection.confidence_score,
@@ -1998,6 +2166,7 @@ def connection_to_dict(connection: Connection) -> dict[str, object]:
         "connected_entity_id": (
             str(connection.connected_entity_id) if connection.connected_entity_id else None
         ),
+        "connected_project_id": connection.connected_project_id,
         "connected_name": connection.connected_name,
         "source_raw_page_id": connection.source_raw_page_id,
         "source_url": connection.raw_page.source_url if connection.raw_page else "",

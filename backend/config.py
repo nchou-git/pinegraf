@@ -30,6 +30,8 @@ class Settings(BaseModel):
     # Admin auth
     pinegraf_admin_password: str = Field(default="pinegraf")
     pinegraf_admin_cookie_secret: str = Field(default="dev-secret")
+    site_auth_user: str = Field(default="pinegraf")
+    site_auth_password: str = Field(default="")
 
     # Mock toggles for offline dev / tests
     use_mock_extract: bool = Field(default=True)
@@ -42,6 +44,7 @@ class Settings(BaseModel):
     crawl_allowed_domains: list[str] = Field(default_factory=list)
     crawl_max_pages: int = Field(default=500, ge=1)
     crawl_max_depth: int = Field(default=2, ge=0)
+    max_pipeline_cost_usd: float = Field(default=10.0, ge=0)
 
     @field_validator(
         "use_mock_extract",
@@ -50,7 +53,7 @@ class Settings(BaseModel):
         mode="before",
     )
     @classmethod
-    def parse_bool(cls, value: object) -> bool:
+    def parse_bool(_cls, value: object) -> bool:
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -66,6 +69,8 @@ def get_settings() -> Settings:
             database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
             pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf"),
             pinegraf_admin_cookie_secret=os.getenv("PINEGRAF_ADMIN_COOKIE_SECRET", "dev-secret"),
+            site_auth_user=os.getenv("SITE_AUTH_USER", "pinegraf"),
+            site_auth_password=os.getenv("SITE_AUTH_PASSWORD", ""),
             use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
             use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
             use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),
@@ -74,6 +79,7 @@ def get_settings() -> Settings:
             crawl_allowed_domains=_csv("CRAWL_ALLOWED_DOMAINS"),
             crawl_max_pages=int(os.getenv("CRAWL_MAX_PAGES", "500")),
             crawl_max_depth=int(os.getenv("CRAWL_MAX_DEPTH", "2")),
+            max_pipeline_cost_usd=float(os.getenv("MAX_PIPELINE_COST_USD", "10")),
         )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc

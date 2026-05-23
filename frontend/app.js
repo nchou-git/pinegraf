@@ -29,11 +29,57 @@ function esc(s) {
 // ---------- Lookup ----------
 
 const lkResults = document.getElementById("lk-results");
+const lkPagination = document.getElementById("lk-pagination");
+const lkPrev = document.getElementById("lk-prev");
+const lkNext = document.getElementById("lk-next");
+const lkPage = document.getElementById("lk-page");
+const pageSize = 25;
+let lookupOffset = 0;
+let lastLookupPayload = {};
+
+function relativeTime(value) {
+  if (!value) return "unknown";
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(elapsed / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function showLookupSkeleton() {
+  lkResults.innerHTML = `
+    <div class="skeleton-list" aria-label="Loading results">
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+    </div>
+  `;
+}
+
+async function refreshCounts() {
+  try {
+    const res = await fetch("/stats");
+    if (!res.ok) return;
+    const stats = await res.json();
+    const line =
+      `${stats.alumni ?? 0} alumni, ${stats.pages_crawled ?? 0} pages crawled, ` +
+      `${stats.connections ?? 0} connections resolved`;
+    for (const id of ["lk-counts", "rs-counts", "cn-counts"]) {
+      document.getElementById(id).textContent = line;
+    }
+  } catch (_err) {
+    return;
+  }
+}
 
 function renderResults(data) {
   lkResults.innerHTML = "";
+  lkPagination.hidden = true;
   if (!data.results || data.results.length === 0) {
-    lkResults.innerHTML = '<div class="empty">No matches.</div>';
+    lkResults.innerHTML = '<div class="empty">No matches. Try a different name or company.</div>';
     return;
   }
 
@@ -63,6 +109,12 @@ function renderResults(data) {
     `;
     lkResults.appendChild(row);
   }
+  const start = data.count === 0 ? 0 : data.offset + 1;
+  const end = data.offset + data.returned;
+  lkPage.textContent = `${start}-${end} of ${data.count}`;
+  lkPrev.disabled = data.offset <= 0;
+  lkNext.disabled = data.offset + data.limit >= data.count;
+  lkPagination.hidden = data.count <= pageSize;
 }
 
 function renderSources(sources) {
@@ -78,20 +130,27 @@ function renderSources(sources) {
     .join("");
 }
 
-async function runLookup() {
-  const payload = {
-    name: document.getElementById("lk-name").value.trim() || null,
-    company: document.getElementById("lk-company").value.trim() || null,
-    class_year: document.getElementById("lk-year").value.trim() || null,
-  };
+async function runLookup(offset = 0) {
+  if (offset === 0) {
+    lastLookupPayload = {
+      name: document.getElementById("lk-name").value.trim() || null,
+      company: document.getElementById("lk-company").value.trim() || null,
+      class_year: document.getElementById("lk-year").value.trim() || null,
+    };
+  }
+  lookupOffset = Math.max(0, offset);
 
-  lkResults.innerHTML = '<div class="empty">Searching...</div>';
+  showLookupSkeleton();
 
   try {
-    const res = await fetch("/lookup", {
+    const params = new URLSearchParams({
+      offset: String(lookupOffset),
+      limit: String(pageSize),
+    });
+    const res = await fetch(`/lookup?${params}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(lastLookupPayload),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderResults(await res.json());
@@ -100,7 +159,9 @@ async function runLookup() {
   }
 }
 
-document.getElementById("lk-go").addEventListener("click", runLookup);
+document.getElementById("lk-go").addEventListener("click", () => runLookup(0));
+lkPrev.addEventListener("click", () => runLookup(Math.max(0, lookupOffset - pageSize)));
+lkNext.addEventListener("click", () => runLookup(lookupOffset + pageSize));
 for (const id of ["lk-name", "lk-company", "lk-year"]) {
   document.getElementById(id).addEventListener("keydown", (e) => {
     if (e.key === "Enter") runLookup();
@@ -136,17 +197,41 @@ async function runResearch() {
     return;
   }
 
-  answerEl.textContent = "Researching...";
+  answerEl.innerHTML = '<span class="typing">Researching...</span>';
 
   try {
-    const res = await fetch("/research", {
+    const res = await fetch("/research/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, mode: "deep" }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    renderAnswer(data.answer);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let answer = "";
+    answerEl.innerHTML = '<span class="typing">Writing...</span>';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+      for (const event of events) {
+        const line = event.split("\n").find((item) => item.startsWith("data: "));
+        if (!line) continue;
+        const payload = JSON.parse(line.slice(6));
+        if (payload.kind === "token") {
+          answer += payload.text;
+          renderAnswer(answer);
+        }
+      }
+    }
+    if (!answer.trim()) {
+      answerEl.textContent = "I couldn't find an answer in the current data.";
+      return;
+    }
+    renderAnswer(answer);
   } catch (err) {
     answerEl.textContent = `Research failed: ${err.message}`;
   }
@@ -189,7 +274,7 @@ async function searchConnections() {
     const data = await res.json();
     cnResults.innerHTML = "";
     if (!data.results.length) {
-      cnResults.innerHTML = '<div class="empty">No matches.</div>';
+      cnResults.innerHTML = "<div class=\"empty\">We don't have details on this person yet.</div>";
       return;
     }
     for (const entity of data.results) {
@@ -225,7 +310,9 @@ function renderEntity(entity) {
   const attrs = entity.attributes || [];
   const relationships = entity.relationships || [];
   const diagnostics = entity.diagnostics || null;
-  const grouped = relationships.reduce((acc, rel) => {
+  const resolvedRelationships = relationships.filter((rel) => rel.is_resolved !== false);
+  const unresolvedRelationships = relationships.filter((rel) => rel.is_resolved === false);
+  const grouped = resolvedRelationships.reduce((acc, rel) => {
     (acc[rel.relationship_type] ||= []).push(rel);
     return acc;
   }, {});
@@ -234,6 +321,7 @@ function renderEntity(entity) {
       <div class="name">${esc(entity.name)}</div>
       <div class="meta">${esc(consolidated.class_year || "")}</div>
     </div>
+    <div class="meta">Last updated: ${esc(relativeTime(consolidated.updated_at))}</div>
     <div class="attribute-grid">
       ${["current_employer", "current_title", "location"].map((key) => (
         consolidated[key] ? `<div><span class="meta">${esc(key)}</span><br>${esc(consolidated[key])}</div>` : ""
@@ -247,27 +335,39 @@ function renderEntity(entity) {
           <div class="meta">${esc(attr.source)}${attr.last_verified_at ? ` | verified ${esc(attr.last_verified_at)}` : ""}</div>
           ${attr.source_url ? `<a class="meta" href="${esc(attr.source_url)}" target="_blank" rel="noreferrer">${esc(attr.source_url)}</a>` : ""}
         </div>
-      `).join("") || '<div class="empty">No attributes.</div>'}
+      `).join("") || "<div class=\"empty\">We don't have details on this person yet.</div>"}
     </div>
     ${renderDiagnostics(diagnostics)}
     <h3>Connected Entities</h3>
     ${Object.entries(grouped).map(([type, rels]) => `
       <div class="connection-group">
         <div class="role">${esc(type)}</div>
-        ${rels.map((rel) => `
-          <div class="result-row">
-            <div class="name">
-              ${esc(rel.connected_name)}
-              ${rel.is_resolved === false ? '<span class="meta">(unresolved)</span>' : ""}
-            </div>
-            <div class="meta">confidence ${rel.confidence_score ?? ""}</div>
-            ${rel.derivation ? `<div class="meta">${esc(rel.derivation)}</div>` : ""}
-            ${rel.source_url ? `<a class="meta" href="${esc(rel.source_url)}" target="_blank" rel="noreferrer">${esc(rel.source_url)}</a>` : ""}
-            ${rel.text_evidence ? `<div class="meta">${esc(rel.text_evidence)}</div>` : ""}
-          </div>
-        `).join("")}
+        ${rels.map(renderRelationshipRow).join("")}
       </div>
-    `).join("") || '<div class="empty">No relationships.</div>'}
+    `).join("") || "<div class=\"empty\">We don't have details on this person yet.</div>"}
+    ${renderUnresolvedMentions(unresolvedRelationships)}
+  `;
+}
+
+function renderRelationshipRow(rel) {
+  return `
+    <div class="result-row">
+      <div class="name">${esc(rel.connected_name)}</div>
+      <div class="meta">confidence ${rel.confidence_score ?? ""}</div>
+      ${rel.derivation ? `<div class="meta">${esc(rel.derivation)}</div>` : ""}
+      ${rel.source_url ? `<a class="meta" href="${esc(rel.source_url)}" target="_blank" rel="noreferrer">${esc(rel.source_url)}</a>` : ""}
+      ${rel.text_evidence ? `<div class="meta">${esc(rel.text_evidence)}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderUnresolvedMentions(relationships) {
+  if (!relationships.length) return "";
+  return `
+    <details class="sources">
+      <summary>Unresolved mentions (${relationships.length})</summary>
+      ${relationships.map(renderRelationshipRow).join("")}
+    </details>
   `;
 }
 
@@ -285,4 +385,5 @@ document.getElementById("cn-name").addEventListener("keydown", (e) => {
 });
 
 // load empty state
+refreshCounts();
 runLookup();

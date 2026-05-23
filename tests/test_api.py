@@ -18,6 +18,8 @@ def load_mock_main(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
     monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "test-password")
     monkeypatch.setenv("PINEGRAF_ADMIN_COOKIE_SECRET", "test-secret")
+    monkeypatch.setenv("SITE_AUTH_USER", "pinegraf")
+    monkeypatch.setenv("SITE_AUTH_PASSWORD", "site-password")
 
     from backend.config import get_settings
 
@@ -31,7 +33,11 @@ def load_mock_main(monkeypatch, tmp_path):
 
 def _client(main) -> httpx.AsyncClient:
     transport = httpx.ASGITransport(app=main.app)
-    return httpx.AsyncClient(transport=transport, base_url="http://test")
+    return httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        auth=("pinegraf", "site-password"),
+    )
 
 
 # ---------- public endpoints ----------

@@ -4,7 +4,7 @@ import argparse
 
 from backend.config import get_settings
 from backend.db.store import Store
-from backend.pipeline.reconcile import reconcile_graph
+from backend.resolution.entity_resolver import reconcile_all
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -17,11 +17,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    summary = reconcile_graph(Store(args.database_url))
+    result = reconcile_all(Store(args.database_url))
     print(
         "Reconciled "
-        f"{summary.entities_consolidated} entities; "
-        f"inferred {summary.inferred_connections} connections."
+        f"{result.merged} entities; "
+        f"linked {result.linked} explicit targets; "
+        f"inferred {result.inferred} connections."
     )
     return 0
 

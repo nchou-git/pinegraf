@@ -334,6 +334,11 @@ class Connection(Base):
         nullable=True,
         index=True,
     )
+    connected_project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     connected_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     source_raw_page_id: Mapped[int] = mapped_column(
         ForeignKey("raw_pages.id", ondelete="CASCADE"),
@@ -351,6 +356,7 @@ class Connection(Base):
     raw_page: Mapped[RawPage] = relationship(back_populates="connections")
     entity: Mapped[Entity | None] = relationship(foreign_keys=[entity_id])
     connected_entity: Mapped[Entity | None] = relationship(foreign_keys=[connected_entity_id])
+    connected_project: Mapped[Project | None] = relationship(foreign_keys=[connected_project_id])
 
 
 class Project(Base):
@@ -514,6 +520,21 @@ class AuditRun(Base):
     thrifty_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
     frontier_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
     diff_summary: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+    __table_args__ = (Index("ix_pipeline_runs_started_at", "started_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    started_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
 
 class EntityConsolidated(Base):

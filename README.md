@@ -81,7 +81,8 @@ pip install -e .
 
 cp .env.example .env
 # edit .env: set OPENAI_API_KEY, DATABASE_URL, PINEGRAF_ADMIN_PASSWORD,
-# and crawler config (CRAWL_SITEMAP_URLS, CRAWL_ALLOWED_DOMAINS, etc.)
+# SITE_AUTH_PASSWORD, and crawler config
+# (CRAWL_SITEMAP_URLS, CRAWL_ALLOWED_DOMAINS, etc.)
 
 alembic upgrade head
 ```
@@ -97,6 +98,27 @@ Open:
 - `http://127.0.0.1:8000` - Lookup, Research, and Connections UI
 - `http://127.0.0.1:8000/admin` - admin panel for crawl, parse, preview,
   resource usage, and extraction audits
+
+### Deploy
+
+Fly.io deployment files are included but deployment is manual:
+
+```bash
+fly launch --no-deploy
+fly secrets set \
+  OPENAI_API_KEY=... \
+  DATABASE_URL=... \
+  PINEGRAF_ADMIN_PASSWORD=... \
+  SITE_AUTH_USER=pinegraf \
+  SITE_AUTH_PASSWORD=...
+fly deploy
+```
+
+Set any runtime toggles the deployment needs with `fly secrets set` as well:
+`USE_MOCK_FETCH`, `USE_MOCK_EXTRACT`, `USE_MOCK_QUERY`, `CRAWL_SEED_URLS`,
+`CRAWL_SITEMAP_URLS`, `CRAWL_ALLOWED_DOMAINS`, `CRAWL_MAX_PAGES`, and
+`CRAWL_MAX_DEPTH`. Do not put real secrets in `fly.toml`, the Dockerfile, or a
+committed `.env` file.
 
 ## Pipeline Commands
 

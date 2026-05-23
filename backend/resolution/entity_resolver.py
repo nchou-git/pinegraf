@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +16,37 @@ from backend.resolution.embeddings import (
     context_text,
     cosine_similarity,
 )
+
+if TYPE_CHECKING:
+    from backend.db.store import Store
+
+
+@dataclass(frozen=True)
+class ReconcileAllResult:
+    status: str
+    merged: int
+    linked: int
+    inferred: int
+
+    def to_dict(self) -> dict[str, int | str]:
+        return {
+            "status": self.status,
+            "merged": self.merged,
+            "linked": self.linked,
+            "inferred": self.inferred,
+        }
+
+
+def reconcile_all(store: Store) -> ReconcileAllResult:
+    from backend.pipeline.reconcile import reconcile_graph
+
+    summary = reconcile_graph(store)
+    return ReconcileAllResult(
+        status="ok",
+        merged=summary.entities_consolidated,
+        linked=summary.explicit_connections_resolved + summary.explicit_projects_resolved,
+        inferred=summary.inferred_connections,
+    )
 
 
 def resolve_or_create(
@@ -236,8 +269,14 @@ def _add_context_attribute(
 
 
 def _normalize_match_value(value: object) -> str:
-    return _normalize_display_name(str(value)).lower()
+    cleaned = str(value).replace("’", "'")
+    cleaned = _CREDENTIAL_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"[^A-Za-z0-9']+", " ", cleaned)
+    return _normalize_display_name(cleaned).lower()
 
 
 def _normalize_display_name(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+_CREDENTIAL_RE = re.compile(r"\b(?:D|T|Th)[’']\d{2}\b", flags=re.IGNORECASE)

@@ -1,0 +1,13 @@
+.venv
+.env
+.env.*
+__pycache__
+*.pyc
+.git
+.pytest_cache
+.ruff_cache
+data/
+*.bak
+eval_results.json
+pinegraf.egg-info
+tests/

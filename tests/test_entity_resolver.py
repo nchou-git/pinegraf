@@ -6,7 +6,7 @@ from backend.db.models import Entity, EntityAlias
 from backend.db.store import Store
 from backend.resolution.backfill import backfill_entity_embeddings
 from backend.resolution.embeddings import DeterministicEmbeddingClient
-from backend.resolution.entity_resolver import resolve_or_create
+from backend.resolution.entity_resolver import _normalize_match_value, resolve_or_create
 
 
 def make_store(tmp_path) -> Store:
@@ -93,8 +93,13 @@ def test_embedding_resolver_merges_errik_variants_with_tuck_context(tmp_path) ->
     assert entity is not None
     assert entity.name_embedding is not None
     assert entity.context_embedding is not None
-    assert "errik b. anderson" in aliases
-    assert "e. anderson d'00 th'06 t'07" in aliases
+    assert "errik b anderson" in aliases
+    assert "e anderson" in aliases
+
+
+def test_name_normalization_strips_tuck_thayer_suffixes() -> None:
+    assert _normalize_match_value("Daniella Reichstetter T’07") == "daniella reichstetter"
+    assert _normalize_match_value("Errik Anderson D’00, Th’06, T’07") == "errik anderson"
 
 
 def test_backfill_entity_embeddings_populates_existing_entities(tmp_path) -> None:

@@ -49,28 +49,29 @@
             <h2>Pipeline</h2>
             <button id="logout-btn" class="secondary" type="button">Sign out</button>
           </div>
-          <p class="tagline" style="margin-bottom: 16px;">Run the crawl and parse stages. Watch live progress.</p>
-          <div class="resource-strip" aria-live="polite">
-            <div>
-              <div class="resource-label">Resources</div>
-              <div id="usage-total" class="resource-value">0 calls | $0.0000</div>
+          <div id="pipeline-banner" class="status-banner" aria-live="polite">Status: Ready</div>
+          <div class="stats-grid" aria-label="Pipeline status">
+            <div class="stat-card">
+              <div class="resource-label">Pages crawled</div>
+              <div id="stat-pages-crawled" class="resource-value">0</div>
             </div>
-            <div id="usage-models" class="resource-models"></div>
+            <div class="stat-card">
+              <div class="resource-label">Pages parsed</div>
+              <div id="stat-pages-parsed" class="resource-value">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="resource-label">Entities</div>
+              <div id="stat-entities" class="resource-value">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="resource-label">Connections</div>
+              <div id="stat-connections" class="resource-value">0</div>
+            </div>
           </div>
-          <form id="parse-filter-form" class="parse-filter">
-            <input id="parse-url-pattern" type="text" placeholder="URL regex" />
-            <input id="parse-keywords" type="text" placeholder="keywords, comma separated" />
-            <input id="parse-limit" type="number" min="1" step="1" placeholder="limit" />
-          </form>
           <div class="actions">
-            <button id="crawl-btn" class="primary" type="button">Crawl</button>
-            <button id="preview-btn" class="secondary" type="button">Preview</button>
-            <button id="parse-btn" class="primary" type="button">Parse</button>
-            <button id="audit-btn" class="secondary" type="button">Run audit</button>
-            <button id="stop-btn" class="secondary" type="button" disabled>Stop</button>
+            <button id="run-pipeline-btn" class="primary" type="button">Run pipeline</button>
+            <button id="cancel-pipeline-btn" class="secondary" type="button" hidden>Cancel</button>
           </div>
-          <div id="preview-result" class="preview-result" hidden></div>
-          <div id="audit-result" class="audit-result" hidden></div>
           <div id="progress-wrap" hidden>
             <div class="progress-meta">
               <span id="progress-label">Idle</span>
@@ -81,6 +82,33 @@
             </div>
             <div id="progress-usage" class="progress-usage"></div>
           </div>
+          <div id="pipeline-status-line" class="preview-result" hidden></div>
+          <details id="advanced-panel" class="sources advanced-panel">
+            <summary>Advanced</summary>
+            <div class="resource-strip" aria-live="polite">
+            <div>
+              <div class="resource-label">Resources</div>
+              <div id="usage-total" class="resource-value">0 calls | $0.0000</div>
+            </div>
+            <div id="usage-models" class="resource-models"></div>
+            </div>
+            <form id="parse-filter-form" class="parse-filter">
+              <input id="parse-url-pattern" type="text" placeholder="URL regex" />
+              <input id="parse-keywords" type="text" placeholder="keywords, comma separated" />
+              <input id="parse-limit" type="number" min="1" step="1" placeholder="limit" />
+            </form>
+            <div class="actions">
+              <button id="crawl-btn" class="primary" type="button">Crawl</button>
+              <button id="preview-btn" class="secondary" type="button">Preview</button>
+              <button id="parse-btn" class="primary" type="button">Parse</button>
+              <button id="audit-btn" class="secondary" type="button">Run audit</button>
+              <button id="stop-btn" class="secondary" type="button" disabled>Stop</button>
+              <button id="reset-extraction-btn" class="secondary" type="button">Reset extraction data</button>
+            </div>
+            <div id="preview-result" class="preview-result" hidden></div>
+            <div id="audit-result" class="audit-result" hidden></div>
+            <div id="db-state" class="preview-result" hidden></div>
+          </details>
           <div id="log"></div>
         </div>
       </section>
