@@ -24,6 +24,7 @@ from backend.db.models import (
     CrawlState,
     EntityAttribute,
     Fact,
+    HostBoilerplate,
     Project,
     RawPage,
 )
@@ -413,6 +414,51 @@ class Store:
             if raw_page is None:
                 return
             raw_page.entity_id = entity_uuid
+            session.commit()
+
+    def get_host_boilerplate(self, host: str) -> HostBoilerplate | None:
+        with self._session_factory() as session:
+            return session.get(HostBoilerplate, host)
+
+    def upsert_host_boilerplate(
+        self,
+        *,
+        host: str,
+        prefix: str,
+        suffix: str,
+        updated_at: datetime | None = None,
+    ) -> HostBoilerplate:
+        with self._session_factory() as session:
+            row = session.get(HostBoilerplate, host)
+            if row is None:
+                row = HostBoilerplate(
+                    host=host,
+                    prefix=prefix,
+                    suffix=suffix,
+                    updated_at=updated_at or _utcnow(),
+                )
+                session.add(row)
+            else:
+                row.prefix = prefix
+                row.suffix = suffix
+                row.updated_at = updated_at or _utcnow()
+            session.commit()
+            return row
+
+    def update_raw_page_text(
+        self,
+        raw_page_id: int,
+        *,
+        page_title: str | None = None,
+        page_text: str,
+    ) -> None:
+        with self._session_factory() as session:
+            raw_page = session.get(RawPage, raw_page_id)
+            if raw_page is None:
+                return
+            if page_title is not None:
+                raw_page.page_title = page_title[:512]
+            raw_page.page_text = page_text
             session.commit()
 
     def replace_entity_attributes(

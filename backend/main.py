@@ -25,7 +25,7 @@ from backend.audit import (
 from backend.config import get_settings
 from backend.db.store import KEEP_VERDICTS, SQLITE_WARNING, Store
 from backend.pipeline.crawler import ProgressEvent, SiteCrawler
-from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher
+from backend.pipeline.page_fetcher import MockPageFetcher, PageFetcher, TextBoilerplate
 from backend.pipeline.parser import (
     MockExtractionClient,
     MockSynthesisClient,
@@ -123,7 +123,14 @@ def build_fetcher() -> PageFetcher:
     settings = get_settings()
     if settings.use_mock_fetch:
         return MockPageFetcher()
-    return PageFetcher()
+    return PageFetcher(boilerplate_provider=_boilerplate_for_host)
+
+
+def _boilerplate_for_host(host: str) -> TextBoilerplate | None:
+    row = store.get_host_boilerplate(host)
+    if row is None:
+        return None
+    return TextBoilerplate(prefix=row.prefix, suffix=row.suffix)
 
 
 def build_parser() -> Parser:

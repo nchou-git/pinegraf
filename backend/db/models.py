@@ -201,6 +201,20 @@ class RawPage(Base):
     entity: Mapped[Entity | None] = relationship()
 
 
+class HostBoilerplate(Base):
+    __tablename__ = "host_boilerplate"
+
+    host: Mapped[str] = mapped_column(Text, primary_key=True)
+    prefix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suffix: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
 class AlumniProfile(Base):
     """Canonical profile projection; legacy name is not an identity key."""
 
