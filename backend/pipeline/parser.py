@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -28,11 +29,16 @@ from backend.resolution.entity_resolver import resolve_or_create
 
 MAX_EXTRACTION_CHARS = 30_000
 CHUNK_PROMPT = (
-    "Extract a source-grounded people knowledge graph from this page chunk. "
+    "Extract source-grounded knowledge graph claims from this page chunk. "
     "Use only the chunk text. Return JSON arrays for people, organizations, "
-    "relationships, and projects. Every item must include text_evidence copied "
-    "verbatim from the chunk, max 200 characters, and confidence from 0.0 to 1.0. "
-    "Prefer precise direct evidence over inference."
+    "claims, and projects. Each claim must be a complete tuple with an explicit "
+    "subject_name, subject_type, predicate, object_type, and either object_name "
+    "or object_value. Never use the page's primary alumnus as an implied subject; "
+    "if the text does not say who the subject is, do not emit the claim. Every "
+    "claim, project, person, and "
+    "organization must include text_evidence copied verbatim from the chunk, max "
+    "200 characters, and confidence from 0.0 to 1.0. Prefer precise sentence-level "
+    "evidence over inference."
 )
 TRIAGE_PROMPT = (
     "Does this chunk mention any specific named person? Return only JSON with "
@@ -40,6 +46,17 @@ TRIAGE_PROMPT = (
 )
 ValidationVerdict = Literal["keep", "uncertain", "drop"]
 ExtractionTierMode = Literal["mini_only", "cascade", "frontier_only"]
+ClaimObjectType = Literal[
+    "person",
+    "organization",
+    "project",
+    "role",
+    "education",
+    "location",
+    "date",
+    "text",
+]
+EntityKind = Literal["person", "organization"]
 T = TypeVar("T")
 
 
@@ -85,7 +102,12 @@ class ExtractedProfile(BaseModel):
 
 
 class ExtractedConnection(BaseModel):
+    subject_name: str = ""
+    subject_context: str = ""
+    subject_entity_id: uuid.UUID | None = None
     connected_name: str
+    connected_context: str = ""
+    connected_entity_id: uuid.UUID | None = None
     context: str = ""
     relationship_type: str = "associate"
     confidence_score: float | None = None
@@ -94,6 +116,9 @@ class ExtractedConnection(BaseModel):
 
 
 class ExtractedProject(BaseModel):
+    subject_name: str = ""
+    subject_context: str = ""
+    subject_entity_id: uuid.UUID | None = None
     project_name: str
     description: str = ""
     confidence_score: float | None = None
@@ -132,6 +157,7 @@ class ExtractedPosition(BaseModel):
 
 class PageExtraction(BaseModel):
     profile: ExtractedProfile = Field(default_factory=ExtractedProfile)
+    claims: list[ExtractedClaim] = Field(default_factory=list)
     connections: list[ExtractedConnection] = Field(default_factory=list)
     projects: list[ExtractedProject] = Field(default_factory=list)
     facts: list[ExtractedFact] = Field(default_factory=list)
@@ -159,11 +185,31 @@ class ExtractedOrganization(BaseModel):
 
 class ExtractedRelationship(BaseModel):
     source_name: str
+    source_context: str = ""
     target_name: str
+    target_context: str = ""
     relationship_type: str = "associate"
     context: str = ""
     text_evidence: str = Field(default="", max_length=200)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ExtractedClaim(BaseModel):
+    subject_name: str
+    subject_type: EntityKind = "person"
+    subject_context: str = ""
+    predicate: str
+    object_name: str = ""
+    object_context: str = ""
+    object_value: str = ""
+    object_type: ClaimObjectType = "text"
+    text_evidence: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    source_chunk_index: int | None = None
+    prompt_version: str = ""
+    subject_entity_id: uuid.UUID | None = None
+    object_entity_id: uuid.UUID | None = None
+    validation_verdict: ValidationVerdict = "keep"
 
 
 class ExtractedGraphProject(BaseModel):
@@ -178,6 +224,7 @@ class ExtractedGraphProject(BaseModel):
 class ChunkExtraction(BaseModel):
     people: list[ExtractedPerson] = Field(default_factory=list)
     organizations: list[ExtractedOrganization] = Field(default_factory=list)
+    claims: list[ExtractedClaim] = Field(default_factory=list)
     relationships: list[ExtractedRelationship] = Field(default_factory=list)
     projects: list[ExtractedGraphProject] = Field(default_factory=list)
 
@@ -189,6 +236,7 @@ class ItemVerdict(BaseModel):
 
 
 class ValidationResult(BaseModel):
+    claim_verdicts: list[ItemVerdict] = Field(default_factory=list)
     connection_verdicts: list[ItemVerdict] = Field(default_factory=list)
     project_verdicts: list[ItemVerdict] = Field(default_factory=list)
     fact_verdicts: list[ItemVerdict] = Field(default_factory=list)
@@ -563,6 +611,7 @@ class OpenAIExtractionClient(ExtractionClient):
             )
         )
         parsed = response.output_parsed or ChunkExtraction()
+        _stamp_claim_chunks(parsed, chunk, prompt_version)
         self._record_usage(response, model=model, purpose="extract_full", raw_page=raw_page)
         self.store.set_extraction_cache(
             chunk_sha256=chunk.sha256,
@@ -615,6 +664,7 @@ class OpenAIExtractionClient(ExtractionClient):
             emit_chunk_event=emit_chunk_event,
         )
         parsed = response.output_parsed or ChunkExtraction()
+        _stamp_claim_chunks(parsed, chunk, prompt_version)
         self._record_usage(response, model=model, purpose="extract_full", raw_page=raw_page)
         self.store.set_extraction_cache(
             chunk_sha256=chunk.sha256,
@@ -670,6 +720,9 @@ class OpenAIValidationClient(ValidationClient):
 
     def validate(self, raw_page: RawPage, extraction: PageExtraction) -> ValidationResult:
         payload = {
+            "claims": [
+                claim.model_dump(exclude={"validation_verdict"}) for claim in extraction.claims
+            ],
             "connections": [
                 connection.model_dump(exclude={"validation_verdict"})
                 for connection in extraction.connections
@@ -685,7 +738,8 @@ class OpenAIValidationClient(ValidationClient):
             ],
         }
         if (
-            not payload["connections"]
+            not payload["claims"]
+            and not payload["connections"]
             and not payload["projects"]
             and not payload["facts"]
             and not payload["positions"]
@@ -744,6 +798,9 @@ class OpenAIValidationClient(ValidationClient):
         emit_chunk_event: ChunkEventEmitter | None = None,
     ) -> ValidationResult:
         payload = {
+            "claims": [
+                claim.model_dump(exclude={"validation_verdict"}) for claim in extraction.claims
+            ],
             "connections": [
                 connection.model_dump(exclude={"validation_verdict"})
                 for connection in extraction.connections
@@ -759,7 +816,8 @@ class OpenAIValidationClient(ValidationClient):
             ],
         }
         if (
-            not payload["connections"]
+            not payload["claims"]
+            and not payload["connections"]
             and not payload["projects"]
             and not payload["facts"]
             and not payload["positions"]
@@ -936,6 +994,7 @@ class MockExtractionClient(ExtractionClient):
             connected_name = "Daniella Reichstetter" if first_name == "errik" else "Errik Anderson"
             connections.append(
                 ExtractedConnection(
+                    subject_name=raw_page.alum_name,
                     connected_name=connected_name,
                     context="Worked together on the Gyrobike first-year project at Tuck.",
                     relationship_type="project collaborator",
@@ -948,6 +1007,7 @@ class MockExtractionClient(ExtractionClient):
             )
             projects.append(
                 ExtractedProject(
+                    subject_name=raw_page.alum_name,
                     project_name="Gyrobike FYP",
                     description="Tuck first-year project involving gyrobike work.",
                     confidence_score=0.9,
@@ -985,6 +1045,10 @@ class MockValidationClient(ValidationClient):
     def validate(self, raw_page: RawPage, extraction: PageExtraction) -> ValidationResult:
         del raw_page
         return ValidationResult(
+            claim_verdicts=[
+                ItemVerdict(index=index, verdict=claim.validation_verdict)
+                for index, claim in enumerate(extraction.claims)
+            ],
             connection_verdicts=[
                 ItemVerdict(index=index, verdict=connection.validation_verdict)
                 for index, connection in enumerate(extraction.connections)
@@ -1209,6 +1273,7 @@ class Parser:
                     emit_chunk_event=emit_chunk_event,
                 )
                 apply_validation(extraction, validation)
+                self._resolve_extraction_entities(raw_page, extraction)
                 self.store.replace_structured_items(
                     raw_page_id=raw_page.id,
                     alum_name=raw_page.alum_name,
@@ -1238,6 +1303,7 @@ class Parser:
                             for position in extraction.positions
                         ],
                     ],
+                    claims=[claim_to_store_dict(claim) for claim in extraction.claims],
                     connections=[connection.model_dump() for connection in extraction.connections],
                     projects=[project.model_dump() for project in extraction.projects],
                 )
@@ -1506,6 +1572,112 @@ class Parser:
         raw_page.entity_id = entity_id
         return entity_id
 
+    def _resolve_extraction_entities(
+        self,
+        raw_page: RawPage,
+        extraction: PageExtraction,
+    ) -> None:
+        _ensure_claims_for_explicit_items(extraction)
+        _ensure_projection_items_for_claims(extraction)
+        with self.store.session() as session:
+            for claim in extraction.claims:
+                if claim.validation_verdict == "drop":
+                    continue
+                subject_name = claim.subject_name.strip()
+                predicate = claim.predicate.strip()
+                if not subject_name or not predicate:
+                    claim.validation_verdict = "drop"
+                    continue
+                object_name = claim.object_name.strip()
+                object_value = claim.object_value.strip()
+                if not object_name and not object_value:
+                    claim.validation_verdict = "drop"
+                    continue
+                subject_context = _claim_context(
+                    raw_page, claim.subject_context, claim.text_evidence
+                )
+                if _names_match(subject_name, raw_page.alum_name or ""):
+                    page_class_year = self.store.get_class_year_for_entity(
+                        raw_page.entity_id
+                    ) or self.store.get_class_year_for_alum(raw_page.alum_name)
+                    if page_class_year:
+                        subject_context["class_year"] = page_class_year
+                claim.subject_entity_id = resolve_or_create(
+                    subject_name,
+                    session=session,
+                    context=subject_context,
+                    embedding_client=self.embedding_client,
+                    entity_type=claim.subject_type,
+                )
+                if object_name and claim.object_type in {"person", "organization", "project"}:
+                    object_context = _claim_context(
+                        raw_page,
+                        claim.object_context,
+                        claim.text_evidence,
+                    )
+                    if _names_match(object_name, raw_page.alum_name or ""):
+                        page_class_year = self.store.get_class_year_for_entity(
+                            raw_page.entity_id
+                        ) or self.store.get_class_year_for_alum(raw_page.alum_name)
+                        if page_class_year:
+                            object_context["class_year"] = page_class_year
+                    claim.object_entity_id = resolve_or_create(
+                        object_name,
+                        session=session,
+                        context=object_context,
+                        embedding_client=self.embedding_client,
+                        entity_type=_claim_object_entity_type(claim.object_type),
+                    )
+            session.commit()
+
+        claims_by_projection_key = {
+            (
+                claim.subject_name.casefold(),
+                (claim.object_name or claim.object_value).casefold(),
+                claim.predicate.casefold(),
+                claim.text_evidence.casefold(),
+            ): claim
+            for claim in extraction.claims
+        }
+        project_claims_by_key = {
+            (
+                claim.subject_name.casefold(),
+                claim.object_name.casefold(),
+                claim.text_evidence.casefold(),
+            ): claim
+            for claim in extraction.claims
+            if claim.object_type == "project" and claim.object_name
+        }
+        for connection in extraction.connections:
+            key = (
+                connection.subject_name.casefold(),
+                connection.connected_name.casefold(),
+                connection.relationship_type.casefold(),
+                connection.text_evidence.casefold(),
+            )
+            claim = claims_by_projection_key.get(key)
+            if claim is None or claim.validation_verdict == "drop":
+                connection.validation_verdict = "drop"
+                continue
+            connection.subject_entity_id = claim.subject_entity_id
+            connection.connected_entity_id = claim.object_entity_id
+            if connection.subject_entity_id is None or connection.connected_entity_id is None:
+                connection.validation_verdict = "drop"
+
+        for project in extraction.projects:
+            key = (
+                project.subject_name.casefold(),
+                project.project_name.casefold(),
+                project.text_evidence.casefold(),
+            )
+            claim = project_claims_by_key.get(key)
+            if claim is None or claim.validation_verdict == "drop":
+                project.validation_verdict = "drop"
+                continue
+            project.subject_entity_id = claim.subject_entity_id
+            if project.subject_entity_id is None:
+                project.validation_verdict = "drop"
+
     def _chunk_embeddings(self, raw_page: RawPage, chunks: list[Chunk]) -> list[list[float] | None]:
         if self.embedding_client is None:
             return []
@@ -1673,6 +1845,17 @@ def _emit_full_chunk_terminal(
         emit_chunk_event("chunk_done", raw_page, chunk, {}, True)
 
 
+def _stamp_claim_chunks(
+    extraction: ChunkExtraction,
+    chunk: Chunk,
+    prompt_version: str,
+) -> None:
+    for claim in extraction.claims:
+        claim.source_chunk_index = chunk.chunk_index
+        if not claim.prompt_version:
+            claim.prompt_version = prompt_version
+
+
 def chunk_page(
     page_text: str,
     *,
@@ -1718,97 +1901,136 @@ def page_extraction_from_chunks(
     raw_page: RawPage,
     chunk_extractions: Iterable[ChunkExtraction],
 ) -> PageExtraction:
+    del raw_page
     extraction = PageExtraction()
-    seen_facts: set[tuple[str, str]] = set()
-    seen_connections: set[tuple[str, str, str]] = set()
-    seen_projects: set[str] = set()
+    seen_claims: set[tuple[str, str, str, str]] = set()
+    seen_connections: set[tuple[str, str, str, str]] = set()
+    seen_projects: set[tuple[str, str]] = set()
     for chunk_extraction in chunk_extractions:
-        for person in chunk_extraction.people:
-            name = person.name.strip()
-            if not name:
-                continue
-            key = ("person", name.casefold())
-            if key in seen_facts:
-                continue
-            seen_facts.add(key)
-            extraction.facts.append(
-                ExtractedFact(
-                    category="person",
-                    content=name,
-                    confidence=_confidence_label(person.confidence),
-                    confidence_score=person.confidence,
-                    text_evidence=person.text_evidence,
-                )
-            )
-        for organization in chunk_extraction.organizations:
-            name = organization.name.strip()
-            if not name:
-                continue
-            key = ("organization", name.casefold())
-            if key in seen_facts:
-                continue
-            seen_facts.add(key)
-            extraction.facts.append(
-                ExtractedFact(
-                    category="organization",
-                    content=name,
-                    confidence=_confidence_label(organization.confidence),
-                    confidence_score=organization.confidence,
-                    text_evidence=organization.text_evidence,
-                )
+        for claim in chunk_extraction.claims:
+            _append_claim_projection(
+                extraction,
+                claim,
+                seen_claims=seen_claims,
+                seen_connections=seen_connections,
+                seen_projects=seen_projects,
             )
         for relationship in chunk_extraction.relationships:
-            connected_name = _connected_name_for_relationship(raw_page, relationship)
-            if not connected_name:
-                continue
-            key = (
-                connected_name.casefold(),
-                relationship.relationship_type.casefold(),
-                relationship.text_evidence.casefold(),
+            claim = ExtractedClaim(
+                subject_name=relationship.source_name,
+                subject_context=relationship.source_context,
+                predicate=relationship.relationship_type or "associate",
+                object_name=relationship.target_name,
+                object_context=relationship.target_context,
+                object_type="organization",
+                text_evidence=relationship.text_evidence,
+                confidence=relationship.confidence,
             )
-            if key in seen_connections:
-                continue
-            seen_connections.add(key)
-            extraction.connections.append(
-                ExtractedConnection(
-                    connected_name=connected_name,
-                    context=relationship.context or relationship.text_evidence,
-                    relationship_type=relationship.relationship_type or "associate",
-                    confidence_score=relationship.confidence,
-                    text_evidence=relationship.text_evidence,
-                )
+            _append_claim_projection(
+                extraction,
+                claim,
+                context=relationship.context,
+                seen_claims=seen_claims,
+                seen_connections=seen_connections,
+                seen_projects=seen_projects,
             )
         for project in chunk_extraction.projects:
             project_name = project.project_name.strip()
-            if not project_name or project_name.casefold() in seen_projects:
+            if not project_name:
                 continue
-            seen_projects.add(project_name.casefold())
-            extraction.projects.append(
-                ExtractedProject(
-                    project_name=project_name,
-                    description=project.description,
-                    confidence_score=project.confidence,
+            for person_name in project.people:
+                claim = ExtractedClaim(
+                    subject_name=person_name,
+                    predicate="worked_on_project",
+                    object_name=project_name,
+                    object_type="project",
                     text_evidence=project.text_evidence,
+                    confidence=project.confidence,
+                )
+                _append_claim_projection(
+                    extraction,
+                    claim,
+                    context=project.description,
+                    seen_claims=seen_claims,
+                    seen_connections=seen_connections,
+                    seen_projects=seen_projects,
+                )
+    return extraction
+
+
+def _append_claim_projection(
+    extraction: PageExtraction,
+    claim: ExtractedClaim,
+    *,
+    seen_claims: set[tuple[str, str, str, str]],
+    seen_connections: set[tuple[str, str, str, str]],
+    seen_projects: set[tuple[str, str]],
+    context: str = "",
+) -> None:
+    subject_name = claim.subject_name.strip()
+    predicate = claim.predicate.strip()
+    object_name = claim.object_name.strip()
+    object_value = claim.object_value.strip()
+    if not subject_name or not predicate or not (object_name or object_value):
+        return
+    object_key = object_name or object_value
+    claim_key = (
+        subject_name.casefold(),
+        predicate.casefold(),
+        object_key.casefold(),
+        claim.text_evidence.casefold(),
+    )
+    if claim_key in seen_claims:
+        return
+    seen_claims.add(claim_key)
+
+    cleaned_claim = claim.model_copy(
+        update={
+            "subject_name": subject_name,
+            "predicate": predicate,
+            "object_name": object_name,
+            "object_value": object_value,
+        }
+    )
+    extraction.claims.append(cleaned_claim)
+
+    if object_name and claim.object_type in {"person", "organization", "project"}:
+        connection_key = (
+            subject_name.casefold(),
+            object_name.casefold(),
+            predicate.casefold(),
+            claim.text_evidence.casefold(),
+        )
+        if connection_key not in seen_connections:
+            seen_connections.add(connection_key)
+            extraction.connections.append(
+                ExtractedConnection(
+                    subject_name=subject_name,
+                    subject_context=claim.subject_context,
+                    connected_name=object_name,
+                    connected_context=claim.object_context,
+                    context=context or claim.text_evidence,
+                    relationship_type=predicate,
+                    confidence_score=claim.confidence,
+                    text_evidence=claim.text_evidence,
                 )
             )
-            if _project_mentions_alum(raw_page, project):
-                connection_key = (
-                    project_name.casefold(),
-                    "worked_on_project",
-                    project.text_evidence.casefold(),
-                )
-                if connection_key not in seen_connections:
-                    seen_connections.add(connection_key)
-                    extraction.connections.append(
-                        ExtractedConnection(
-                            connected_name=project_name,
-                            context=project.description or project.text_evidence,
-                            relationship_type="worked_on_project",
-                            confidence_score=project.confidence,
-                            text_evidence=project.text_evidence,
-                        )
-                    )
-    return extraction
+
+    if object_name and claim.object_type == "project":
+        project_key = (subject_name.casefold(), object_name.casefold())
+        if project_key in seen_projects:
+            return
+        seen_projects.add(project_key)
+        extraction.projects.append(
+            ExtractedProject(
+                subject_name=subject_name,
+                subject_context=claim.subject_context,
+                project_name=object_name,
+                description=context or claim.text_evidence,
+                confidence_score=claim.confidence,
+                text_evidence=claim.text_evidence,
+            )
+        )
 
 
 def merge_chunk_extractions(
@@ -1818,11 +2040,21 @@ def merge_chunk_extractions(
     merged = ChunkExtraction(
         people=[*primary.people],
         organizations=[*primary.organizations],
+        claims=[*primary.claims],
         relationships=[*primary.relationships],
         projects=[*primary.projects],
     )
     _append_unique(merged.people, secondary.people, lambda item: item.name.casefold())
     _append_unique(merged.organizations, secondary.organizations, lambda item: item.name.casefold())
+    _append_unique(
+        merged.claims,
+        secondary.claims,
+        lambda item: (
+            item.subject_name.casefold(),
+            item.predicate.casefold(),
+            (item.object_name or item.object_value).casefold(),
+        ),
+    )
     _append_unique(
         merged.relationships,
         secondary.relationships,
@@ -1837,6 +2069,7 @@ def merge_chunk_extractions(
 
 
 def apply_validation(extraction: PageExtraction, validation: ValidationResult) -> None:
+    _apply_item_verdicts(extraction.claims, validation.claim_verdicts)
     _apply_item_verdicts(extraction.connections, validation.connection_verdicts)
     _apply_item_verdicts(extraction.projects, validation.project_verdicts)
     _apply_item_verdicts(extraction.facts, validation.fact_verdicts)
@@ -1881,8 +2114,187 @@ def extracted_profile_attributes(profile: ExtractedProfile) -> list[dict[str, ob
     return attributes
 
 
+def claim_to_store_dict(claim: ExtractedClaim) -> dict[str, object]:
+    return {
+        "subject_entity_id": str(claim.subject_entity_id) if claim.subject_entity_id else None,
+        "subject_name": claim.subject_name,
+        "predicate": claim.predicate,
+        "object_entity_id": str(claim.object_entity_id) if claim.object_entity_id else None,
+        "object_name": claim.object_name,
+        "object_value": claim.object_value,
+        "object_type": claim.object_type,
+        "source_chunk_index": claim.source_chunk_index,
+        "text_evidence": claim.text_evidence,
+        "confidence_score": claim.confidence,
+        "prompt_version": claim.prompt_version,
+        "validation_verdict": claim.validation_verdict,
+    }
+
+
+def _ensure_claims_for_explicit_items(extraction: PageExtraction) -> None:
+    seen = {
+        (
+            claim.subject_name.casefold(),
+            claim.predicate.casefold(),
+            (claim.object_name or claim.object_value).casefold(),
+            claim.text_evidence.casefold(),
+        )
+        for claim in extraction.claims
+    }
+    for connection in extraction.connections:
+        subject_name = connection.subject_name.strip()
+        connected_name = connection.connected_name.strip()
+        predicate = connection.relationship_type.strip() or "associate"
+        if not subject_name or not connected_name:
+            continue
+        key = (
+            subject_name.casefold(),
+            predicate.casefold(),
+            connected_name.casefold(),
+            connection.text_evidence.casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        extraction.claims.append(
+            ExtractedClaim(
+                subject_name=subject_name,
+                subject_context=connection.subject_context,
+                predicate=predicate,
+                object_name=connected_name,
+                object_context=connection.connected_context,
+                object_type="organization",
+                text_evidence=connection.text_evidence,
+                confidence=connection.confidence_score or 0.5,
+                validation_verdict=connection.validation_verdict,
+            )
+        )
+    for project in extraction.projects:
+        subject_name = project.subject_name.strip()
+        project_name = project.project_name.strip()
+        if not subject_name or not project_name:
+            continue
+        key = (
+            subject_name.casefold(),
+            "worked_on_project",
+            project_name.casefold(),
+            project.text_evidence.casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        extraction.claims.append(
+            ExtractedClaim(
+                subject_name=subject_name,
+                subject_context=project.subject_context,
+                predicate="worked_on_project",
+                object_name=project_name,
+                object_type="project",
+                text_evidence=project.text_evidence,
+                confidence=project.confidence_score or 0.5,
+                validation_verdict=project.validation_verdict,
+            )
+        )
+
+
+def _ensure_projection_items_for_claims(extraction: PageExtraction) -> None:
+    seen_connections = {
+        (
+            connection.subject_name.casefold(),
+            connection.connected_name.casefold(),
+            connection.relationship_type.casefold(),
+            connection.text_evidence.casefold(),
+        )
+        for connection in extraction.connections
+    }
+    seen_projects = {
+        (
+            project.subject_name.casefold(),
+            project.project_name.casefold(),
+            project.text_evidence.casefold(),
+        )
+        for project in extraction.projects
+    }
+    for claim in extraction.claims:
+        subject_name = claim.subject_name.strip()
+        object_name = claim.object_name.strip()
+        predicate = claim.predicate.strip() or "associate"
+        if not subject_name or not object_name:
+            continue
+        if claim.object_type in {"person", "organization", "project"}:
+            key = (
+                subject_name.casefold(),
+                object_name.casefold(),
+                predicate.casefold(),
+                claim.text_evidence.casefold(),
+            )
+            if key not in seen_connections:
+                seen_connections.add(key)
+                extraction.connections.append(
+                    ExtractedConnection(
+                        subject_name=subject_name,
+                        subject_context=claim.subject_context,
+                        connected_name=object_name,
+                        connected_context=claim.object_context,
+                        context=claim.text_evidence,
+                        relationship_type=predicate,
+                        confidence_score=claim.confidence,
+                        text_evidence=claim.text_evidence,
+                        validation_verdict=claim.validation_verdict,
+                    )
+                )
+        if claim.object_type != "project":
+            continue
+        project_key = (
+            subject_name.casefold(),
+            object_name.casefold(),
+            claim.text_evidence.casefold(),
+        )
+        if project_key in seen_projects:
+            continue
+        seen_projects.add(project_key)
+        extraction.projects.append(
+            ExtractedProject(
+                subject_name=subject_name,
+                subject_context=claim.subject_context,
+                project_name=object_name,
+                description=claim.text_evidence,
+                confidence_score=claim.confidence,
+                text_evidence=claim.text_evidence,
+                validation_verdict=claim.validation_verdict,
+            )
+        )
+
+
+def _claim_context(
+    raw_page: RawPage,
+    model_context: str,
+    text_evidence: str,
+) -> dict[str, str]:
+    context: dict[str, str] = {"source": f"raw_page:{raw_page.id}"}
+    combined = " ".join([model_context, text_evidence, raw_page.page_title])
+    class_year = _class_year_from_text(combined)
+    if class_year:
+        context["class_year"] = class_year
+    if model_context.strip():
+        context["evidence_context"] = model_context.strip()[:500]
+    return context
+
+
+def _class_year_from_text(value: str) -> str | None:
+    match = re.search(r"T['’]\d{2}", value)
+    if not match:
+        return None
+    return match.group(0).replace("’", "'")
+
+
+def _claim_object_entity_type(object_type: str) -> str:
+    return "person" if object_type == "person" else "organization"
+
+
 def _apply_item_verdicts(
-    items: list[ExtractedConnection]
+    items: list[ExtractedClaim]
+    | list[ExtractedConnection]
     | list[ExtractedProject]
     | list[ExtractedFact]
     | list[ExtractedPosition],
@@ -1902,6 +2314,7 @@ def verdict_counts(extraction: PageExtraction) -> dict[str, int]:
 
 def _iter_verdicts(extraction: PageExtraction) -> Iterable[ValidationVerdict]:
     for item in [
+        *extraction.claims,
         *extraction.connections,
         *extraction.projects,
         *extraction.facts,
@@ -1955,6 +2368,7 @@ def _has_low_confidence(extraction: ChunkExtraction) -> bool:
     values = [
         *[person.confidence for person in extraction.people],
         *[organization.confidence for organization in extraction.organizations],
+        *[claim.confidence for claim in extraction.claims],
         *[relationship.confidence for relationship in extraction.relationships],
         *[project.confidence for project in extraction.projects],
     ]

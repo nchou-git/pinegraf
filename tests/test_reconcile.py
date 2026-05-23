@@ -34,6 +34,8 @@ def test_reconcile_consolidates_entities_and_infers_project_and_classmate_edges(
         connections=[],
         projects=[
             {
+                "subject_name": "Errik Anderson",
+                "subject_entity_id": str(errik.entity_id),
                 "project_name": "Gyrobike",
                 "description": "Bike training project.",
                 "confidence_score": 0.9,
@@ -49,6 +51,8 @@ def test_reconcile_consolidates_entities_and_infers_project_and_classmate_edges(
         connections=[],
         projects=[
             {
+                "subject_name": "Daniella Reichstetter",
+                "subject_entity_id": str(daniella.entity_id),
                 "project_name": "Gyrobike",
                 "description": "Bike training project.",
                 "confidence_score": 0.8,

@@ -292,6 +292,7 @@ def test_entity_detail_returns_attributes_relationships_and_provenance(
 ) -> None:
     main = load_mock_main(monkeypatch, tmp_path)
     profile = main.store.upsert_profile(name="Jane Doe", class_year="T'24")
+    pat = main.store.upsert_profile(name="Pat Person", class_year="T'24")
     page = main.store.save_raw_page(
         alum_name="Jane Doe",
         entity_id=profile.entity_id,
@@ -306,7 +307,10 @@ def test_entity_detail_returns_attributes_relationships_and_provenance(
         facts=[],
         connections=[
             {
+                "subject_name": "Jane Doe",
+                "subject_entity_id": str(profile.entity_id),
                 "connected_name": "Pat Person",
+                "connected_entity_id": str(pat.entity_id),
                 "relationship_type": "worked_with",
                 "context": "Worked with Pat Person.",
                 "confidence_score": 0.8,

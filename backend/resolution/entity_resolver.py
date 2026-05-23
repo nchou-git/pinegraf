@@ -22,11 +22,13 @@ def resolve_or_create(
     session: Session,
     context: dict[str, str] | None = None,
     embedding_client: EmbeddingClient | None = None,
+    entity_type: str = "person",
     top_k: int = 10,
 ) -> uuid.UUID:
     """Resolve a candidate to an entity_id without merging on name alone."""
     context = context or {}
     embedding_client = embedding_client or DeterministicEmbeddingClient()
+    entity_type = entity_type if entity_type in {"person", "organization"} else "person"
     canonical_name = _normalize_display_name(name)
     alias = _normalize_match_value(name)
     name_embedding = embedding_client.embed_text(
@@ -39,6 +41,7 @@ def resolve_or_create(
     )
     resolved = _resolve_by_embeddings(
         session=session,
+        entity_type=entity_type,
         name_embedding=name_embedding,
         context_embedding=context_embedding,
         top_k=top_k,
@@ -59,7 +62,7 @@ def resolve_or_create(
     class_year = context.get("class_year")
     current_company = context.get("current_company")
     entity = Entity(
-        entity_type="person",
+        entity_type=entity_type,
         canonical_name=canonical_name,
         name_embedding=name_embedding,
         context_embedding=context_embedding,
@@ -96,13 +99,14 @@ def resolve_or_create(
 def _resolve_by_embeddings(
     *,
     session: Session,
+    entity_type: str,
     name_embedding: list[float],
     context_embedding: list[float],
     top_k: int,
 ) -> uuid.UUID | None:
     if not context_embedding or sum(abs(value) for value in context_embedding) == 0:
         return None
-    rows = list(session.execute(select(Entity)).scalars())
+    rows = list(session.execute(select(Entity).where(Entity.entity_type == entity_type)).scalars())
     name_matches = [
         (entity, cosine_similarity(name_embedding, entity.name_embedding))
         for entity in rows

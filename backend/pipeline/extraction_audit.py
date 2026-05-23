@@ -143,6 +143,7 @@ def audit_page_result(
     entities = sorted(entity_set(extraction))
     relationships = [
         {
+            "subject_name": connection.subject_name,
             "connected_name": connection.connected_name,
             "relationship_type": connection.relationship_type,
         }
@@ -162,11 +163,18 @@ def audit_page_result(
 
 
 def entity_set(extraction: PageExtraction) -> set[str]:
-    entities = {
+    entities = set()
+    entities.update(
+        claim.subject_name.strip() for claim in extraction.claims if claim.subject_name.strip()
+    )
+    entities.update(
+        claim.object_name.strip() for claim in extraction.claims if claim.object_name.strip()
+    )
+    entities.update(
         fact.content.strip()
         for fact in extraction.facts
         if fact.category in {"person", "organization"} and fact.content.strip()
-    }
+    )
     entities.update(
         connection.connected_name.strip()
         for connection in extraction.connections

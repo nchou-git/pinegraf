@@ -9,7 +9,7 @@ freshness model.
 | Source | Trust | Freshness | Writes |
 | --- | --- | --- | --- |
 | `alumni_xlsx_v2` | High for spreadsheet fields, unknown recency | Snapshot date unknown; `as_of_date` and `last_verified_at` are null | `entity_attributes`, `alumni_profiles`, aliases |
-| `raw_pages.id` / public URL | Medium; depends on source page quality | `raw_pages.fetched_at` records retrieval time | `facts`, `projects`, `connections`, `entity_attributes` |
+| `raw_pages.id` / public URL | Medium; depends on source page quality | `raw_pages.fetched_at` records retrieval time | `claims`, `facts`, `projects`, `connections`, `entity_attributes` |
 | `wikidata:<qid>` | Medium-high for public structured facts | Verified when enrichment runs; `last_verified_at=now` | `entity_attributes` |
 | Inference `source_ids` | Derived; confidence depends on underlying rows | Refreshed when reconciliation runs | inferred `connections`, `entity_consolidated` |
 | Operational tables | Internal only | Current as of write time | `llm_usage`, `audit_events`, `audit_runs`, `extraction_cache` |
@@ -58,8 +58,9 @@ Extraction is source-grounded but model-generated. Current controls:
 - Triage and extraction responses are cached in `extraction_cache`.
 - Every OpenAI call writes `llm_usage` with model, token counts, purpose, and
   dollar estimate.
-- Full extraction emits `people`, `organizations`, `relationships`, and
-  `projects` with `confidence` and inline `text_evidence`.
+- Full extraction emits explicit claims with `subject_name`, `predicate`,
+  object name/value, `confidence`, and inline `text_evidence`. Connections and
+  projects are written only after claim endpoints are resolved.
 - `EXTRACTION_TIER_MODE` controls `mini_only`, `cascade`, or `frontier_only`.
 
 Use confidence and validation verdicts when deciding whether a row should inform
@@ -101,7 +102,7 @@ Derived rows are not independent evidence. Always inspect `source_ids` and
 ## Trust Guidance
 
 - Prefer consolidated fields for quick display.
-- Prefer raw `entity_attributes`, `facts`, `projects`, and explicit
+- Prefer raw `claims`, `entity_attributes`, `facts`, `projects`, and explicit
   `connections` when auditing provenance.
 - Treat inferred edges as hypotheses unless the underlying sources are strong.
 - Treat public web pages and Wikidata as refreshable sources; rerun crawl,

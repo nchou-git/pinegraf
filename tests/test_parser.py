@@ -10,6 +10,7 @@ from backend.pipeline.parser import (
     Chunk,
     ChunkEventEmitter,
     ChunkExtraction,
+    ExtractedClaim,
     ExtractedConnection,
     ExtractedFact,
     ExtractedGraphProject,
@@ -50,6 +51,7 @@ class FakeExtractionClient(ExtractionClient):
             ),
             connections=[
                 ExtractedConnection(
+                    subject_name="Jane Doe",
                     connected_name="Pat Person",
                     context="Worked together at Acme.",
                     confidence_score=0.8,
@@ -58,6 +60,7 @@ class FakeExtractionClient(ExtractionClient):
             ],
             projects=[
                 ExtractedProject(
+                    subject_name="Jane Doe",
                     project_name="Project Pine",
                     description="A project.",
                     confidence_score=0.7,
@@ -246,7 +249,7 @@ def test_parser_force_reparses_without_duplicate_rows(tmp_path) -> None:
     facts = store.list_facts()
     assert len([fact for fact in facts if fact.category == "career"]) == 1
     assert len([fact for fact in facts if fact.category == "position"]) == 3
-    assert len(store.list_connections()) == 1
+    assert len(store.list_connections()) == 2
     assert len(store.list_projects()) == 1
 
 
@@ -333,6 +336,85 @@ def test_parser_filter_keywords_only_marks_matching_unparsed_pages(tmp_path) -> 
     assert extractor.calls == 2
 
 
+def test_parser_does_not_attach_other_people_claims_to_page_entity(tmp_path) -> None:
+    store = Store(f"sqlite:///{tmp_path / 'claim-attribution.db'}")
+    store.init_db()
+    errik = store.upsert_profile(name="Errik Anderson", class_year="T'07")
+    store.save_raw_page(
+        alum_name="Errik Anderson",
+        entity_id=errik.entity_id,
+        source_url="https://example.com/eir",
+        page_title="Entrepreneur in residence",
+        page_text=(
+            "Daniella Reichstetter T'07 became founder and CEO of Gyrobike. "
+            "Errik Anderson T'07 advised Gyrobike. "
+            "Phillips came to Tuck from the University of Southern California."
+        ),
+    )
+
+    class MultiPersonExtractionClient(ExtractionClient):
+        def extract(self, raw_page: RawPage) -> PageExtraction:
+            del raw_page
+            return PageExtraction(
+                claims=[
+                    ExtractedClaim(
+                        subject_name="Daniella Reichstetter",
+                        subject_context="T'07 founder",
+                        predicate="founded",
+                        object_name="Gyrobike",
+                        object_type="organization",
+                        text_evidence=(
+                            "Daniella Reichstetter T'07 became founder and CEO of Gyrobike."
+                        ),
+                        confidence=0.95,
+                    ),
+                    ExtractedClaim(
+                        subject_name="Errik Anderson",
+                        subject_context="T'07 advisor",
+                        predicate="advised",
+                        object_name="Gyrobike",
+                        object_type="organization",
+                        text_evidence="Errik Anderson T'07 advised Gyrobike.",
+                        confidence=0.9,
+                    ),
+                    ExtractedClaim(
+                        subject_name="Phillips",
+                        predicate="educated_at",
+                        object_value="University of Southern California",
+                        object_type="education",
+                        text_evidence=(
+                            "Phillips came to Tuck from the University of Southern California."
+                        ),
+                        confidence=0.9,
+                    ),
+                ]
+            )
+
+    parser = Parser(
+        store=store,
+        extractor=MultiPersonExtractionClient(),
+        validator=MockValidationClient(),
+        synthesizer=MockSynthesisClient(),
+    )
+
+    parser.run(lambda event: None)
+
+    connections = store.list_connections(("keep",))
+    edge_tuples = {
+        (connection.alum_name, connection.relationship_type, connection.connected_name)
+        for connection in connections
+    }
+    assert ("Errik Anderson", "advised", "Gyrobike") in edge_tuples
+    assert ("Daniella Reichstetter", "founded", "Gyrobike") in edge_tuples
+    assert ("Errik Anderson", "founded", "Gyrobike") not in edge_tuples
+    assert all(connection.connected_entity_id is not None for connection in connections)
+
+    detail = store.entity_detail(errik.entity_id)
+    assert detail is not None
+    assert [rel["relationship_type"] for rel in detail["relationships"]] == ["advised"]
+    assert store.list_claims(("keep",))[0].subject_name == "Daniella Reichstetter"
+
+
 def test_chunk_page_returns_one_chunk_for_short_text() -> None:
     chunks = chunk_page("Jane Doe worked on Gyrobike.", target_tokens=4000, overlap_tokens=200)
 
@@ -404,12 +486,10 @@ def test_page_extraction_from_unified_chunk_shape_maps_to_structured_rows() -> N
         ],
     )
 
-    assert any(
-        fact.category == "person" and fact.content == "Errik Anderson" for fact in extraction.facts
-    )
-    assert any(
-        fact.category == "organization" and fact.content == "Gyrobike" for fact in extraction.facts
-    )
+    assert not extraction.facts
+    assert extraction.claims
+    assert extraction.claims[0].subject_name == "Errik Anderson"
+    assert extraction.claims[0].object_name == "Gyrobike"
     assert extraction.connections[0].connected_name == "Gyrobike"
     assert extraction.connections[0].confidence_score == 0.88
     assert extraction.connections[0].text_evidence == "Errik Anderson partnered with Gyrobike."
@@ -419,4 +499,5 @@ def test_page_extraction_from_unified_chunk_shape_maps_to_structured_rows() -> N
         for connection in extraction.connections
     )
     assert extraction.projects[0].project_name == "Gyrobike"
+    assert extraction.projects[0].subject_name == "Errik Anderson"
     assert extraction.projects[0].text_evidence == "Gyrobike"

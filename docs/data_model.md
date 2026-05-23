@@ -25,9 +25,14 @@ authoritative.
 
 ## Structured Evidence
 
-`facts`, `connections`, and `projects` are parsed evidence tables linked to
-`source_raw_page_id`. They also carry `entity_id` for the subject entity and keep
-legacy `alum_name` columns until a later cleanup.
+`claims` is the claim-native parser output. Each row has an explicit subject,
+predicate, object name/value, source page, confidence, and text evidence. The
+parser no longer defaults relationships to the page entity.
+
+`facts`, `connections`, and `projects` are projection tables linked to
+`source_raw_page_id`. New explicit connections and projects are written from
+resolved claims, carry `entity_id` for the claim subject, and keep legacy
+`alum_name` columns until a later cleanup.
 
 `alumni_profiles` is a derived projection synthesized from structured evidence
 and attributes. It is useful for UI and strict query context, but source-linked
@@ -44,6 +49,6 @@ listing.
 
 - Authoritative identity: `entities.id`
 - Authoritative source text: `raw_pages` snapshots
-- Source-linked claims: `entity_attributes`, `facts`, `connections`, `projects`
+- Source-linked claims: `claims`, `entity_attributes`, `facts`, `connections`, `projects`
 - Derived profile view: `alumni_profiles`
 - Operational history: `audit_events`

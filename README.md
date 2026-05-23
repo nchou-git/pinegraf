@@ -15,9 +15,9 @@ Status: prototype. Schema and APIs are still expected to change.
   cleaned text in `raw_pages`, and keeps conditional-fetch metadata.
 - **Clean** - strips noisy HTML and learns per-host prefix/suffix boilerplate in
   `host_boilerplate`.
-- **Parse** - chunks pages with `tiktoken`, triages chunks, extracts people,
-  organizations, relationships, and projects, caches chunk responses, records
-  token spend in `llm_usage`, and emits progress events for the admin UI.
+- **Parse** - chunks pages with `tiktoken`, triages chunks, extracts explicit
+  subject-predicate-object claims, caches chunk responses, records token spend
+  in `llm_usage`, and emits progress events for the admin UI.
 - **Resolve** - conservatively resolves entities with deterministic context
   rules plus optional pgvector-backed name/context embeddings.
 - **Reconcile** - consolidates attributes and infers `co_worked_on`,
@@ -43,7 +43,7 @@ data/alum_data.xlsx      sitemap/seed URLs         Wikidata
         |                       |
         |       extraction_cache + llm_usage
         |                       |
-        +------------> facts, projects, connections
+        +------------> claims -> facts, projects, connections
                              |
                  reconcile_entities.py
                              |
@@ -155,7 +155,8 @@ Tables of note:
 - `page_chunks` - chunk text and optional embeddings used for hybrid retrieval.
 - `entities`, `entity_aliases`, `entity_attributes` - canonical identity and
   source-linked claims.
-- `facts`, `projects`, `connections` - extracted and inferred graph evidence.
+- `claims` - claim-native extraction rows with explicit subject and object.
+- `facts`, `projects`, `connections` - projections and inferred graph evidence.
 - `entity_consolidated` - reconciled profile fields with source row ids.
 - `extraction_cache` - chunk-level triage and extraction cache.
 - `llm_usage` - one row per LLM or embedding call with token and dollar totals.

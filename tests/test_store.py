@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from backend.db.models import Connection
 from backend.db.store import Store
 
 
@@ -110,6 +111,33 @@ def test_structured_rows_have_source_fk_and_sqlite_enforces_integrity(tmp_path) 
             connections=[],
             projects=[],
         )
+
+
+def test_database_context_excludes_unresolved_explicit_connections(tmp_path) -> None:
+    store = make_store(tmp_path)
+    profile = store.upsert_profile(name="Errik Anderson", class_year="T'07")
+    page = store.save_raw_page(
+        alum_name="Errik Anderson",
+        entity_id=profile.entity_id,
+        source_url="https://example.com/errik",
+        page_title="Errik",
+        page_text="Someone else founded Gyrobike.",
+    )
+    with store.session() as session:
+        session.add(
+            Connection(
+                alum_name="Errik Anderson",
+                entity_id=profile.entity_id,
+                connected_name="Gyrobike",
+                source_raw_page_id=page.id,
+                relationship_type="founded",
+                validation_verdict="keep",
+            )
+        )
+        session.commit()
+
+    assert len(store.list_connections(("keep",))) == 1
+    assert store.database_context()["connections"] == []
 
 
 def test_position_upsert_avoids_duplicates_for_same_match_key(tmp_path) -> None:

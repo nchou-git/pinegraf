@@ -9,12 +9,13 @@ crawl -> parse -> resolve -> store -> query
 
 ## Data Flow
 
-1. Seeds start in `data/alumni.csv` or caller-provided seed records.
+1. Seeds start in `data/alum_data.xlsx` or caller-provided seed records.
 2. `backend/pipeline/crawler.py` resolves a seed name to an entity, crawls
    public URLs with conditional GETs, and stores source snapshots in `raw_pages`.
-3. `backend/pipeline/parser.py` reads unparsed snapshots, extracts structured
-   evidence, validates it, writes facts/connections/projects/attributes, and
-   synthesizes a profile projection.
+3. `backend/pipeline/parser.py` reads unparsed snapshots, extracts explicit
+   claims with subject and object endpoints, validates them, writes claim
+   projections to facts/connections/projects/attributes, and synthesizes a
+   profile projection.
 4. `backend/resolution/entity_resolver.py` conservatively creates or reuses
    `entities` using alias plus class-year/current-company context.
 5. `backend/db/store.py` owns writes, query helpers, full-text fallback, audit

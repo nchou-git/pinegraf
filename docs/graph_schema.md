@@ -91,6 +91,36 @@ Postgres migrations also add trigram GIN indexes on `raw_pages.page_text` and
 
 ## Extracted Evidence Tables
 
+### `claims`
+
+Claim-native extraction table. This is the parser's authoritative graph output:
+every row names its own subject and predicate instead of inheriting a page
+subject.
+
+- `id` integer primary key.
+- `subject_entity_id` nullable foreign key to `entities.id`.
+- `subject_name` subject surface form copied from extraction.
+- `predicate` normalized relationship or attribute predicate.
+- `object_entity_id` nullable foreign key to `entities.id` when the object is an
+  entity.
+- `object_name` nullable object surface form for entity-like objects.
+- `object_value` nullable literal value for attribute-like claims.
+- `object_type` text type such as `person`, `organization`, `project`,
+  `education`, `role`, `location`, `date`, or `text`.
+- `source_raw_page_id` required foreign key to `raw_pages.id`.
+- `source_chunk_id` nullable foreign key to `page_chunks.id`.
+- `source_chunk_index` nullable chunk index retained even if chunk rows are
+  rebuilt.
+- `text_evidence` verbatim supporting phrase.
+- `confidence_score` nullable 0.0-1.0 confidence.
+- `prompt_version` extraction prompt/schema version.
+- `validation_verdict` keep/uncertain/drop.
+- `created_at` timezone-aware timestamp.
+
+Connections and projects are projections of resolved claims. A connection is not
+written unless both endpoints were explicit in the claim and resolved to
+entities.
+
 ### `facts`
 
 Parsed evidence that does not fit a first-class edge or project row.
@@ -122,10 +152,12 @@ Parsed project mentions tied to source evidence.
 
 ### `connections`
 
-Graph edge table. It stores both explicit parser edges and inferred edges.
+Graph edge projection table. It stores both explicit claim-derived edges and
+inferred edges.
 
 - `id` integer primary key.
-- `alum_name` legacy left-side label.
+- `alum_name` legacy left-side label; for new explicit edges this is the claim
+  subject name.
 - `entity_id` nullable left-side entity foreign key.
 - `connected_entity_id` nullable right-side entity foreign key.
 - `connected_name` right-side display label.
@@ -133,7 +165,7 @@ Graph edge table. It stores both explicit parser edges and inferred edges.
 - `context` human-readable edge context.
 - `relationship_type` explicit type or inferred typed token.
 - `confidence_score` nullable 0.0-1.0 model or rule confidence.
-- `text_evidence` verbatim chunk phrase for explicit edges.
+- `text_evidence` verbatim chunk phrase for claim-derived explicit edges.
 - `is_inferred` true for reconciliation-generated edges.
 - `derivation` rule explanation for inferred edges.
 - `source_ids` JSON list of source row identifiers used by inferred edges.

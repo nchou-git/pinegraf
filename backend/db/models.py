@@ -205,6 +205,11 @@ class RawPage(Base):
         back_populates="raw_page",
         cascade="all, delete-orphan",
     )
+    claims: Mapped[list[Claim]] = relationship(
+        back_populates="raw_page",
+        cascade="all, delete-orphan",
+        foreign_keys="Claim.source_raw_page_id",
+    )
     entity: Mapped[Entity | None] = relationship()
     chunks: Mapped[list[PageChunk]] = relationship(
         back_populates="raw_page",
@@ -376,6 +381,58 @@ class Project(Base):
 
     raw_page: Mapped[RawPage] = relationship(back_populates="projects")
     entity: Mapped[Entity | None] = relationship()
+
+
+class Claim(Base):
+    __tablename__ = "claims"
+    __table_args__ = (
+        CheckConstraint(
+            "validation_verdict IN ('keep', 'uncertain', 'drop')",
+            name="ck_claims_validation_verdict",
+        ),
+        Index("ix_claims_subject_entity", "subject_entity_id"),
+        Index("ix_claims_object_entity", "object_entity_id"),
+        Index("ix_claims_source_raw_page", "source_raw_page_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    subject_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    subject_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    predicate: Mapped[str] = mapped_column(String(128), nullable=False)
+    object_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    object_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    object_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    object_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    source_raw_page_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_pages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("page_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+    raw_page: Mapped[RawPage] = relationship(
+        back_populates="claims",
+        foreign_keys=[source_raw_page_id],
+    )
+    source_chunk: Mapped[PageChunk | None] = relationship()
+    subject_entity: Mapped[Entity | None] = relationship(foreign_keys=[subject_entity_id])
+    object_entity: Mapped[Entity | None] = relationship(foreign_keys=[object_entity_id])
 
 
 class CrawlState(Base):

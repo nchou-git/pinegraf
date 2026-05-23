@@ -23,6 +23,7 @@ from backend.db.models import (
     AuditEvent,
     AuditRun,
     Base,
+    Claim,
     Connection,
     CrawlState,
     Entity,
@@ -810,6 +811,10 @@ class Store:
                     .where(
                         Connection.validation_verdict != "drop",
                         (
+                            Connection.connected_entity_id.is_not(None)
+                            | Connection.is_inferred.is_(True)
+                        ),
+                        (
                             (Connection.entity_id == entity_uuid)
                             | (Connection.connected_entity_id == entity_uuid)
                         ),
@@ -837,6 +842,7 @@ class Store:
         facts: Iterable[dict[str, object]],
         connections: Iterable[dict[str, object]],
         projects: Iterable[dict[str, object]],
+        claims: Iterable[dict[str, object]] | None = None,
     ) -> None:
         entity_uuid = _coerce_uuid(entity_id)
         with self._session_factory() as session:
@@ -861,6 +867,47 @@ class Store:
             ).delete()
             session.query(Connection).filter(Connection.source_raw_page_id == raw_page_id).delete()
             session.query(Project).filter(Project.source_raw_page_id == raw_page_id).delete()
+            session.query(Claim).filter(Claim.source_raw_page_id == raw_page_id).delete()
+
+            chunk_ids_by_index = {
+                chunk.chunk_index: chunk.id
+                for chunk in session.execute(
+                    select(PageChunk).where(PageChunk.raw_page_id == raw_page_id)
+                ).scalars()
+            }
+            for claim in claims or []:
+                subject_name = str(claim.get("subject_name", "")).strip()
+                predicate = str(claim.get("predicate", "")).strip()
+                subject_entity_id = _coerce_uuid(claim.get("subject_entity_id"))
+                if not subject_name or not predicate or subject_entity_id is None:
+                    continue
+                object_name = str(claim.get("object_name", "")).strip() or None
+                object_value = str(claim.get("object_value", "")).strip() or None
+                source_chunk_index = _as_int_or_none(claim.get("source_chunk_index"))
+                source_chunk_id = _coerce_int(claim.get("source_chunk_id")) or (
+                    chunk_ids_by_index.get(source_chunk_index)
+                    if source_chunk_index is not None
+                    else None
+                )
+                session.add(
+                    Claim(
+                        subject_entity_id=subject_entity_id,
+                        subject_name=subject_name,
+                        predicate=predicate,
+                        object_entity_id=_coerce_uuid(claim.get("object_entity_id")),
+                        object_name=object_name,
+                        object_value=object_value,
+                        object_type=str(claim.get("object_type", "text")).strip() or "text",
+                        source_raw_page_id=raw_page_id,
+                        source_chunk_id=source_chunk_id,
+                        source_chunk_index=source_chunk_index,
+                        text_evidence=str(claim.get("text_evidence", "")).strip(),
+                        confidence_score=_as_float_or_none(claim.get("confidence_score")),
+                        prompt_version=str(claim.get("prompt_version", "")).strip(),
+                        validation_verdict=_clean_verdict(claim.get("validation_verdict")),
+                        created_at=_utcnow(),
+                    )
+                )
 
             for fact in non_position_facts:
                 content = str(fact.get("content", "")).strip()
@@ -890,11 +937,22 @@ class Store:
                 connected_name = str(connection.get("connected_name", "")).strip()
                 if not connected_name:
                     continue
+                subject_entity_id = _coerce_uuid(
+                    connection.get("entity_id") or connection.get("subject_entity_id")
+                )
+                connected_entity_id = _coerce_uuid(connection.get("connected_entity_id"))
+                if subject_entity_id is None or connected_entity_id is None:
+                    continue
+                subject_name = (
+                    str(connection.get("subject_name", "")).strip()
+                    or str(connection.get("alum_name", "")).strip()
+                    or alum_name
+                )
                 session.add(
                     Connection(
-                        alum_name=alum_name,
-                        entity_id=entity_uuid,
-                        connected_entity_id=_coerce_uuid(connection.get("connected_entity_id")),
+                        alum_name=subject_name,
+                        entity_id=subject_entity_id,
+                        connected_entity_id=connected_entity_id,
                         connected_name=connected_name,
                         source_raw_page_id=raw_page_id,
                         context=str(connection.get("context", "")).strip(),
@@ -914,10 +972,19 @@ class Store:
                 project_name = str(project.get("project_name", "")).strip()
                 if not project_name:
                     continue
+                project_entity_id = _coerce_uuid(
+                    project.get("entity_id") or project.get("subject_entity_id")
+                )
+                if project_entity_id is None:
+                    continue
                 session.add(
                     Project(
-                        alum_name=alum_name,
-                        entity_id=entity_uuid,
+                        alum_name=(
+                            str(project.get("subject_name", "")).strip()
+                            or str(project.get("alum_name", "")).strip()
+                            or alum_name
+                        ),
+                        entity_id=project_entity_id,
                         source_raw_page_id=raw_page_id,
                         project_name=project_name,
                         description=str(project.get("description", "")).strip(),
@@ -1022,6 +1089,7 @@ class Store:
             facts=facts,
             connections=[],
             projects=[],
+            claims=[],
         )
 
     def delete_fact(self, fact_id: int) -> bool:
@@ -1064,7 +1132,12 @@ class Store:
                 stmt = stmt.where(Fact.validation_verdict.in_(verdicts))
             return list(session.execute(stmt).scalars())
 
-    def list_connections(self, verdicts: tuple[str, ...] | None = None) -> list[Connection]:
+    def list_connections(
+        self,
+        verdicts: tuple[str, ...] | None = None,
+        *,
+        resolved_only: bool = False,
+    ) -> list[Connection]:
         with self._session_factory() as session:
             stmt = (
                 select(Connection)
@@ -1073,6 +1146,10 @@ class Store:
             )
             if verdicts:
                 stmt = stmt.where(Connection.validation_verdict.in_(verdicts))
+            if resolved_only:
+                stmt = stmt.where(
+                    Connection.connected_entity_id.is_not(None) | Connection.is_inferred.is_(True)
+                )
             return list(session.execute(stmt).scalars())
 
     def list_projects(self, verdicts: tuple[str, ...] | None = None) -> list[Project]:
@@ -1080,6 +1157,13 @@ class Store:
             stmt = select(Project).options(joinedload(Project.raw_page)).order_by(Project.id.asc())
             if verdicts:
                 stmt = stmt.where(Project.validation_verdict.in_(verdicts))
+            return list(session.execute(stmt).scalars())
+
+    def list_claims(self, verdicts: tuple[str, ...] | None = None) -> list[Claim]:
+        with self._session_factory() as session:
+            stmt = select(Claim).options(joinedload(Claim.raw_page)).order_by(Claim.id.asc())
+            if verdicts:
+                stmt = stmt.where(Claim.validation_verdict.in_(verdicts))
             return list(session.execute(stmt).scalars())
 
     def list_facts_for_alum(
@@ -1240,9 +1324,11 @@ class Store:
             ],
             "facts": [fact_to_dict(fact) for fact in self.list_facts(verdicts)],
             "connections": [
-                connection_to_dict(connection) for connection in self.list_connections(verdicts)
+                connection_to_dict(connection)
+                for connection in self.list_connections(verdicts, resolved_only=True)
             ],
             "projects": [project_to_dict(project) for project in self.list_projects(verdicts)],
+            "claims": [claim_to_dict(claim) for claim in self.list_claims(verdicts)],
         }
 
     def raw_pages_fts_search(self, question: str, *, limit: int = 20) -> list[RawPage]:
@@ -1399,13 +1485,22 @@ def _clean_verdict(value: object) -> str:
     return verdict
 
 
-def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+def _coerce_uuid(value: object) -> uuid.UUID | None:
     if value is None or isinstance(value, uuid.UUID):
         return value
     cleaned = str(value).strip()
     if not cleaned:
         return None
     return uuid.UUID(cleaned)
+
+
+def _coerce_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _profile_entity_for_name(session: Session, name: str) -> uuid.UUID | None:
@@ -1493,6 +1588,10 @@ def _as_float_or_none(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _as_int_or_none(value: object) -> int | None:
+    return _coerce_int(value)
 
 
 def _as_string_list(value: object) -> list[str]:
@@ -1708,4 +1807,25 @@ def project_to_dict(project: Project) -> dict[str, object]:
         "confidence_score": project.confidence_score,
         "text_evidence": project.text_evidence,
         "validation_verdict": project.validation_verdict,
+    }
+
+
+def claim_to_dict(claim: Claim) -> dict[str, object]:
+    return {
+        "id": claim.id,
+        "subject_entity_id": (str(claim.subject_entity_id) if claim.subject_entity_id else None),
+        "subject_name": claim.subject_name,
+        "predicate": claim.predicate,
+        "object_entity_id": str(claim.object_entity_id) if claim.object_entity_id else None,
+        "object_name": claim.object_name,
+        "object_value": claim.object_value,
+        "object_type": claim.object_type,
+        "source_raw_page_id": claim.source_raw_page_id,
+        "source_url": claim.raw_page.source_url if claim.raw_page else "",
+        "source_chunk_id": claim.source_chunk_id,
+        "source_chunk_index": claim.source_chunk_index,
+        "text_evidence": claim.text_evidence,
+        "confidence_score": claim.confidence_score,
+        "prompt_version": claim.prompt_version,
+        "validation_verdict": claim.validation_verdict,
     }
