@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -267,7 +268,7 @@ class Fact(Base):
         nullable=True,
         index=True,
     )
-    source_raw_page_id: Mapped[int] = mapped_column(
+    source_raw_page_id: Mapped[int | None] = mapped_column(
         ForeignKey("raw_pages.id", ondelete="CASCADE"),
         nullable=False,
     )
@@ -298,19 +299,29 @@ class Connection(Base):
         nullable=True,
         index=True,
     )
+    connected_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     connected_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     source_raw_page_id: Mapped[int] = mapped_column(
         ForeignKey("raw_pages.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     relationship_type: Mapped[str] = mapped_column(String(64), nullable=False, default="associate")
     confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
     text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_inferred: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    derivation: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_ids: Mapped[list[str]] = mapped_column(JSONList, nullable=False, default=list)
     validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
 
     raw_page: Mapped[RawPage] = relationship(back_populates="connections")
-    entity: Mapped[Entity | None] = relationship()
+    entity: Mapped[Entity | None] = relationship(foreign_keys=[entity_id])
+    connected_entity: Mapped[Entity | None] = relationship(foreign_keys=[connected_entity_id])
 
 
 class Project(Base):
@@ -422,3 +433,27 @@ class AuditRun(Base):
     thrifty_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
     frontier_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
     diff_summary: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+
+
+class EntityConsolidated(Base):
+    __tablename__ = "entity_consolidated"
+
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    current_employer: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    current_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    class_year: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source_ids: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+    entity: Mapped[Entity] = relationship()

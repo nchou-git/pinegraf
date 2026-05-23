@@ -767,6 +767,7 @@ class Store:
                     Connection(
                         alum_name=alum_name,
                         entity_id=entity_uuid,
+                        connected_entity_id=_coerce_uuid(connection.get("connected_entity_id")),
                         connected_name=connected_name,
                         source_raw_page_id=raw_page_id,
                         context=str(connection.get("context", "")).strip(),
@@ -776,6 +777,9 @@ class Store:
                         ),
                         confidence_score=_as_float_or_none(connection.get("confidence_score")),
                         text_evidence=str(connection.get("text_evidence", "")).strip(),
+                        is_inferred=bool(connection.get("is_inferred", False)),
+                        derivation=str(connection.get("derivation", "")).strip(),
+                        source_ids=_as_string_list(connection.get("source_ids")),
                         validation_verdict=_clean_verdict(connection.get("validation_verdict")),
                     )
                 )
@@ -1364,6 +1368,12 @@ def _as_float_or_none(value: object) -> float | None:
         return None
 
 
+def _as_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def _assign_merge_group_ids(positions: list[dict[str, object]]) -> None:
     company_groups: dict[str, list[int]] = {}
     for index, position in enumerate(positions):
@@ -1447,6 +1457,9 @@ def connection_to_dict(connection: Connection) -> dict[str, object]:
         "id": connection.id,
         "alum_name": connection.alum_name,
         "entity_id": str(connection.entity_id) if connection.entity_id else None,
+        "connected_entity_id": (
+            str(connection.connected_entity_id) if connection.connected_entity_id else None
+        ),
         "connected_name": connection.connected_name,
         "source_raw_page_id": connection.source_raw_page_id,
         "source_url": connection.raw_page.source_url if connection.raw_page else "",
@@ -1454,6 +1467,9 @@ def connection_to_dict(connection: Connection) -> dict[str, object]:
         "relationship_type": connection.relationship_type,
         "confidence_score": connection.confidence_score,
         "text_evidence": connection.text_evidence,
+        "is_inferred": connection.is_inferred,
+        "derivation": connection.derivation,
+        "source_ids": connection.source_ids,
         "validation_verdict": connection.validation_verdict,
     }
 
