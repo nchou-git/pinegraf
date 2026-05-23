@@ -206,6 +206,10 @@ class RawPage(Base):
         cascade="all, delete-orphan",
     )
     entity: Mapped[Entity | None] = relationship()
+    chunks: Mapped[list[PageChunk]] = relationship(
+        back_populates="raw_page",
+        cascade="all, delete-orphan",
+    )
 
 
 class HostBoilerplate(Base):
@@ -220,6 +224,26 @@ class HostBoilerplate(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+class PageChunk(Base):
+    __tablename__ = "page_chunks"
+    __table_args__ = (
+        UniqueConstraint("raw_page_id", "chunk_index", name="uq_page_chunks_page_index"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    raw_page_id: Mapped[int] = mapped_column(
+        ForeignKey("raw_pages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+    raw_page: Mapped[RawPage] = relationship(back_populates="chunks")
 
 
 class AlumniProfile(Base):

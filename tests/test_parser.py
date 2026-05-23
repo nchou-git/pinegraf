@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from backend.db.models import RawPage
+from backend.db.models import PageChunk, RawPage
 from backend.db.store import Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.parser import (
@@ -222,6 +222,8 @@ def test_parser_writes_structured_rows_marks_parsed_and_is_idempotent(tmp_path) 
     assert store.list_facts()[0].confidence_score == 0.9
     assert store.list_facts()[0].text_evidence == "Jane Doe is COO at Acme Corp."
     assert store.list_profiles()[0].current_company == "Acme Corp"
+    with store.session() as session:
+        assert session.query(PageChunk).count() == 1
     assert any(event.kind == "page_parsed" for event in events)
 
     parser.run(events.append)

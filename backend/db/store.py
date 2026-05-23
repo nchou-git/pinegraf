@@ -7,8 +7,10 @@ import re
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
+from difflib import SequenceMatcher
 from hashlib import sha1, sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import and_, create_engine, event, func, select, text
@@ -28,6 +30,7 @@ from backend.db.models import (
     Fact,
     HostBoilerplate,
     LLMUsage,
+    PageChunk,
     Project,
     RawPage,
 )
@@ -488,6 +491,84 @@ class Store:
                 raw_page.page_title = page_title[:512]
             raw_page.page_text = page_text
             session.commit()
+
+    def replace_page_chunks(
+        self,
+        *,
+        raw_page_id: int,
+        chunks: Iterable[object],
+        embeddings: list[list[float] | None] | None = None,
+    ) -> None:
+        embeddings = embeddings or []
+        with self._session_factory() as session:
+            session.query(PageChunk).filter(PageChunk.raw_page_id == raw_page_id).delete()
+            for index, chunk in enumerate(chunks):
+                text_value = str(getattr(chunk, "text", "") or "").strip()
+                if not text_value:
+                    continue
+                chunk_index = int(getattr(chunk, "chunk_index", index))
+                embedding = embeddings[index] if index < len(embeddings) else None
+                session.add(
+                    PageChunk(
+                        raw_page_id=raw_page_id,
+                        chunk_index=chunk_index,
+                        text=text_value,
+                        embedding=embedding,
+                        created_at=_utcnow(),
+                    )
+                )
+            session.commit()
+
+    def hybrid_retrieve_chunks(
+        self,
+        *,
+        query: str,
+        expanded_queries: Iterable[str],
+        query_embedding: list[float] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        queries = [query, *expanded_queries]
+        queries = [item.strip() for item in queries if item.strip()]
+        with self._session_factory() as session:
+            rows = list(
+                session.execute(
+                    select(PageChunk, RawPage)
+                    .join(RawPage, RawPage.id == PageChunk.raw_page_id)
+                    .order_by(PageChunk.raw_page_id.asc(), PageChunk.chunk_index.asc())
+                ).all()
+            )
+            if not rows:
+                rows = [
+                    (_page_as_chunk(page), page)
+                    for page in session.execute(select(RawPage).order_by(RawPage.id.asc()))
+                    .scalars()
+                    .all()
+                ]
+        scored: list[dict[str, object]] = []
+        for chunk, raw_page in rows:
+            text_value = str(getattr(chunk, "text", "") or "")
+            trigram_score = _text_similarity(text_value, queries)
+            vector_score = _embedding_similarity(
+                query_embedding,
+                getattr(chunk, "embedding", None),
+            )
+            score = (trigram_score * 0.65) + (vector_score * 0.35)
+            if score <= 0:
+                continue
+            scored.append(
+                {
+                    "raw_page_id": raw_page.id,
+                    "source_url": raw_page.source_url,
+                    "page_title": raw_page.page_title,
+                    "chunk_index": int(getattr(chunk, "chunk_index", 0) or 0),
+                    "text": text_value,
+                    "score": score,
+                    "trigram_score": trigram_score,
+                    "vector_score": vector_score,
+                }
+            )
+        scored.sort(key=lambda item: float(item["score"]), reverse=True)
+        return scored[:limit]
 
     def get_extraction_cache(
         self,
@@ -1372,6 +1453,43 @@ def _as_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _page_as_chunk(page: RawPage) -> SimpleNamespace:
+    return SimpleNamespace(
+        raw_page_id=page.id,
+        chunk_index=0,
+        text=page.page_text,
+        embedding=None,
+    )
+
+
+def _text_similarity(text_value: str, queries: list[str]) -> float:
+    haystack = text_value.lower()
+    haystack_tokens = set(re.findall(r"[a-z0-9']+", haystack))
+    best = 0.0
+    for query in queries:
+        needle = query.lower()
+        needle_tokens = set(re.findall(r"[a-z0-9']+", needle))
+        overlap = len(haystack_tokens & needle_tokens) / max(1, len(needle_tokens))
+        direct = 1.0 if needle and needle in haystack else 0.0
+        fuzzy = SequenceMatcher(None, needle, haystack[: max(500, len(needle) * 8)]).ratio()
+        best = max(best, direct, overlap, fuzzy)
+    return best
+
+
+def _embedding_similarity(
+    left: list[float] | None,
+    right: list[float] | None,
+) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
+    left_norm = sum(value * value for value in left) ** 0.5
+    right_norm = sum(value * value for value in right) ** 0.5
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
 
 
 def _assign_merge_group_ids(positions: list[dict[str, object]]) -> None:

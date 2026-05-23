@@ -1188,6 +1188,16 @@ class Parser:
                 group_key = (raw_page.alum_name, entity_id)
                 page_index, page_total = page_metadata[raw_page.id]
                 chunks = chunks_by_page_id[raw_page.id]
+                embeddings = await asyncio.to_thread(
+                    self._chunk_embeddings,
+                    raw_page,
+                    chunks,
+                )
+                self.store.replace_page_chunks(
+                    raw_page_id=raw_page.id,
+                    chunks=chunks,
+                    embeddings=embeddings,
+                )
                 extraction = await self.extractor.extract_page_async(
                     raw_page,
                     chunks,
@@ -1495,6 +1505,18 @@ class Parser:
         self.store.set_raw_page_entity(raw_page.id, entity_id)
         raw_page.entity_id = entity_id
         return entity_id
+
+    def _chunk_embeddings(self, raw_page: RawPage, chunks: list[Chunk]) -> list[list[float] | None]:
+        if self.embedding_client is None:
+            return []
+        return [
+            self.embedding_client.embed_text(
+                chunk.text,
+                purpose="page_chunk_embedding",
+                entity_id=raw_page.entity_id,
+            )
+            for chunk in chunks
+        ]
 
 
 class OpenAIRateLimiter:

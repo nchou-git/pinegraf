@@ -92,6 +92,24 @@ for (const id of ["lk-name", "lk-company", "lk-year"]) {
 
 const answerEl = document.getElementById("answer");
 
+function renderAnswer(markdown) {
+  answerEl.innerHTML = "";
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
+  let lastIndex = 0;
+  for (const match of markdown.matchAll(pattern)) {
+    answerEl.appendChild(document.createTextNode(markdown.slice(lastIndex, match.index)));
+    const link = document.createElement("a");
+    link.className = "citation";
+    link.href = match[2];
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = match[1];
+    answerEl.appendChild(link);
+    lastIndex = match.index + match[0].length;
+  }
+  answerEl.appendChild(document.createTextNode(markdown.slice(lastIndex)));
+}
+
 async function runResearch() {
   const question = document.getElementById("rs-question").value.trim();
   if (!question) {
@@ -109,7 +127,7 @@ async function runResearch() {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    answerEl.textContent = data.answer;
+    renderAnswer(data.answer);
   } catch (err) {
     answerEl.textContent = `Research failed: ${err.message}`;
   }
