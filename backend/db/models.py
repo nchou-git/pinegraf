@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -21,6 +22,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON, TypeDecorator
 
 JSONList = JSONB().with_variant(JSON(), "sqlite")
+JSONDict = JSONB().with_variant(JSON(), "sqlite")
 
 
 class Base(DeclarativeBase):
@@ -268,6 +270,8 @@ class Fact(Base):
     category: Mapped[str] = mapped_column(String(64), nullable=False, default="general")
     content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="low")
+    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
     validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
 
     raw_page: Mapped[RawPage] = relationship(back_populates="facts")
@@ -297,6 +301,8 @@ class Connection(Base):
     )
     context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     relationship_type: Mapped[str] = mapped_column(String(64), nullable=False, default="associate")
+    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
     validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
 
     raw_page: Mapped[RawPage] = relationship(back_populates="connections")
@@ -325,6 +331,8 @@ class Project(Base):
     )
     project_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
     validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
 
     raw_page: Mapped[RawPage] = relationship(back_populates="projects")
@@ -358,4 +366,39 @@ class AuditEvent(Base):
         nullable=False,
         default=utc_now,
         index=True,
+    )
+
+
+class ExtractionCache(Base):
+    __tablename__ = "extraction_cache"
+
+    chunk_sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    prompt_version: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str] = mapped_column(Text, primary_key=True)
+    response_json: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
+class LLMUsage(Base):
+    __tablename__ = "llm_usage"
+    __table_args__ = (
+        Index("ix_llm_usage_ts", "ts"),
+        Index("ix_llm_usage_model_ts", "model", "ts"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dollars: Mapped[float] = mapped_column(Float(), nullable=False, default=0.0)
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_page_id: Mapped[int | None] = mapped_column(
+        ForeignKey("raw_pages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+        nullable=True,
     )

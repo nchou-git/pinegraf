@@ -23,6 +23,7 @@ dependencies = [
   "beautifulsoup4",
   "lxml",
   "openpyxl",
+  "tiktoken",
 ]
 
 [build-system]

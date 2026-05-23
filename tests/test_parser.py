@@ -4,11 +4,16 @@ from backend.db.models import RawPage
 from backend.db.store import Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.parser import (
+    ChunkExtraction,
     ExtractedConnection,
     ExtractedFact,
+    ExtractedGraphProject,
+    ExtractedOrganization,
+    ExtractedPerson,
     ExtractedPosition,
     ExtractedProfile,
     ExtractedProject,
+    ExtractedRelationship,
     ExtractionClient,
     ItemVerdict,
     PageExtraction,
@@ -17,6 +22,8 @@ from backend.pipeline.parser import (
     SynthesizedProfile,
     ValidationClient,
     ValidationResult,
+    chunk_page,
+    page_extraction_from_chunks,
 )
 
 
@@ -38,14 +45,25 @@ class FakeExtractionClient(ExtractionClient):
                 ExtractedConnection(
                     connected_name="Pat Person",
                     context="Worked together at Acme.",
+                    confidence_score=0.8,
+                    text_evidence="Worked together at Acme.",
                 )
             ],
-            projects=[ExtractedProject(project_name="Project Pine", description="A project.")],
+            projects=[
+                ExtractedProject(
+                    project_name="Project Pine",
+                    description="A project.",
+                    confidence_score=0.7,
+                    text_evidence="Project Pine",
+                )
+            ],
             facts=[
                 ExtractedFact(
                     category="career",
                     content="Jane Doe is COO at Acme Corp.",
                     confidence="high",
+                    confidence_score=0.9,
+                    text_evidence="Jane Doe is COO at Acme Corp.",
                 )
             ],
             positions=[
@@ -150,12 +168,18 @@ def test_parser_writes_structured_rows_marks_parsed_and_is_idempotent(tmp_path) 
     assert store.list_connections()[0].source_raw_page_id == page.id
     assert store.list_connections()[0].entity_id == page.entity_id
     assert store.list_connections()[0].validation_verdict == "keep"
+    assert store.list_connections()[0].confidence_score == 0.8
+    assert store.list_connections()[0].text_evidence == "Worked together at Acme."
     assert store.list_projects()[0].source_raw_page_id == page.id
     assert store.list_projects()[0].entity_id == page.entity_id
     assert store.list_projects()[0].validation_verdict == "uncertain"
+    assert store.list_projects()[0].confidence_score == 0.7
+    assert store.list_projects()[0].text_evidence == "Project Pine"
     assert store.list_facts()[0].source_raw_page_id == page.id
     assert store.list_facts()[0].entity_id == page.entity_id
     assert store.list_facts()[0].validation_verdict == "drop"
+    assert store.list_facts()[0].confidence_score == 0.9
+    assert store.list_facts()[0].text_evidence == "Jane Doe is COO at Acme Corp."
     assert store.list_profiles()[0].current_company == "Acme Corp"
     assert any(event.kind == "page_parsed" for event in events)
 
@@ -198,3 +222,92 @@ def test_parser_returns_multiple_positions_with_correct_type_and_currentness(tmp
         "full_time",
     ]
     assert [position["is_current"] for position in positions].count(True) == 2
+
+
+def test_chunk_page_returns_one_chunk_for_short_text() -> None:
+    chunks = chunk_page("Jane Doe worked on Gyrobike.", target_tokens=4000, overlap_tokens=200)
+
+    assert len(chunks) == 1
+    assert chunks[0].chunk_index == 0
+    assert chunks[0].char_start == 0
+    assert chunks[0].char_end == len("Jane Doe worked on Gyrobike.")
+    assert chunks[0].text == "Jane Doe worked on Gyrobike."
+
+
+def test_chunk_page_overlaps_long_text() -> None:
+    text = " ".join(f"token{i}" for i in range(500))
+
+    chunks = chunk_page(text, target_tokens=80, overlap_tokens=10)
+
+    assert len(chunks) > 1
+    assert chunks[0].char_start == 0
+    assert chunks[1].char_start < chunks[0].char_end
+
+
+def test_page_extraction_from_unified_chunk_shape_maps_to_structured_rows() -> None:
+    raw_page = RawPage(
+        id=1,
+        alum_name="Errik Anderson",
+        source_url="https://example.com",
+        page_title="Example",
+        page_text="Errik Anderson partnered with Gyrobike.",
+        fetched_at=None,  # type: ignore[arg-type]
+    )
+    extraction = page_extraction_from_chunks(
+        raw_page,
+        [
+            ChunkExtraction(
+                people=[
+                    ExtractedPerson(
+                        name="Errik Anderson",
+                        text_evidence="Errik Anderson partnered with Gyrobike.",
+                        confidence=0.95,
+                    )
+                ],
+                organizations=[
+                    ExtractedOrganization(
+                        name="Gyrobike",
+                        text_evidence="partnered with Gyrobike",
+                        confidence=0.9,
+                    )
+                ],
+                relationships=[
+                    ExtractedRelationship(
+                        source_name="Errik Anderson",
+                        target_name="Gyrobike",
+                        relationship_type="partnered_with",
+                        context="Errik Anderson partnered with Gyrobike.",
+                        text_evidence="Errik Anderson partnered with Gyrobike.",
+                        confidence=0.88,
+                    )
+                ],
+                projects=[
+                    ExtractedGraphProject(
+                        project_name="Gyrobike",
+                        description="Bike training project.",
+                        people=["Errik Anderson"],
+                        organizations=["Gyrobike"],
+                        text_evidence="Gyrobike",
+                        confidence=0.9,
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert any(
+        fact.category == "person" and fact.content == "Errik Anderson" for fact in extraction.facts
+    )
+    assert any(
+        fact.category == "organization" and fact.content == "Gyrobike" for fact in extraction.facts
+    )
+    assert extraction.connections[0].connected_name == "Gyrobike"
+    assert extraction.connections[0].confidence_score == 0.88
+    assert extraction.connections[0].text_evidence == "Errik Anderson partnered with Gyrobike."
+    assert any(
+        connection.connected_name == "Gyrobike"
+        and connection.relationship_type == "worked_on_project"
+        for connection in extraction.connections
+    )
+    assert extraction.projects[0].project_name == "Gyrobike"
+    assert extraction.projects[0].text_evidence == "Gyrobike"

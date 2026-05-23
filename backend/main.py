@@ -144,9 +144,17 @@ def build_parser() -> Parser:
         )
     return Parser(
         store=store,
-        extractor=OpenAIExtractionClient(api_key=settings.openai_api_key, model="gpt-5.4-mini"),
-        validator=OpenAIValidationClient(api_key=settings.openai_api_key, model="gpt-5.4-mini"),
-        synthesizer=OpenAISynthesisClient(api_key=settings.openai_api_key, model="gpt-5.4"),
+        extractor=OpenAIExtractionClient(api_key=settings.openai_api_key, store=store),
+        validator=OpenAIValidationClient(
+            api_key=settings.openai_api_key,
+            model="gpt-5.4-mini",
+            store=store,
+        ),
+        synthesizer=OpenAISynthesisClient(
+            api_key=settings.openai_api_key,
+            model="gpt-5.4",
+            store=store,
+        ),
     )
 
 

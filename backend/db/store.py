@@ -23,8 +23,10 @@ from backend.db.models import (
     Connection,
     CrawlState,
     EntityAttribute,
+    ExtractionCache,
     Fact,
     HostBoilerplate,
+    LLMUsage,
     Project,
     RawPage,
 )
@@ -461,6 +463,71 @@ class Store:
             raw_page.page_text = page_text
             session.commit()
 
+    def get_extraction_cache(
+        self,
+        *,
+        chunk_sha256: str,
+        prompt_version: str,
+        model: str,
+    ) -> dict[str, object] | None:
+        with self._session_factory() as session:
+            row = session.get(ExtractionCache, (chunk_sha256, prompt_version, model))
+            if row is None:
+                return None
+            return row.response_json
+
+    def set_extraction_cache(
+        self,
+        *,
+        chunk_sha256: str,
+        prompt_version: str,
+        model: str,
+        response_json: dict[str, object],
+        created_at: datetime | None = None,
+    ) -> None:
+        with self._session_factory() as session:
+            row = session.get(ExtractionCache, (chunk_sha256, prompt_version, model))
+            if row is None:
+                row = ExtractionCache(
+                    chunk_sha256=chunk_sha256,
+                    prompt_version=prompt_version,
+                    model=model,
+                    response_json=response_json,
+                    created_at=created_at or _utcnow(),
+                )
+                session.add(row)
+            else:
+                row.response_json = response_json
+            session.commit()
+
+    def record_llm_usage(
+        self,
+        *,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        dollars: float,
+        purpose: str,
+        raw_page_id: int | None = None,
+        entity_id: uuid.UUID | str | None = None,
+        ts: datetime | None = None,
+    ) -> None:
+        entity_uuid = _coerce_uuid(entity_id)
+        with self._session_factory() as session:
+            session.add(
+                LLMUsage(
+                    ts=ts or _utcnow(),
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    dollars=dollars,
+                    purpose=purpose,
+                    raw_page_id=raw_page_id,
+                    entity_id=entity_uuid,
+                )
+            )
+            session.commit()
+
     def replace_entity_attributes(
         self,
         *,
@@ -568,6 +635,8 @@ class Store:
                         category=str(fact.get("category", "general")).strip() or "general",
                         content=content,
                         confidence=str(fact.get("confidence", "low")).strip() or "low",
+                        confidence_score=_as_float_or_none(fact.get("confidence_score")),
+                        text_evidence=str(fact.get("text_evidence", "")).strip(),
                         validation_verdict=_clean_verdict(fact.get("validation_verdict")),
                     )
                 )
@@ -593,6 +662,8 @@ class Store:
                             str(connection.get("relationship_type", "associate")).strip()
                             or "associate"
                         ),
+                        confidence_score=_as_float_or_none(connection.get("confidence_score")),
+                        text_evidence=str(connection.get("text_evidence", "")).strip(),
                         validation_verdict=_clean_verdict(connection.get("validation_verdict")),
                     )
                 )
@@ -607,6 +678,8 @@ class Store:
                         source_raw_page_id=raw_page_id,
                         project_name=project_name,
                         description=str(project.get("description", "")).strip(),
+                        confidence_score=_as_float_or_none(project.get("confidence_score")),
+                        text_evidence=str(project.get("text_evidence", "")).strip(),
                         validation_verdict=_clean_verdict(project.get("validation_verdict")),
                     )
                 )
@@ -668,6 +741,8 @@ class Store:
                         category="position",
                         content=json.dumps(normalized_payload),
                         confidence=str(fact.get("confidence", "low")).strip() or "low",
+                        confidence_score=_as_float_or_none(fact.get("confidence_score")),
+                        text_evidence=str(fact.get("text_evidence", "")).strip(),
                         validation_verdict=_clean_verdict(fact.get("validation_verdict")),
                     )
                 )
@@ -677,6 +752,8 @@ class Store:
             if entity_id is not None:
                 existing.entity_id = entity_id
             existing.confidence = str(fact.get("confidence", "low")).strip() or "low"
+            existing.confidence_score = _as_float_or_none(fact.get("confidence_score"))
+            existing.text_evidence = str(fact.get("text_evidence", "")).strip()
             existing.validation_verdict = _clean_verdict(fact.get("validation_verdict"))
 
         for row in existing_rows:
@@ -1152,6 +1229,15 @@ def _as_str_or_none(value: object) -> str | None:
     return cleaned or None
 
 
+def _as_float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _assign_merge_group_ids(positions: list[dict[str, object]]) -> None:
     company_groups: dict[str, list[int]] = {}
     for index, position in enumerate(positions):
@@ -1224,6 +1310,8 @@ def fact_to_dict(fact: Fact) -> dict[str, object]:
         "category": fact.category,
         "content": fact.content,
         "confidence": fact.confidence,
+        "confidence_score": fact.confidence_score,
+        "text_evidence": fact.text_evidence,
         "validation_verdict": fact.validation_verdict,
     }
 
@@ -1238,6 +1326,8 @@ def connection_to_dict(connection: Connection) -> dict[str, object]:
         "source_url": connection.raw_page.source_url if connection.raw_page else "",
         "context": connection.context,
         "relationship_type": connection.relationship_type,
+        "confidence_score": connection.confidence_score,
+        "text_evidence": connection.text_evidence,
         "validation_verdict": connection.validation_verdict,
     }
 
@@ -1251,5 +1341,7 @@ def project_to_dict(project: Project) -> dict[str, object]:
         "source_url": project.raw_page.source_url if project.raw_page else "",
         "project_name": project.project_name,
         "description": project.description,
+        "confidence_score": project.confidence_score,
+        "text_evidence": project.text_evidence,
         "validation_verdict": project.validation_verdict,
     }

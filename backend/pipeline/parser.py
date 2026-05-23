@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from hashlib import sha256
+from typing import Literal, TypeVar
 
+import tiktoken
 from openai import OpenAI
 from pydantic import BaseModel, Field, model_validator
 
@@ -14,10 +18,36 @@ from backend.db.models import RawPage
 from backend.db.store import SYNTHESIS_VERDICTS, Store
 from backend.pipeline.crawler import ProgressEvent
 from backend.pipeline.openai_retry import retry_openai_call
+from backend.pricing import estimate_llm_dollars
 from backend.resolution.entity_resolver import resolve_or_create
 
 MAX_EXTRACTION_CHARS = 30_000
+CHUNK_PROMPT = (
+    "Extract a source-grounded people knowledge graph from this page chunk. "
+    "Use only the chunk text. Return JSON arrays for people, organizations, "
+    "relationships, and projects. Every item must include text_evidence copied "
+    "verbatim from the chunk, max 200 characters, and confidence from 0.0 to 1.0. "
+    "Prefer precise direct evidence over inference."
+)
+TRIAGE_PROMPT = (
+    "Does this chunk mention any specific named person? Return only JSON with "
+    "has_person boolean and confidence number from 0.0 to 1.0."
+)
 ValidationVerdict = Literal["keep", "uncertain", "drop"]
+ExtractionTierMode = Literal["mini_only", "cascade", "frontier_only"]
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class Chunk:
+    chunk_index: int
+    char_start: int
+    char_end: int
+    text: str
+
+    @property
+    def sha256(self) -> str:
+        return sha256(self.text.encode("utf-8")).hexdigest()
 
 
 class ExtractedProfile(BaseModel):
@@ -32,12 +62,16 @@ class ExtractedConnection(BaseModel):
     connected_name: str
     context: str = ""
     relationship_type: str = "associate"
+    confidence_score: float | None = None
+    text_evidence: str = ""
     validation_verdict: ValidationVerdict = "keep"
 
 
 class ExtractedProject(BaseModel):
     project_name: str
     description: str = ""
+    confidence_score: float | None = None
+    text_evidence: str = ""
     validation_verdict: ValidationVerdict = "keep"
 
 
@@ -45,6 +79,8 @@ class ExtractedFact(BaseModel):
     category: str = "general"
     content: str
     confidence: str = "low"
+    confidence_score: float | None = None
+    text_evidence: str = ""
     validation_verdict: ValidationVerdict = "keep"
 
 
@@ -76,6 +112,50 @@ class PageExtraction(BaseModel):
     positions: list[ExtractedPosition] = Field(default_factory=list)
 
 
+class TriageResult(BaseModel):
+    has_person: bool = False
+    confidence: float = 0.0
+
+
+class ExtractedPerson(BaseModel):
+    name: str
+    description: str = ""
+    text_evidence: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ExtractedOrganization(BaseModel):
+    name: str
+    description: str = ""
+    text_evidence: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ExtractedRelationship(BaseModel):
+    source_name: str
+    target_name: str
+    relationship_type: str = "associate"
+    context: str = ""
+    text_evidence: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ExtractedGraphProject(BaseModel):
+    project_name: str
+    description: str = ""
+    people: list[str] = Field(default_factory=list)
+    organizations: list[str] = Field(default_factory=list)
+    text_evidence: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class ChunkExtraction(BaseModel):
+    people: list[ExtractedPerson] = Field(default_factory=list)
+    organizations: list[ExtractedOrganization] = Field(default_factory=list)
+    relationships: list[ExtractedRelationship] = Field(default_factory=list)
+    projects: list[ExtractedGraphProject] = Field(default_factory=list)
+
+
 class ItemVerdict(BaseModel):
     index: int
     verdict: ValidationVerdict
@@ -98,6 +178,10 @@ class SynthesizedProfile(BaseModel):
 
 
 class ExtractionClient:
+    def extract_page(self, raw_page: RawPage, chunks: list[Chunk]) -> PageExtraction:
+        del chunks
+        return self.extract(raw_page)
+
     def extract(self, raw_page: RawPage) -> PageExtraction:
         raise NotImplementedError
 
@@ -118,51 +202,173 @@ class SynthesisClient:
 
 
 class OpenAIExtractionClient(ExtractionClient):
-    def __init__(self, api_key: str, model: str = "gpt-5.4-mini") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        store: Store,
+        mini_model: str = "gpt-5.4-mini",
+        frontier_model: str = "gpt-5.4",
+    ) -> None:
         self.client = OpenAI(api_key=api_key)
-        self.model = model
+        self.store = store
+        self.mini_model = mini_model
+        self.frontier_model = frontier_model
+        self.tier_mode = _extraction_tier_mode()
 
     def extract(self, raw_page: RawPage) -> PageExtraction:
+        return self.extract_page(raw_page, chunk_page(raw_page.page_text))
+
+    def extract_page(self, raw_page: RawPage, chunks: list[Chunk]) -> PageExtraction:
+        if not chunks:
+            return PageExtraction()
+
+        triage_results = [self._triage_chunk(raw_page, chunk) for chunk in chunks]
+        any_person = any(result.has_person for result in triage_results)
+        full_indices = {
+            index
+            for index, result in enumerate(triage_results)
+            if any_person or result.has_person or result.confidence <= 0.8
+        }
+        if not full_indices:
+            return PageExtraction()
+
+        chunk_extractions = [
+            self._extract_chunk(raw_page, chunks[index]) for index in sorted(full_indices)
+        ]
+        return page_extraction_from_chunks(raw_page, chunk_extractions)
+
+    def _triage_chunk(self, raw_page: RawPage, chunk: Chunk) -> TriageResult:
+        model = self.mini_model
+        prompt_version = _prompt_version(TRIAGE_PROMPT, TriageResult)
+        cached = self.store.get_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+        )
+        if cached is not None:
+            return TriageResult.model_validate(cached)
+
         response = retry_openai_call(
             lambda: self.client.responses.parse(
-                model=self.model,
+                model=model,
                 input=[
                     {
                         "role": "system",
-                        "content": (
-                            "Extract structured information about the named alumnus from the "
-                            "provided public page. Use only the page text. Return empty fields "
-                            "for unsupported profile data. Connections must be direct "
-                            "relationships involving this alumnus. Projects must be directly "
-                            "attributed to this alumnus. Facts must be claims about this "
-                            "alumnus personally. Positions must include all supported roles for "
-                            "this alumnus, including concurrent roles (for example board seats "
-                            "alongside a day job, advisor roles, or founder plus employment). "
-                            "Use one position object per role. Set is_current=true iff end_date "
-                            "is null. Do not include data about unrelated people with the same "
-                            "name."
-                        ),
+                        "content": TRIAGE_PROMPT,
                     },
                     {
                         "role": "user",
                         "content": (
-                            f"Alumnus: {raw_page.alum_name}\n"
                             f"Page URL: {raw_page.source_url}\n"
-                            f"Page title: {raw_page.page_title}\n\n"
-                            f"Page text:\n{raw_page.page_text[:MAX_EXTRACTION_CHARS]}"
+                            f"Chunk index: {chunk.chunk_index}\n\n"
+                            f"Chunk text:\n{chunk.text}"
                         ),
                     },
                 ],
-                text_format=PageExtraction,
+                text_format=TriageResult,
             )
         )
-        return response.output_parsed or PageExtraction()
+        parsed = response.output_parsed or TriageResult()
+        self._record_usage(response, model=model, purpose="extract_triage", raw_page=raw_page)
+        self.store.set_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+            response_json=parsed.model_dump(),
+        )
+        return parsed
+
+    def _extract_chunk(self, raw_page: RawPage, chunk: Chunk) -> ChunkExtraction:
+        if self.tier_mode == "frontier_only":
+            return self._extract_chunk_with_model(raw_page, chunk, self.frontier_model)
+
+        mini_result = self._extract_chunk_with_model(raw_page, chunk, self.mini_model)
+        if self.tier_mode == "mini_only" or not _has_low_confidence(mini_result):
+            return mini_result
+
+        frontier_result = self._extract_chunk_with_model(raw_page, chunk, self.frontier_model)
+        return merge_chunk_extractions(mini_result, frontier_result)
+
+    def _extract_chunk_with_model(
+        self,
+        raw_page: RawPage,
+        chunk: Chunk,
+        model: str,
+    ) -> ChunkExtraction:
+        prompt_version = _prompt_version(CHUNK_PROMPT, ChunkExtraction)
+        cached = self.store.get_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+        )
+        if cached is not None:
+            return ChunkExtraction.model_validate(cached)
+
+        response = retry_openai_call(
+            lambda: self.client.responses.parse(
+                model=model,
+                input=[
+                    {"role": "system", "content": CHUNK_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Primary target alumnus, if known: {raw_page.alum_name or 'unknown'}\n"
+                            f"Page URL: {raw_page.source_url}\n"
+                            f"Page title: {raw_page.page_title}\n"
+                            f"Chunk index: {chunk.chunk_index}\n"
+                            f"Chunk char span: {chunk.char_start}-{chunk.char_end}\n\n"
+                            f"Chunk text:\n{chunk.text}"
+                        ),
+                    },
+                ],
+                text_format=ChunkExtraction,
+            )
+        )
+        parsed = response.output_parsed or ChunkExtraction()
+        self._record_usage(response, model=model, purpose="extract_full", raw_page=raw_page)
+        self.store.set_extraction_cache(
+            chunk_sha256=chunk.sha256,
+            prompt_version=prompt_version,
+            model=model,
+            response_json=parsed.model_dump(),
+        )
+        return parsed
+
+    def _record_usage(
+        self,
+        response: object,
+        *,
+        model: str,
+        purpose: str,
+        raw_page: RawPage,
+    ) -> None:
+        prompt_tokens, completion_tokens = _usage_tokens(response)
+        self.store.record_llm_usage(
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            dollars=estimate_llm_dollars(
+                model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            ),
+            purpose=purpose,
+            raw_page_id=raw_page.id,
+            entity_id=raw_page.entity_id,
+        )
 
 
 class OpenAIValidationClient(ValidationClient):
-    def __init__(self, api_key: str, model: str = "gpt-5.4-mini") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-5.4-mini",
+        store: Store | None = None,
+    ) -> None:
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.store = store
 
     def validate(self, raw_page: RawPage, extraction: PageExtraction) -> ValidationResult:
         payload = {
@@ -215,13 +421,29 @@ class OpenAIValidationClient(ValidationClient):
                 text_format=ValidationResult,
             )
         )
+        if self.store is not None:
+            prompt_tokens, completion_tokens = _usage_tokens(response)
+            self.store.record_llm_usage(
+                model=self.model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                dollars=estimate_llm_dollars(
+                    self.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+                purpose="extract_validation",
+                raw_page_id=raw_page.id,
+                entity_id=raw_page.entity_id,
+            )
         return response.output_parsed or ValidationResult()
 
 
 class OpenAISynthesisClient(SynthesisClient):
-    def __init__(self, api_key: str, model: str = "gpt-5.4") -> None:
+    def __init__(self, api_key: str, model: str = "gpt-5.4", store: Store | None = None) -> None:
         self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.store = store
 
     def synthesize(
         self,
@@ -255,6 +477,19 @@ class OpenAISynthesisClient(SynthesisClient):
                 text_format=SynthesizedProfile,
             )
         )
+        if self.store is not None:
+            prompt_tokens, completion_tokens = _usage_tokens(response)
+            self.store.record_llm_usage(
+                model=self.model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                dollars=estimate_llm_dollars(
+                    self.model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                ),
+                purpose="profile_synthesis",
+            )
         return response.output_parsed or SynthesizedProfile()
 
 
@@ -272,12 +507,19 @@ class MockExtractionClient(ExtractionClient):
                     connected_name=connected_name,
                     context="Worked together on the Gyrobike first-year project at Tuck.",
                     relationship_type="project collaborator",
+                    confidence_score=0.9,
+                    text_evidence=(
+                        "Errik Anderson and Daniella Reichstetter worked together on the "
+                        "Gyrobike first-year project at Tuck."
+                    ),
                 )
             )
             projects.append(
                 ExtractedProject(
                     project_name="Gyrobike FYP",
                     description="Tuck first-year project involving gyrobike work.",
+                    confidence_score=0.9,
+                    text_evidence="Gyrobike first-year project at Tuck.",
                 )
             )
 
@@ -299,6 +541,8 @@ class MockExtractionClient(ExtractionClient):
                     category="career",
                     content=f"{raw_page.alum_name} is described in a public page.",
                     confidence="medium",
+                    confidence_score=0.7,
+                    text_evidence=f"{raw_page.alum_name} has stored public-page evidence.",
                 )
             ],
             positions=[],
@@ -392,7 +636,8 @@ class Parser:
             )
             page_profiles: list[ExtractedProfile] = []
             for page_index, raw_page in enumerate(alum_pages, start=1):
-                extraction = self.extractor.extract(raw_page)
+                chunks = chunk_page(raw_page.page_text)
+                extraction = self.extractor.extract_page(raw_page, chunks)
                 validation = self.validator.validate(raw_page, extraction)
                 apply_validation(extraction, validation)
                 self.store.replace_structured_items(
@@ -416,6 +661,9 @@ class Parser:
                                     }
                                 ),
                                 "confidence": position.confidence,
+                                "confidence_score": _confidence_score_from_label(
+                                    position.confidence
+                                ),
                                 "validation_verdict": position.validation_verdict,
                             }
                             for position in extraction.positions
@@ -444,6 +692,7 @@ class Parser:
                             "page_done": parsed_pages,
                             "overall_total": total_pages,
                             "overall_done": parsed_pages,
+                            "chunk_total": len(chunks),
                             "verdict_counts": verdict_counts(extraction),
                         },
                     )
@@ -487,6 +736,8 @@ class Parser:
                     "category": fact.category,
                     "content": fact.content,
                     "confidence": fact.confidence,
+                    "confidence_score": fact.confidence_score,
+                    "text_evidence": fact.text_evidence,
                     "validation_verdict": fact.validation_verdict,
                     "source_url": fact.raw_page.source_url if fact.raw_page else "",
                 }
@@ -501,6 +752,8 @@ class Parser:
                     "connected_name": connection.connected_name,
                     "context": connection.context,
                     "relationship_type": connection.relationship_type,
+                    "confidence_score": connection.confidence_score,
+                    "text_evidence": connection.text_evidence,
                     "validation_verdict": connection.validation_verdict,
                     "source_url": connection.raw_page.source_url if connection.raw_page else "",
                 }
@@ -514,6 +767,8 @@ class Parser:
                 {
                     "project_name": project.project_name,
                     "description": project.description,
+                    "confidence_score": project.confidence_score,
+                    "text_evidence": project.text_evidence,
                     "validation_verdict": project.validation_verdict,
                     "source_url": project.raw_page.source_url if project.raw_page else "",
                 }
@@ -557,6 +812,169 @@ class Parser:
         self.store.set_raw_page_entity(raw_page.id, entity_id)
         raw_page.entity_id = entity_id
         return entity_id
+
+
+def chunk_page(
+    page_text: str,
+    *,
+    target_tokens: int = 4000,
+    overlap_tokens: int = 200,
+) -> list[Chunk]:
+    cleaned = page_text or ""
+    if not cleaned:
+        return []
+    encoder = tiktoken.get_encoding("cl100k_base")
+    tokens = encoder.encode(cleaned)
+    if len(tokens) <= target_tokens:
+        return [Chunk(chunk_index=0, char_start=0, char_end=len(cleaned), text=cleaned)]
+
+    chunks: list[Chunk] = []
+    step = max(1, target_tokens - overlap_tokens)
+    search_from = 0
+    for chunk_index, token_start in enumerate(range(0, len(tokens), step)):
+        token_end = min(token_start + target_tokens, len(tokens))
+        chunk_text = encoder.decode(tokens[token_start:token_end])
+        char_start = cleaned.find(chunk_text, max(0, search_from - 4000))
+        if char_start < 0:
+            probe = chunk_text[: min(100, len(chunk_text))]
+            char_start = cleaned.find(probe, max(0, search_from - 4000))
+        if char_start < 0:
+            char_start = search_from
+        char_end = min(len(cleaned), char_start + len(chunk_text))
+        chunks.append(
+            Chunk(
+                chunk_index=chunk_index,
+                char_start=char_start,
+                char_end=char_end,
+                text=cleaned[char_start:char_end],
+            )
+        )
+        if token_end >= len(tokens):
+            break
+        search_from = char_end
+    return chunks
+
+
+def page_extraction_from_chunks(
+    raw_page: RawPage,
+    chunk_extractions: Iterable[ChunkExtraction],
+) -> PageExtraction:
+    extraction = PageExtraction()
+    seen_facts: set[tuple[str, str]] = set()
+    seen_connections: set[tuple[str, str, str]] = set()
+    seen_projects: set[str] = set()
+    for chunk_extraction in chunk_extractions:
+        for person in chunk_extraction.people:
+            name = person.name.strip()
+            if not name:
+                continue
+            key = ("person", name.casefold())
+            if key in seen_facts:
+                continue
+            seen_facts.add(key)
+            extraction.facts.append(
+                ExtractedFact(
+                    category="person",
+                    content=name,
+                    confidence=_confidence_label(person.confidence),
+                    confidence_score=person.confidence,
+                    text_evidence=person.text_evidence,
+                )
+            )
+        for organization in chunk_extraction.organizations:
+            name = organization.name.strip()
+            if not name:
+                continue
+            key = ("organization", name.casefold())
+            if key in seen_facts:
+                continue
+            seen_facts.add(key)
+            extraction.facts.append(
+                ExtractedFact(
+                    category="organization",
+                    content=name,
+                    confidence=_confidence_label(organization.confidence),
+                    confidence_score=organization.confidence,
+                    text_evidence=organization.text_evidence,
+                )
+            )
+        for relationship in chunk_extraction.relationships:
+            connected_name = _connected_name_for_relationship(raw_page, relationship)
+            if not connected_name:
+                continue
+            key = (
+                connected_name.casefold(),
+                relationship.relationship_type.casefold(),
+                relationship.text_evidence.casefold(),
+            )
+            if key in seen_connections:
+                continue
+            seen_connections.add(key)
+            extraction.connections.append(
+                ExtractedConnection(
+                    connected_name=connected_name,
+                    context=relationship.context or relationship.text_evidence,
+                    relationship_type=relationship.relationship_type or "associate",
+                    confidence_score=relationship.confidence,
+                    text_evidence=relationship.text_evidence,
+                )
+            )
+        for project in chunk_extraction.projects:
+            project_name = project.project_name.strip()
+            if not project_name or project_name.casefold() in seen_projects:
+                continue
+            seen_projects.add(project_name.casefold())
+            extraction.projects.append(
+                ExtractedProject(
+                    project_name=project_name,
+                    description=project.description,
+                    confidence_score=project.confidence,
+                    text_evidence=project.text_evidence,
+                )
+            )
+            if _project_mentions_alum(raw_page, project):
+                connection_key = (
+                    project_name.casefold(),
+                    "worked_on_project",
+                    project.text_evidence.casefold(),
+                )
+                if connection_key not in seen_connections:
+                    seen_connections.add(connection_key)
+                    extraction.connections.append(
+                        ExtractedConnection(
+                            connected_name=project_name,
+                            context=project.description or project.text_evidence,
+                            relationship_type="worked_on_project",
+                            confidence_score=project.confidence,
+                            text_evidence=project.text_evidence,
+                        )
+                    )
+    return extraction
+
+
+def merge_chunk_extractions(
+    primary: ChunkExtraction,
+    secondary: ChunkExtraction,
+) -> ChunkExtraction:
+    merged = ChunkExtraction(
+        people=[*primary.people],
+        organizations=[*primary.organizations],
+        relationships=[*primary.relationships],
+        projects=[*primary.projects],
+    )
+    _append_unique(merged.people, secondary.people, lambda item: item.name.casefold())
+    _append_unique(merged.organizations, secondary.organizations, lambda item: item.name.casefold())
+    _append_unique(
+        merged.relationships,
+        secondary.relationships,
+        lambda item: (
+            item.source_name.casefold(),
+            item.target_name.casefold(),
+            item.relationship_type.casefold(),
+        ),
+    )
+    _append_unique(merged.projects, secondary.projects, lambda item: item.project_name.casefold())
+    return merged
 
 
 def apply_validation(extraction: PageExtraction, validation: ValidationResult) -> None:
@@ -631,6 +1049,95 @@ def _iter_verdicts(extraction: PageExtraction) -> Iterable[ValidationVerdict]:
         *extraction.positions,
     ]:
         yield item.validation_verdict
+
+
+def _connected_name_for_relationship(
+    raw_page: RawPage,
+    relationship: ExtractedRelationship,
+) -> str:
+    source = relationship.source_name.strip()
+    target = relationship.target_name.strip()
+    alum = (raw_page.alum_name or "").strip()
+    if alum and _names_match(source, alum):
+        return target
+    if alum and _names_match(target, alum):
+        return source
+    return target or source
+
+
+def _project_mentions_alum(raw_page: RawPage, project: ExtractedGraphProject) -> bool:
+    alum = (raw_page.alum_name or "").strip()
+    if not alum:
+        return False
+    if any(_names_match(person, alum) for person in project.people):
+        return True
+    return _normalize_name(alum) in _normalize_name(project.text_evidence)
+
+
+def _names_match(left: str, right: str) -> bool:
+    return _normalize_name(left) == _normalize_name(right)
+
+
+def _normalize_name(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _append_unique(target: list[T], incoming: Iterable[T], key_fn: Callable[[T], object]) -> None:
+    seen = {key_fn(item) for item in target}
+    for item in incoming:
+        key = key_fn(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        target.append(item)
+
+
+def _has_low_confidence(extraction: ChunkExtraction) -> bool:
+    values = [
+        *[person.confidence for person in extraction.people],
+        *[organization.confidence for organization in extraction.organizations],
+        *[relationship.confidence for relationship in extraction.relationships],
+        *[project.confidence for project in extraction.projects],
+    ]
+    return any(value < 0.6 for value in values)
+
+
+def _confidence_label(confidence: float | None) -> str:
+    value = confidence if confidence is not None else 0.0
+    if value >= 0.8:
+        return "high"
+    if value >= 0.5:
+        return "medium"
+    return "low"
+
+
+def _confidence_score_from_label(confidence: str) -> float:
+    return {"high": 0.9, "medium": 0.65, "low": 0.35}.get(confidence, 0.5)
+
+
+def _prompt_version(prompt: str, model_type: type[BaseModel]) -> str:
+    payload = json.dumps(model_type.model_json_schema(), sort_keys=True)
+    return sha256(f"{prompt}\n{payload}".encode("utf-8")).hexdigest()
+
+
+def _usage_tokens(response: object) -> tuple[int, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0, 0
+    prompt_tokens = (
+        getattr(usage, "input_tokens", None) or getattr(usage, "prompt_tokens", None) or 0
+    )
+    completion_tokens = (
+        getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None) or 0
+    )
+    return int(prompt_tokens), int(completion_tokens)
+
+
+def _extraction_tier_mode() -> ExtractionTierMode:
+    value = os.getenv("EXTRACTION_TIER_MODE", "cascade").strip().lower()
+    if value in {"mini_only", "cascade", "frontier_only"}:
+        return value  # type: ignore[return-value]
+    return "cascade"
 
 
 def dedupe_strings(values: Iterable[object]) -> list[str]:
