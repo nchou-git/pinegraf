@@ -25,7 +25,9 @@ from backend.db.models import (
     Base,
     Connection,
     CrawlState,
+    Entity,
     EntityAttribute,
+    EntityConsolidated,
     ExtractionCache,
     Fact,
     HostBoilerplate,
@@ -781,6 +783,50 @@ class Store:
             if verdicts:
                 stmt = stmt.where(EntityAttribute.validation_verdict.in_(verdicts))
             return list(session.execute(stmt).scalars())
+
+    def entity_detail(self, entity_id: uuid.UUID | str) -> dict[str, object] | None:
+        entity_uuid = _coerce_uuid(entity_id)
+        if entity_uuid is None:
+            return None
+        with self._session_factory() as session:
+            entity = session.get(Entity, entity_uuid)
+            if entity is None:
+                return None
+            consolidated = session.get(EntityConsolidated, entity_uuid)
+            attributes = list(
+                session.execute(
+                    select(EntityAttribute)
+                    .where(
+                        EntityAttribute.entity_id == entity_uuid,
+                        EntityAttribute.validation_verdict != "drop",
+                    )
+                    .order_by(EntityAttribute.attribute_name.asc(), EntityAttribute.id.asc())
+                ).scalars()
+            )
+            relationships = list(
+                session.execute(
+                    select(Connection)
+                    .options(joinedload(Connection.raw_page))
+                    .where(
+                        Connection.validation_verdict != "drop",
+                        (
+                            (Connection.entity_id == entity_uuid)
+                            | (Connection.connected_entity_id == entity_uuid)
+                        ),
+                    )
+                    .order_by(Connection.relationship_type.asc(), Connection.id.asc())
+                ).scalars()
+            )
+            return {
+                "entity_id": str(entity.id),
+                "name": consolidated.name if consolidated else entity.canonical_name,
+                "consolidated": _consolidated_to_dict(consolidated),
+                "attributes": [_entity_attribute_to_dict(attr) for attr in attributes],
+                "relationships": [
+                    _entity_relationship_to_dict(connection, entity_uuid)
+                    for connection in relationships
+                ],
+            }
 
     def replace_structured_items(
         self,
@@ -1567,6 +1613,64 @@ def fact_to_dict(fact: Fact) -> dict[str, object]:
         "confidence_score": fact.confidence_score,
         "text_evidence": fact.text_evidence,
         "validation_verdict": fact.validation_verdict,
+    }
+
+
+def _consolidated_to_dict(row: EntityConsolidated | None) -> dict[str, object]:
+    if row is None:
+        return {}
+    return {
+        "entity_id": str(row.entity_id),
+        "name": row.name,
+        "current_employer": row.current_employer,
+        "current_title": row.current_title,
+        "class_year": row.class_year,
+        "location": row.location,
+        "source_ids": row.source_ids,
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _entity_attribute_to_dict(attribute: EntityAttribute) -> dict[str, object]:
+    return {
+        "id": attribute.id,
+        "attribute_name": attribute.attribute_name,
+        "attribute_value": attribute.attribute_value,
+        "source": attribute.source,
+        "source_url": attribute.source_url,
+        "as_of_date": attribute.as_of_date.isoformat() if attribute.as_of_date else None,
+        "confidence": attribute.confidence,
+        "last_verified_at": (
+            attribute.last_verified_at.isoformat() if attribute.last_verified_at else None
+        ),
+        "validation_verdict": attribute.validation_verdict,
+    }
+
+
+def _entity_relationship_to_dict(
+    connection: Connection,
+    entity_id: uuid.UUID,
+) -> dict[str, object]:
+    if connection.entity_id == entity_id:
+        other_entity_id = connection.connected_entity_id
+        other_name = connection.connected_name
+    else:
+        other_entity_id = connection.entity_id
+        other_name = connection.alum_name
+    return {
+        "id": connection.id,
+        "entity_id": str(connection.entity_id) if connection.entity_id else None,
+        "connected_entity_id": str(other_entity_id) if other_entity_id else None,
+        "connected_name": other_name,
+        "relationship_type": connection.relationship_type,
+        "context": connection.context,
+        "confidence_score": connection.confidence_score,
+        "is_inferred": connection.is_inferred,
+        "derivation": connection.derivation,
+        "source_ids": connection.source_ids,
+        "source_raw_page_id": connection.source_raw_page_id,
+        "source_url": connection.raw_page.source_url if connection.raw_page else None,
+        "text_evidence": connection.text_evidence,
     }
 
 

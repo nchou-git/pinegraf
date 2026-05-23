@@ -332,16 +332,39 @@ async def lookup(payload: LookupRequest) -> dict[str, object]:
         "results": [
             {
                 "name": p.name,
+                "entity_id": str(p.entity_id) if p.entity_id else None,
                 "class_year": p.class_year,
                 "current_company": p.current_company,
                 "current_title": p.current_title,
                 "past_companies": p.past_companies,
                 "education": p.education,
                 "bio_summary": p.bio_summary,
+                "sources": [
+                    {
+                        "attribute_name": attr.attribute_name,
+                        "attribute_value": attr.attribute_value,
+                        "source": attr.source,
+                        "source_url": attr.source_url,
+                        "last_verified_at": (
+                            attr.last_verified_at.isoformat() if attr.last_verified_at else None
+                        ),
+                    }
+                    for attr in store.list_entity_attributes(entity_id=p.entity_id)
+                ]
+                if p.entity_id
+                else [],
             }
             for p in matched
         ],
     }
+
+
+@app.get("/entity/{entity_id}")
+async def entity_detail(entity_id: str) -> dict[str, object]:
+    detail = store.entity_detail(entity_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="entity not found")
+    return detail
 
 
 @app.post("/research")

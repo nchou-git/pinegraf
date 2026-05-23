@@ -4,6 +4,7 @@ const tabs = document.querySelectorAll(".tab");
 const panels = {
   lookup: document.getElementById("panel-lookup"),
   research: document.getElementById("panel-research"),
+  connections: document.getElementById("panel-connections"),
 };
 
 tabs.forEach((tab) => {
@@ -54,9 +55,27 @@ function renderResults(data) {
       ${role ? `<div class="role">${esc(role)}</div>` : ""}
       ${past ? `<div class="meta">Past: ${esc(past)}</div>` : ""}
       ${p.bio_summary ? `<div class="meta">${esc(p.bio_summary)}</div>` : ""}
+      ${
+        p.sources && p.sources.length
+          ? `<details class="sources"><summary>sources</summary>${renderSources(p.sources)}</details>`
+          : ""
+      }
     `;
     lkResults.appendChild(row);
   }
+}
+
+function renderSources(sources) {
+  return sources
+    .map((source) => {
+      const label = [source.attribute_name, source.attribute_value].filter(Boolean).join(": ");
+      const where = source.source_url
+        ? `<a href="${esc(source.source_url)}" target="_blank" rel="noreferrer">${esc(source.source)}</a>`
+        : esc(source.source);
+      const verified = source.last_verified_at ? ` verified ${esc(source.last_verified_at)}` : "";
+      return `<div class="source-line">${esc(label)} | ${where}${verified}</div>`;
+    })
+    .join("");
 }
 
 async function runLookup() {
@@ -136,6 +155,106 @@ async function runResearch() {
 document.getElementById("rs-go").addEventListener("click", runResearch);
 document.getElementById("rs-question").addEventListener("keydown", (e) => {
   if (e.key === "Enter") runResearch();
+});
+
+// ---------- Connections ----------
+
+const cnResults = document.getElementById("cn-results");
+const cnDetail = document.getElementById("cn-detail");
+
+async function searchConnections() {
+  const name = document.getElementById("cn-name").value.trim();
+  if (!name) return;
+  cnResults.innerHTML = '<div class="empty">Searching...</div>';
+  cnDetail.innerHTML = "";
+  try {
+    const res = await fetch("/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    cnResults.innerHTML = "";
+    if (!data.results.length) {
+      cnResults.innerHTML = '<div class="empty">No matches.</div>';
+      return;
+    }
+    for (const entity of data.results) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary entity-pick";
+      button.textContent = [entity.name, entity.class_year].filter(Boolean).join(" ");
+      button.addEventListener("click", () => loadEntity(entity.entity_id));
+      cnResults.appendChild(button);
+    }
+    if (data.results[0].entity_id) loadEntity(data.results[0].entity_id);
+  } catch (err) {
+    cnResults.innerHTML = `<div class="empty">Search failed: ${esc(err.message)}</div>`;
+  }
+}
+
+async function loadEntity(entityId) {
+  if (!entityId) return;
+  cnDetail.innerHTML = '<div class="empty">Loading...</div>';
+  try {
+    const res = await fetch(`/entity/${encodeURIComponent(entityId)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderEntity(await res.json());
+  } catch (err) {
+    cnDetail.innerHTML = `<div class="empty">Load failed: ${esc(err.message)}</div>`;
+  }
+}
+
+function renderEntity(entity) {
+  const consolidated = entity.consolidated || {};
+  const attrs = entity.attributes || [];
+  const relationships = entity.relationships || [];
+  const grouped = relationships.reduce((acc, rel) => {
+    (acc[rel.relationship_type] ||= []).push(rel);
+    return acc;
+  }, {});
+  cnDetail.innerHTML = `
+    <div class="entity-head">
+      <div class="name">${esc(entity.name)}</div>
+      <div class="meta">${esc(consolidated.class_year || "")}</div>
+    </div>
+    <div class="attribute-grid">
+      ${["current_employer", "current_title", "location"].map((key) => (
+        consolidated[key] ? `<div><span class="meta">${esc(key)}</span><br>${esc(consolidated[key])}</div>` : ""
+      )).join("")}
+    </div>
+    <h3>Attributes</h3>
+    <div class="results">
+      ${attrs.map((attr) => `
+        <div class="result-row">
+          <div class="role">${esc(attr.attribute_name)}: ${esc(attr.attribute_value)}</div>
+          <div class="meta">${esc(attr.source)}${attr.last_verified_at ? ` | verified ${esc(attr.last_verified_at)}` : ""}</div>
+          ${attr.source_url ? `<a class="meta" href="${esc(attr.source_url)}" target="_blank" rel="noreferrer">${esc(attr.source_url)}</a>` : ""}
+        </div>
+      `).join("") || '<div class="empty">No attributes.</div>'}
+    </div>
+    <h3>Connected Entities</h3>
+    ${Object.entries(grouped).map(([type, rels]) => `
+      <div class="connection-group">
+        <div class="role">${esc(type)}</div>
+        ${rels.map((rel) => `
+          <div class="result-row">
+            <div class="name">${esc(rel.connected_name)}</div>
+            <div class="meta">confidence ${rel.confidence_score ?? ""}</div>
+            ${rel.derivation ? `<div class="meta">${esc(rel.derivation)}</div>` : ""}
+            ${rel.source_url ? `<a class="meta" href="${esc(rel.source_url)}" target="_blank" rel="noreferrer">${esc(rel.source_url)}</a>` : ""}
+            ${rel.text_evidence ? `<div class="meta">${esc(rel.text_evidence)}</div>` : ""}
+          </div>
+        `).join("")}
+      </div>
+    `).join("") || '<div class="empty">No relationships.</div>'}
+  `;
+}
+
+document.getElementById("cn-go").addEventListener("click", searchConnections);
+document.getElementById("cn-name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") searchConnections();
 });
 
 // load empty state

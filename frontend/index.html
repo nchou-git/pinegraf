@@ -29,6 +29,7 @@
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="lookup">Lookup</button>
           <button class="tab" data-tab="research">Research</button>
+          <button class="tab" data-tab="connections">Connections</button>
         </div>
 
         <div class="panel" id="panel-lookup">
@@ -55,6 +56,16 @@
             <button id="rs-go" class="primary" type="button">Ask</button>
           </div>
           <div id="answer">Answer will appear here.</div>
+        </div>
+
+        <div class="panel" id="panel-connections" hidden>
+          <h2>Connections</h2>
+          <div class="research-row">
+            <input id="cn-name" type="text" placeholder="Entity name" />
+            <button id="cn-go" class="primary" type="button">Search</button>
+          </div>
+          <div id="cn-results" class="results"></div>
+          <div id="cn-detail" class="entity-detail"></div>
         </div>
       </section>
     </main>

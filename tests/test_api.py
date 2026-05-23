@@ -287,6 +287,52 @@ def test_admin_audit_run_and_last(monkeypatch, tmp_path) -> None:
     assert last_payload["audit"]["id"] == run_payload["id"]
 
 
+def test_entity_detail_returns_attributes_relationships_and_provenance(
+    monkeypatch, tmp_path
+) -> None:
+    main = load_mock_main(monkeypatch, tmp_path)
+    profile = main.store.upsert_profile(name="Jane Doe", class_year="T'24")
+    page = main.store.save_raw_page(
+        alum_name="Jane Doe",
+        entity_id=profile.entity_id,
+        source_url="https://example.com/jane",
+        page_title="Jane",
+        page_text="Jane Doe worked with Pat Person.",
+    )
+    main.store.replace_structured_items(
+        raw_page_id=page.id,
+        alum_name="Jane Doe",
+        entity_id=profile.entity_id,
+        facts=[],
+        connections=[
+            {
+                "connected_name": "Pat Person",
+                "relationship_type": "worked_with",
+                "context": "Worked with Pat Person.",
+                "confidence_score": 0.8,
+                "text_evidence": "Jane Doe worked with Pat Person.",
+                "validation_verdict": "keep",
+            }
+        ],
+        projects=[],
+    )
+
+    async def run() -> tuple[dict[str, object], dict[str, object]]:
+        async with _client(main) as client:
+            lookup = await client.post("/lookup", json={"name": "Jane"})
+            entity_id = lookup.json()["results"][0]["entity_id"]
+            detail = await client.get(f"/entity/{entity_id}")
+        assert detail.status_code == 200
+        return lookup.json(), detail.json()
+
+    lookup_payload, detail_payload = asyncio.run(run())
+    assert lookup_payload["results"][0]["sources"]
+    assert detail_payload["entity_id"] == str(profile.entity_id)
+    assert detail_payload["attributes"][0]["source"]
+    assert detail_payload["relationships"][0]["source_url"] == "https://example.com/jane"
+    assert detail_payload["relationships"][0]["text_evidence"] == "Jane Doe worked with Pat Person."
+
+
 # ---------- static frontends ----------
 
 
