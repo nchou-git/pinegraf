@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import secrets
 from collections.abc import Awaitable, Callable
 
@@ -10,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 from starlette.responses import Response as StarletteResponse
 
+from backend.admin_auth import basic_credentials
 from backend.config import get_settings
 
 BYPASS_PATHS = {
@@ -41,7 +40,7 @@ class SiteAuthMiddleware(BaseHTTPMiddleware):
         if not expected_password:
             return PlainTextResponse("site auth is not configured", status_code=503)
 
-        credentials = _basic_credentials(request.headers.get("authorization"))
+        credentials = basic_credentials(request.headers.get("authorization"))
         if credentials is None:
             return _auth_required_response()
 
@@ -55,22 +54,6 @@ class SiteAuthMiddleware(BaseHTTPMiddleware):
             return _auth_required_response()
 
         return await call_next(request)
-
-
-def _basic_credentials(header_value: str | None) -> tuple[str, str] | None:
-    if not header_value:
-        return None
-    scheme, _, encoded = header_value.partition(" ")
-    if scheme.casefold() != "basic" or not encoded.strip():
-        return None
-    try:
-        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError):
-        return None
-    username, separator, password = decoded.partition(":")
-    if not separator:
-        return None
-    return username, password
 
 
 def _auth_required_response() -> PlainTextResponse:

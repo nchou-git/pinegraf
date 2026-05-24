@@ -35,41 +35,8 @@ const SOURCE_KINDS = [
     id: "file",
     label: "Manual upload",
     icon: "ti-upload",
-    description: "xlsx, csv, pdf, or text file.",
+    description: "xlsx or csv seed file.",
     fields: [{ name: "file", label: "File", type: "file", required: true }],
-  },
-  {
-    id: "api",
-    label: "API endpoint",
-    icon: "ti-api",
-    description: "SerpAPI, REST endpoint, JSON feed.",
-    fields: [
-      {
-        name: "identifier",
-        label: "Endpoint URL",
-        placeholder: "https://serpapi.com/search",
-        required: true,
-      },
-      {
-        name: "notes",
-        label: "Auth or query notes (optional)",
-        placeholder: "secret_name=SERPAPI_KEY, query=Tuck alumni",
-      },
-    ],
-  },
-  {
-    id: "human",
-    label: "Human source",
-    icon: "ti-user",
-    description: "Direct submissions from people.",
-    fields: [
-      {
-        name: "identifier",
-        label: "Source label",
-        placeholder: "alumni-relations-team",
-        required: true,
-      },
-    ],
   },
 ];
 
@@ -822,8 +789,6 @@ function sourceMetaLine(source) {
     {
       domain: "Sitemap",
       file: "Manual upload",
-      api: "API",
-      human: "Human",
     }[source.kind] || source.kind;
   return `${kindLabel} · ${source.identifier} · trust ${formatTrust(source.trust_weight)}`;
 }
@@ -1191,7 +1156,7 @@ function renderAddSourceModal() {
     <div class="modal-header">
       <div>
         <div class="modal-title">Add source</div>
-        <div class="modal-subtitle">Pick a kind. Each kind has its own configuration.</div>
+        <div class="modal-subtitle">Add a crawlable domain or upload a seed file.</div>
       </div>
       <button class="modal-close" onclick="closeModal()" aria-label="Close">×</button>
     </div>
@@ -1213,7 +1178,7 @@ function renderAddSourceModal() {
       </div>
       <label class="field">
         <span class="field-label">Display name</span>
-        <input id="new-name" placeholder="e.g. SerpAPI — Tuck mentions" />
+        <input id="new-name" placeholder="e.g. Tuck news" />
         <span class="field-hint">You can rename this anytime.</span>
       </label>
       ${selected.fields
@@ -1277,13 +1242,11 @@ async function submitAddSource() {
         toast("Identifier is required.", "error");
         return;
       }
-      const notesField = byId("new-notes");
       const body = {
         kind,
         identifier,
         trust_weight: trust,
         display_name,
-        notes: notesField ? notesField.value.trim() || null : null,
       };
       const res = await fetch("/admin/sources", {
         method: "POST",

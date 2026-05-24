@@ -16,7 +16,6 @@ dependencies = [
   "pytest-asyncio",
   "ruff",
   "httpx",
-  "h2",
   "openpyxl",
   "tiktoken",
   "pgvector",

@@ -31,7 +31,7 @@ async def run_full_pipeline(
     *,
     store: Store,
 ) -> set[uuid.UUID]:
-    run_id = _as_uuid(source_run_id)
+    run_id = uuid.UUID(str(source_run_id))
     touched: set[uuid.UUID] = set()
     stats = dict(store.get_source_run(run_id).stats or {}) if store.get_source_run(run_id) else {}
     try:
@@ -70,7 +70,7 @@ async def run_full_pipeline(
 
 
 async def subscribe(run_id: uuid.UUID | str) -> AsyncIterator[PipelineEvent]:
-    run_uuid = _as_uuid(run_id)
+    run_uuid = uuid.UUID(str(run_id))
     queue: asyncio.Queue[PipelineEvent] = asyncio.Queue()
     _SUBSCRIBERS[run_uuid].append(queue)
     try:
@@ -86,7 +86,3 @@ async def subscribe(run_id: uuid.UUID | str) -> AsyncIterator[PipelineEvent]:
 async def _emit(run_id: uuid.UUID, event: PipelineEvent) -> None:
     for queue in list(_SUBSCRIBERS.get(run_id, [])):
         await queue.put(event)
-
-
-def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))

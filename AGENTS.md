@@ -9,8 +9,8 @@ from structured rows or raw-page RAG.
 - Python 3.11+, FastAPI, SQLAlchemy 2.x, Alembic, Postgres 14+ for production,
   SQLite for local tests, pytest.
 - OpenAI Python SDK; use mock clients in tests.
-- `httpx` async crawler with `h2`, `trafilatura`/`langdetect`
-  normalization, plain HTML/JS frontend served by FastAPI.
+- `httpx` async crawler with `trafilatura`/`langdetect` normalization, plain
+  HTML/JS frontend served by FastAPI.
 
 ## Architecture
 

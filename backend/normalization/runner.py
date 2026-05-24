@@ -11,7 +11,7 @@ async def normalize_pending(
     store: Store,
     source_run_id: uuid.UUID | str | None = None,
 ) -> list[uuid.UUID]:
-    run_uuid = _as_uuid(source_run_id) if source_run_id is not None else None
+    run_uuid = uuid.UUID(str(source_run_id)) if source_run_id is not None else None
     document_ids: list[uuid.UUID] = []
     for fetch_id in store.pending_fetch_ids(source_run_id=run_uuid):
         document_ids.append(await normalize_fetch(fetch_id, store=store))
@@ -20,7 +20,3 @@ async def normalize_pending(
 
 async def normalize_run(source_run_id: uuid.UUID | str, *, store: Store) -> list[uuid.UUID]:
     return await normalize_pending(store=store, source_run_id=source_run_id)
-
-
-def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))

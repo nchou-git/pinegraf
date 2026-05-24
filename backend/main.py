@@ -27,7 +27,6 @@ from backend.site_auth import SiteAuthMiddleware
 from backend.web_api import (
     admin_corpus_stats,
     ask_stream,
-    claim_detail,
     delete_source,
     document_detail,
     entity_detail,
@@ -41,13 +40,11 @@ from backend.web_api import (
     source_detail,
     stats,
     update_source,
-    update_source_trust,
-    write_feedback,
 )
 
 
 class SourceCreate(BaseModel):
-    kind: Literal["domain", "file", "api", "human"]
+    kind: Literal["domain", "file"]
     identifier: str
     trust_weight: float = Field(default=0.5, ge=0, le=1)
     display_name: str | None = None
@@ -81,22 +78,6 @@ class AskRequest(BaseModel):
     max_results: int = Field(default=10, ge=1, le=50)
 
 
-class FeedbackRequest(BaseModel):
-    target_type: Literal["claim", "entity", "mention", "evidence"]
-    target_id: uuid.UUID
-    signal_type: Literal[
-        "verify",
-        "dispute",
-        "correct",
-        "add_evidence",
-        "redact",
-        "merge_entities",
-        "split_entity",
-        "retract_claim",
-    ]
-    payload: dict[str, object] | None = None
-
-
 class ConflictResolveRequest(BaseModel):
     resolution: Literal[
         "unresolved",
@@ -106,10 +87,6 @@ class ConflictResolveRequest(BaseModel):
         "both_valid_distinct",
     ]
     notes: str | None = None
-
-
-class SourceTrustRequest(BaseModel):
-    trust_weight: float = Field(ge=0, le=1)
 
 
 class ResetExtractionRequest(BaseModel):
@@ -300,30 +277,12 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="entity not found")
         return detail
 
-    @app.get("/api/claim/{claim_id}")
-    async def api_claim(request: Request, claim_id: uuid.UUID) -> dict[str, object]:
-        detail = claim_detail(_store(request), claim_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail="claim not found")
-        return detail
-
     @app.post("/api/ask")
     async def api_ask(request: Request, payload: AskRequest) -> StreamingResponse:
         return StreamingResponse(
             ask_stream(_store(request), question=payload.question, max_results=payload.max_results),
             media_type="text/event-stream",
         )
-
-    @app.post("/api/feedback")
-    async def api_feedback(request: Request, payload: FeedbackRequest) -> dict[str, str]:
-        signal_id = write_feedback(
-            _store(request),
-            target_type=payload.target_type,
-            target_id=payload.target_id,
-            signal_type=payload.signal_type,
-            payload=payload.payload,
-        )
-        return {"signal_id": str(signal_id)}
 
     @app.post("/admin/sources")
     async def admin_create_source(request: Request, payload: SourceCreate) -> dict[str, object]:
@@ -555,16 +514,6 @@ def create_app(store: Store | None = None) -> FastAPI:
             resolution=payload.resolution,
             notes=payload.notes,
         )
-        return {"status": "ok"}
-
-    @app.post("/admin/sources/{source_id}/trust")
-    async def admin_source_trust(
-        request: Request,
-        source_id: uuid.UUID,
-        payload: SourceTrustRequest,
-    ) -> dict[str, str]:
-        require_admin(request)
-        update_source_trust(_store(request), source_id, payload.trust_weight)
         return {"status": "ok"}
 
     @app.post("/admin/reset-extraction")

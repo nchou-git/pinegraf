@@ -19,7 +19,7 @@ async def run_seed(
     *,
     store: Store,
 ) -> dict[str, int]:
-    run_id = _as_uuid(source_run_id)
+    run_id = uuid.UUID(str(source_run_id))
     rows = _read_seed_rows(Path(seed_file_path))
     stats = {"queried": 0, "found": 0, "fetched": 0, "missed": 0}
     for row in rows[: get_settings().max_pages]:
@@ -101,7 +101,3 @@ def _normal_key(value: object) -> str:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
     return slug.strip("-")
-
-
-def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))

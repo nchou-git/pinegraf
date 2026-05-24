@@ -13,7 +13,7 @@ async def run_adhoc(
     *,
     store: Store,
 ) -> dict[str, int]:
-    run_id = _as_uuid(source_run_id)
+    run_id = uuid.UUID(str(source_run_id))
     stats = {"requested": len(urls), "fetched": 0, "errors": 0}
     for url in urls[: get_settings().max_pages]:
         try:
@@ -34,7 +34,3 @@ async def run_adhoc(
         status = "failed"
     store.update_source_run(run_id, status=status, stats=stats, finished=True)
     return stats
-
-
-def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))

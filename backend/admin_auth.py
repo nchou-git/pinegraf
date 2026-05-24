@@ -22,7 +22,7 @@ def is_admin_request(request: Request) -> bool:
     cookie_value = request.cookies.get(COOKIE_NAME)
     if cookie_value and verify(cookie_value) is not None:
         return True
-    credentials = _basic_credentials(request.headers.get("authorization"))
+    credentials = basic_credentials(request.headers.get("authorization"))
     if credentials is None:
         return False
     _username, password = credentials
@@ -32,7 +32,7 @@ def is_admin_request(request: Request) -> bool:
     return secrets.compare_digest(password, expected)
 
 
-def _basic_credentials(header_value: str | None) -> tuple[str, str] | None:
+def basic_credentials(header_value: str | None) -> tuple[str, str] | None:
     if not header_value:
         return None
     scheme, _, encoded = header_value.partition(" ")

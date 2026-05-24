@@ -9,7 +9,7 @@ from backend.normalization.embedder import embed_chunks
 
 
 async def normalize_fetch(fetch_id: uuid.UUID | str, *, store: Store) -> uuid.UUID:
-    fetch_uuid = _as_uuid(fetch_id)
+    fetch_uuid = uuid.UUID(str(fetch_id))
     fetch = store.get_fetch(fetch_uuid)
     if fetch is None:
         raise ValueError(f"fetch not found: {fetch_uuid}")
@@ -44,7 +44,3 @@ async def normalize_fetch(fetch_id: uuid.UUID | str, *, store: Store) -> uuid.UU
     )
     store.link_document_fetch(document.id, fetch_uuid)
     return document.id
-
-
-def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))

@@ -14,7 +14,7 @@ async def run_sitemap(
     *,
     store: Store,
 ) -> dict[str, int]:
-    run_id = _as_uuid(source_run_id)
+    run_id = uuid.UUID(str(source_run_id))
     stats = {"sitemaps": 0, "discovered": 0, "fetched": 0, "errors": 0}
     try:
         urls = await _collect_urls(sitemap_url, stats=stats, seen=set())
@@ -91,7 +91,3 @@ def _loc_texts(root: ElementTree.Element) -> list[str]:
 
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
-
-
-def _as_uuid(value: uuid.UUID | str) -> uuid.UUID:
-    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))

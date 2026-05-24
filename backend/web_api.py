@@ -11,7 +11,6 @@ from openai import AsyncOpenAI
 from sqlalchemy import delete, func, or_, select
 
 from backend.config import get_settings
-from backend.corroboration.confidence_scorer import rescore_claim
 from backend.db.models import (
     Chunk,
     Claim,
@@ -167,29 +166,6 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
         }
 
 
-def claim_detail(store: Store, claim_id: uuid.UUID) -> dict[str, object] | None:
-    with store.session() as session:
-        claim = session.get(Claim, claim_id)
-        if claim is None:
-            return None
-        subject = session.get(Entity, claim.subject_entity_id)
-        obj = session.get(Entity, claim.object_entity_id) if claim.object_entity_id else None
-        evidence = _claim_evidence(session, claim.id)
-        return {
-            "claim_id": str(claim.id),
-            "subject_entity_id": str(claim.subject_entity_id),
-            "subject_name": subject.canonical_name if subject else None,
-            "predicate": claim.predicate,
-            "object_entity_id": str(claim.object_entity_id) if claim.object_entity_id else None,
-            "object_name": obj.canonical_name if obj else claim.object_value,
-            "object_value": claim.object_value,
-            "qualifiers": claim.qualifiers,
-            "confidence_score": claim.confidence_score,
-            "status": claim.status,
-            "evidence": evidence,
-        }
-
-
 async def ask_stream(
     store: Store,
     *,
@@ -213,36 +189,9 @@ async def ask_stream(
     yield _sse({"kind": "done"})
 
 
-def write_feedback(
-    store: Store,
-    *,
-    target_type: str,
-    target_id: uuid.UUID,
-    signal_type: str,
-    payload: dict[str, object] | None,
-    user_id: str = "site-user",
-) -> uuid.UUID:
-    with store.session() as session:
-        signal = HumanSignal(
-            signal_type=signal_type,
-            target_type=target_type,
-            target_id=target_id,
-            user_id=user_id,
-            payload=payload,
-        )
-        session.add(signal)
-        session.commit()
-        signal_id = signal.id
-    if target_type == "claim":
-        rescore_claim(store, target_id)
-    return signal_id
-
-
 _KIND_ICONS = {
     "domain": "ti-world",
     "file": "ti-file-spreadsheet",
-    "api": "ti-api",
-    "human": "ti-user",
 }
 
 
@@ -609,15 +558,6 @@ def resolve_conflict(
                     payload={"conflict_id": str(conflict.id), "notes": notes},
                 )
             )
-        session.commit()
-
-
-def update_source_trust(store: Store, source_id: uuid.UUID, trust_weight: float) -> None:
-    with store.session() as session:
-        source = session.get(Source, source_id)
-        if source is None:
-            return
-        source.trust_weight = trust_weight
         session.commit()
 
 
