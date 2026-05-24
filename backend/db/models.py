@@ -300,7 +300,7 @@ class EntityMention(Base):
             name="ck_entity_mentions_position",
         ),
         CheckConstraint(
-            "resolution_method in ('exact_match','alias','embedding','llm','human')",
+            "resolution_method in ('exact_match','alias','embedding','llm','human','new_entity')",
             name="ck_entity_mentions_resolution_method",
         ),
         Index("ix_entity_mentions_claim_raw_id", "claim_raw_id"),

@@ -12,7 +12,7 @@ from starlette.responses import Response as StarletteResponse
 
 from backend.config import get_settings
 
-BYPASS_PATHS = {"/health", "/favicon.svg"}
+BYPASS_PATHS = {"/health", "/app.js", "/styles.css", "/favicon.svg"}
 WWW_AUTHENTICATE = 'Basic realm="Pinegraf"'
 
 
@@ -38,9 +38,10 @@ class SiteAuthMiddleware(BaseHTTPMiddleware):
             return _auth_required_response()
 
         username, password = credentials
-        user_ok = secrets.compare_digest(username, settings.site_auth_user)
-        password_ok = secrets.compare_digest(password, expected_password)
-        if not (user_ok and password_ok):
+        site_user_ok = secrets.compare_digest(username, settings.site_auth_user)
+        site_password_ok = secrets.compare_digest(password, expected_password)
+        admin_password_ok = secrets.compare_digest(password, settings.pinegraf_admin_password)
+        if not ((site_user_ok and site_password_ok) or admin_password_ok):
             return _auth_required_response()
 
         return await call_next(request)

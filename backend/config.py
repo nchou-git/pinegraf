@@ -22,6 +22,8 @@ class Settings(BaseModel):
     pinegraf_contact: str = Field(default="ops@example.com")
     max_pages: int = Field(default=1000, ge=1)
     use_mock_embeddings: bool = Field(default=False)
+    cheap_model: str = Field(default="gpt-4o-mini")
+    frontier_model: str = Field(default="gpt-4o")
 
     @field_validator("use_mock_embeddings", mode="before")
     @classmethod
@@ -45,6 +47,8 @@ def get_settings() -> Settings:
             pinegraf_contact=os.getenv("PINEGRAF_CONTACT", "ops@example.com"),
             max_pages=int(os.getenv("MAX_PAGES", "1000")),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
+            cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
+            frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),
         )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc

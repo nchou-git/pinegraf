@@ -12,13 +12,18 @@ WWW_AUTHENTICATE = 'Basic realm="Pinegraf Admin"'
 
 
 def require_admin(request: Request) -> None:
+    if is_admin_request(request):
+        return
+    raise _unauthorized()
+
+
+def is_admin_request(request: Request) -> bool:
     credentials = _basic_credentials(request.headers.get("authorization"))
     if credentials is None:
-        raise _unauthorized()
+        return False
     _username, password = credentials
     expected = get_settings().pinegraf_admin_password
-    if not secrets.compare_digest(password, expected):
-        raise _unauthorized()
+    return secrets.compare_digest(password, expected)
 
 
 def _basic_credentials(header_value: str | None) -> tuple[str, str] | None:
