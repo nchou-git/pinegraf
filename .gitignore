@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.db
+.env
+.env.*
+.gcp-secrets-staging
+.fly-secrets.sh
+.pytest_cache/
+.ruff_cache/
+.codex/
+.venv/
+
+# Python build artifacts
+*.egg-info/
+.venv/
+__pycache__/
+*.pyc
+data_dump.txt
+eval_results.json

@@ -1,0 +1,43 @@
+[project]
+name = "pinegraf"
+version = "0.3.0"
+description = "Alumni enrichment and query pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "sqlalchemy",
+  "alembic",
+  "psycopg[binary]>=3.2",
+  "openai",
+  "python-dotenv",
+  "pydantic",
+  "pytest",
+  "pytest-asyncio",
+  "ruff",
+  "httpx",
+  "h2",
+  "openpyxl",
+  "tiktoken",
+  "pgvector",
+  "trafilatura",
+  "langdetect",
+  "itsdangerous",
+  "python-multipart",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

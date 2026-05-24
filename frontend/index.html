@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pinegraf</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"
+      defer
+    ></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg
+          width="26"
+          height="26"
+          viewBox="0 0 40 40"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <polygon
+            points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
+            fill="#00693E"
+          />
+          <rect x="18" y="32" width="4" height="4" fill="#00693E" />
+        </svg>
+        <div class="brand-text">
+          <div class="wordmark">Pinegraf</div>
+          <div class="brand-sub" id="brand-sub">Loading…</div>
+        </div>
+      </div>
+      <nav class="nav-pills" id="nav-pills" aria-label="Primary"></nav>
+    </header>
+    <main id="app" class="app"></main>
+    <div id="modal-root"></div>
+    <div id="toast-root" aria-live="polite"></div>
+  </body>
+</html>
