@@ -25,7 +25,7 @@ class SiteAuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[StarletteResponse]],
     ) -> StarletteResponse:
-        if request.url.path in BYPASS_PATHS:
+        if request.url.path in BYPASS_PATHS or request.url.path.startswith("/admin"):
             return await call_next(request)
 
         settings = get_settings()

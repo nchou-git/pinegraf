@@ -9,49 +9,21 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 load_dotenv()
 
 
-def _csv(name: str) -> list[str]:
-    """Read a comma-separated env var into a list of stripped strings."""
-    raw = os.getenv(name, "")
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
 class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    # External APIs
+    database_url: str = Field(default="sqlite:///./pinegraf.db")
     openai_api_key: str = Field(default="")
 
-    # Database
-    # Prefer Postgres in .env, e.g.:
-    #   postgresql+psycopg://pinegraf:pinegraf@localhost:5432/pinegraf
-    # Store.init_db falls back to SQLite for local dev if Postgres is unavailable.
-    database_url: str = Field(default="sqlite:///./pinegraf.db")
-
-    # Admin auth
     pinegraf_admin_password: str = Field(default="pinegraf")
-    pinegraf_admin_cookie_secret: str = Field(default="dev-secret")
     site_auth_user: str = Field(default="pinegraf")
     site_auth_password: str = Field(default="")
 
-    # Mock toggles for offline dev / tests
-    use_mock_extract: bool = Field(default=True)
-    use_mock_query: bool = Field(default=True)
-    use_mock_fetch: bool = Field(default=True)
+    pinegraf_contact: str = Field(default="ops@example.com")
+    max_pages: int = Field(default=1000, ge=1)
+    use_mock_embeddings: bool = Field(default=False)
 
-    # Crawler config
-    crawl_seed_urls: list[str] = Field(default_factory=list)
-    crawl_sitemap_urls: list[str] = Field(default_factory=list)
-    crawl_allowed_domains: list[str] = Field(default_factory=list)
-    crawl_max_pages: int = Field(default=500, ge=1)
-    crawl_max_depth: int = Field(default=2, ge=0)
-    max_pipeline_cost_usd: float = Field(default=10.0, ge=0)
-
-    @field_validator(
-        "use_mock_extract",
-        "use_mock_query",
-        "use_mock_fetch",
-        mode="before",
-    )
+    @field_validator("use_mock_embeddings", mode="before")
     @classmethod
     def parse_bool(_cls, value: object) -> bool:
         if isinstance(value, bool):
@@ -65,21 +37,14 @@ class Settings(BaseModel):
 def get_settings() -> Settings:
     try:
         return Settings(
-            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
+            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf"),
-            pinegraf_admin_cookie_secret=os.getenv("PINEGRAF_ADMIN_COOKIE_SECRET", "dev-secret"),
             site_auth_user=os.getenv("SITE_AUTH_USER", "pinegraf"),
             site_auth_password=os.getenv("SITE_AUTH_PASSWORD", ""),
-            use_mock_extract=os.getenv("USE_MOCK_EXTRACT", "true"),
-            use_mock_query=os.getenv("USE_MOCK_QUERY", "true"),
-            use_mock_fetch=os.getenv("USE_MOCK_FETCH", "true"),
-            crawl_seed_urls=_csv("CRAWL_SEED_URLS"),
-            crawl_sitemap_urls=_csv("CRAWL_SITEMAP_URLS"),
-            crawl_allowed_domains=_csv("CRAWL_ALLOWED_DOMAINS"),
-            crawl_max_pages=int(os.getenv("CRAWL_MAX_PAGES", "500")),
-            crawl_max_depth=int(os.getenv("CRAWL_MAX_DEPTH", "2")),
-            max_pipeline_cost_usd=float(os.getenv("MAX_PIPELINE_COST_USD", "10")),
+            pinegraf_contact=os.getenv("PINEGRAF_CONTACT", "ops@example.com"),
+            max_pages=int(os.getenv("MAX_PAGES", "1000")),
+            use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
         )
     except ValidationError as exc:
         raise RuntimeError(f"Invalid configuration: {exc}") from exc

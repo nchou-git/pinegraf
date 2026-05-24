@@ -1,561 +1,498 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
+from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
-    Boolean,
     CheckConstraint,
-    Date,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
     LargeBinary,
-    String,
+    Numeric,
     Text,
     UniqueConstraint,
     Uuid,
 )
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy.types import JSON, TypeDecorator
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import JSON
 
-JSONList = JSONB().with_variant(JSON(), "sqlite")
 JSONDict = JSONB().with_variant(JSON(), "sqlite")
 EmbeddingVector = Vector(1536).with_variant(JSON(), "sqlite")
+TextArray = ARRAY(Text()).with_variant(JSON(), "sqlite")
 
 
 class Base(DeclarativeBase):
     pass
 
 
-class UTCDateTime(TypeDecorator[datetime]):
-    impl = DateTime(timezone=True)
-    cache_ok = True
-
-    def process_bind_param(self, value: datetime | None, dialect: object) -> datetime | None:
-        del dialect
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
-
-    def process_result_value(self, value: datetime | None, dialect: object) -> datetime | None:
-        del dialect
-        if value is None:
-            return None
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value.astimezone(UTC)
-
-
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def uuid4() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+class Source(Base):
+    __tablename__ = "sources"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('domain','file','api','human')",
+            name="ck_sources_kind",
+        ),
+        CheckConstraint(
+            "trust_weight >= 0 and trust_weight <= 1",
+            name="ck_sources_trust_weight",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    identifier: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    trust_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    display_name: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class SourceRun(Base):
+    __tablename__ = "source_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('sitemap','seed','adhoc','api','manual_upload')",
+            name="ck_source_runs_kind",
+        ),
+        CheckConstraint(
+            "status in ('running','complete','failed','partial','cancelled')",
+            name="ck_source_runs_status",
+        ),
+        Index("ix_source_runs_source_id", "source_id"),
+        Index("ix_source_runs_status", "status"),
+        Index("ix_source_runs_started_at_desc", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("sources.id"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    spec: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
+    triggered_by: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stats: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class Fetch(Base):
+    __tablename__ = "fetches"
+    __table_args__ = (
+        Index("ix_fetches_source_run_id", "source_run_id"),
+        Index("ix_fetches_url", "url"),
+        Index("ix_fetches_content_hash", "content_hash"),
+        Index("ix_fetches_fetched_at_desc", "fetched_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    source_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("source_runs.id"),
+        nullable=False,
+    )
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    content_hash: Mapped[bytes | None] = mapped_column(LargeBinary)
+    body_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    content_type: Mapped[str | None] = mapped_column(Text)
+    bytes_size: Mapped[int | None] = mapped_column(Integer)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class Document(Base):
+    __tablename__ = "documents"
+    __table_args__ = (
+        Index("ix_documents_content_hash", "content_hash"),
+        Index("ix_documents_canonical_url", "canonical_url"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    content_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, unique=True)
+    cleaned_text: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    canonical_url: Mapped[str | None] = mapped_column(Text)
+    language: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    word_count: Mapped[int | None] = mapped_column(Integer)
+    first_seen_fetch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("fetches.id"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class DocumentFetch(Base):
+    __tablename__ = "document_fetches"
+    __table_args__ = (Index("ix_document_fetches_fetch_id", "fetch_id"),)
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    fetch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("fetches.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "ordinal", name="uq_chunks_document_ordinal"),
+        Index("ix_chunks_document_id", "document_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class ExtractorRun(Base):
+    __tablename__ = "extractor_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('running','complete','failed','cancelled')",
+            name="ck_extractor_runs_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    chunks_processed: Mapped[int | None] = mapped_column(Integer, default=0)
+    claims_emitted: Mapped[int | None] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
+
+
+class ClaimRaw(Base):
+    __tablename__ = "claims_raw"
+    __table_args__ = (
+        CheckConstraint(
+            "object_type in ('person','org','project','place','event','attribute_value','date')",
+            name="ck_claims_raw_object_type",
+        ),
+        Index("ix_claims_raw_chunk_id", "chunk_id"),
+        Index("ix_claims_raw_extractor_run_id", "extractor_run_id"),
+        Index("ix_claims_raw_predicate", "predicate"),
+        Index("ix_claims_raw_subject_text", "subject_text"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("chunks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    extractor_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("extractor_runs.id"),
+        nullable=False,
+    )
+    subject_text: Mapped[str] = mapped_column(Text, nullable=False)
+    predicate: Mapped[str] = mapped_column(Text, nullable=False)
+    object_text: Mapped[str | None] = mapped_column(Text)
+    object_type: Mapped[str | None] = mapped_column(Text)
+    qualifiers: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
+    confidence_internal: Mapped[float | None] = mapped_column(Float)
+    raw_quote: Mapped[str] = mapped_column(Text, nullable=False)
+    span_start: Mapped[int | None] = mapped_column(Integer)
+    span_end: Mapped[int | None] = mapped_column(Integer)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
 
 class Entity(Base):
     __tablename__ = "entities"
     __table_args__ = (
         CheckConstraint(
-            "entity_type IN ('person', 'organization')",
-            name="ck_entities_entity_type",
+            "kind in ('person','org','project','place','event')",
+            name="ck_entities_kind",
         ),
+        Index("ix_entities_kind", "kind"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    name_embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector, nullable=True)
-    context_embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector, nullable=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector)
     created_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
-        nullable=False,
-        default=utc_now,
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
     updated_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
+        DateTime(timezone=True),
         nullable=False,
         default=utc_now,
         onupdate=utc_now,
-    )
-
-    aliases: Mapped[list[EntityAlias]] = relationship(
-        back_populates="entity",
-        cascade="all, delete-orphan",
-    )
-    attributes: Mapped[list[EntityAttribute]] = relationship(
-        back_populates="entity",
-        cascade="all, delete-orphan",
     )
 
 
 class EntityAlias(Base):
     __tablename__ = "entity_aliases"
-    __table_args__ = (UniqueConstraint("entity_id", "alias", name="uq_entity_alias_entity_alias"),)
+    __table_args__ = (
+        UniqueConstraint("entity_id", "alias", name="uq_entity_aliases_entity_alias"),
+    )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     entity_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("entities.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
-    alias: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    source: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    alias: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    source: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
-    entity: Mapped[Entity] = relationship(back_populates="aliases")
 
-
-class EntityAttribute(Base):
-    __tablename__ = "entity_attributes"
+class EntityMention(Base):
+    __tablename__ = "entity_mentions"
     __table_args__ = (
         CheckConstraint(
-            "attribute_name IN ("
-            "'current_company', 'current_title', 'past_company', 'education', "
-            "'class_year', 'bio_summary', 'internship_company', 'internship_location', "
-            "'current_employer', 'current_employer_website', 'current_location', "
-            "'eship_notes', 'date_of_birth', 'occupation', 'notable_for'"
-            ")",
-            name="ck_entity_attributes_attribute_name",
+            "position in ('subject','object')",
+            name="ck_entity_mentions_position",
         ),
         CheckConstraint(
-            "confidence IN ('high', 'medium', 'low')",
-            name="ck_entity_attributes_confidence",
+            "resolution_method in ('exact_match','alias','embedding','llm','human')",
+            name="ck_entity_mentions_resolution_method",
         ),
-        CheckConstraint(
-            "validation_verdict IN ('keep', 'uncertain', 'drop')",
-            name="ck_entity_attributes_validation_verdict",
-        ),
-        Index("ix_entity_attributes_entity_name", "entity_id", "attribute_name"),
-        Index("ix_entity_attributes_source", "source"),
+        Index("ix_entity_mentions_claim_raw_id", "claim_raw_id"),
+        Index("ix_entity_mentions_entity_id", "entity_id"),
+        Index("ix_entity_mentions_resolution_method", "resolution_method"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    claim_raw_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("claims_raw.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position: Mapped[str] = mapped_column(Text, nullable=False)
     entity_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    attribute_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    attribute_value: Mapped[str] = mapped_column(Text, nullable=False)
-    source: Mapped[str] = mapped_column(String(255), nullable=False, default="legacy")
-    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    as_of_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
-    confidence: Mapped[str] = mapped_column(String(16), nullable=False)
-    extracted_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
-        nullable=False,
-        default=utc_now,
-    )
-    last_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    validation_verdict: Mapped[str] = mapped_column(
-        String(16),
-        nullable=False,
-        default="keep",
-    )
-
-    entity: Mapped[Entity] = relationship(back_populates="attributes")
-
-
-class RawPage(Base):
-    __tablename__ = "raw_pages"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    alum_name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        index=True,
-        doc="Deprecated lookup key; use entity_id for identity.",
-    )
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    source_url: Mapped[str] = mapped_column(String(1024), nullable=False)
-    page_title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
-    page_text: Mapped[str] = mapped_column(Text, nullable=False)
-    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    parsed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    http_etag: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    http_last_modified: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    raw_html_gz: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-
-    facts: Mapped[list[Fact]] = relationship(
-        back_populates="raw_page",
-        cascade="all, delete-orphan",
-    )
-    connections: Mapped[list[Connection]] = relationship(
-        back_populates="raw_page",
-        cascade="all, delete-orphan",
-    )
-    projects: Mapped[list[Project]] = relationship(
-        back_populates="raw_page",
-        cascade="all, delete-orphan",
-    )
-    claims: Mapped[list[Claim]] = relationship(
-        back_populates="raw_page",
-        cascade="all, delete-orphan",
-        foreign_keys="Claim.source_raw_page_id",
-    )
-    entity: Mapped[Entity | None] = relationship()
-    chunks: Mapped[list[PageChunk]] = relationship(
-        back_populates="raw_page",
-        cascade="all, delete-orphan",
-    )
-
-
-class HostBoilerplate(Base):
-    __tablename__ = "host_boilerplate"
-
-    host: Mapped[str] = mapped_column(Text, primary_key=True)
-    prefix: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    suffix: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    updated_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
-        nullable=False,
-        default=utc_now,
-        onupdate=utc_now,
-    )
-
-
-class PageChunk(Base):
-    __tablename__ = "page_chunks"
-    __table_args__ = (
-        UniqueConstraint("raw_page_id", "chunk_index", name="uq_page_chunks_page_index"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    raw_page_id: Mapped[int] = mapped_column(
-        ForeignKey("raw_pages.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-    raw_page: Mapped[RawPage] = relationship(back_populates="chunks")
-
-
-class AlumniProfile(Base):
-    """Canonical profile projection; legacy name is not an identity key."""
-
-    __tablename__ = "alumni_profiles"
-    __table_args__ = (UniqueConstraint("name", "class_year", name="uq_alumni_profile_name_class"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        index=True,
-        doc="Deprecated lookup key; use entity_id for identity.",
-    )
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    class_year: Mapped[str] = mapped_column(String(16), nullable=False, default="")
-    current_company: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    current_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    past_companies: Mapped[list[str]] = mapped_column(JSONList, nullable=False, default=list)
-    education: Mapped[list[str]] = mapped_column(JSONList, nullable=False, default=list)
-    bio_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    last_parsed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    discovered_via: Mapped[str] = mapped_column(String(255), nullable=False, default="seed")
-    entity: Mapped[Entity | None] = relationship()
-
-
-class Fact(Base):
-    __tablename__ = "facts"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    alum_name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        index=True,
-        doc="Deprecated lookup key; use entity_id for identity.",
-    )
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    source_raw_page_id: Mapped[int | None] = mapped_column(
-        ForeignKey("raw_pages.id", ondelete="CASCADE"),
+        ForeignKey("entities.id"),
         nullable=False,
     )
-    category: Mapped[str] = mapped_column(String(64), nullable=False, default="general")
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="low")
-    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
-    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
-
-    raw_page: Mapped[RawPage] = relationship(back_populates="facts")
-    entity: Mapped[Entity | None] = relationship()
-
-
-class Connection(Base):
-    __tablename__ = "connections"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    alum_name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        index=True,
-        doc="Deprecated lookup key; use entity_id for identity.",
+    mention_text: Mapped[str] = mapped_column(Text, nullable=False)
+    resolution_method: Mapped[str] = mapped_column(Text, nullable=False)
+    resolution_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    connected_entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    connected_project_id: Mapped[int | None] = mapped_column(
-        ForeignKey("projects.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    connected_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    source_raw_page_id: Mapped[int] = mapped_column(
-        ForeignKey("raw_pages.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    context: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    relationship_type: Mapped[str] = mapped_column(String(64), nullable=False, default="associate")
-    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
-    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    is_inferred: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
-    derivation: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    source_ids: Mapped[list[str]] = mapped_column(JSONList, nullable=False, default=list)
-    validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
-
-    raw_page: Mapped[RawPage] = relationship(back_populates="connections")
-    entity: Mapped[Entity | None] = relationship(foreign_keys=[entity_id])
-    connected_entity: Mapped[Entity | None] = relationship(foreign_keys=[connected_entity_id])
-    connected_project: Mapped[Project | None] = relationship(foreign_keys=[connected_project_id])
-
-
-class Project(Base):
-    __tablename__ = "projects"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    alum_name: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
-        index=True,
-        doc="Deprecated lookup key; use entity_id for identity.",
-    )
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    source_raw_page_id: Mapped[int] = mapped_column(
-        ForeignKey("raw_pages.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    project_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
-    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
-
-    raw_page: Mapped[RawPage] = relationship(back_populates="projects")
-    entity: Mapped[Entity | None] = relationship()
 
 
 class Claim(Base):
     __tablename__ = "claims"
     __table_args__ = (
         CheckConstraint(
-            "validation_verdict IN ('keep', 'uncertain', 'drop')",
-            name="ck_claims_validation_verdict",
+            "status in ('active','retracted','disputed')",
+            name="ck_claims_status",
         ),
-        Index("ix_claims_subject_entity", "subject_entity_id"),
-        Index("ix_claims_object_entity", "object_entity_id"),
-        Index("ix_claims_source_raw_page", "source_raw_page_id"),
+        CheckConstraint(
+            "object_entity_id is not null or object_value is not null",
+            name="ck_claims_object_present",
+        ),
+        Index("ix_claims_subject_predicate", "subject_entity_id", "predicate"),
+        Index("ix_claims_object_entity_id", "object_entity_id"),
+        Index("ix_claims_predicate", "predicate"),
+        Index("ix_claims_confidence_score_desc", "confidence_score"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    subject_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    subject_entity_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("entities.id"),
+        nullable=False,
     )
-    subject_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    predicate: Mapped[str] = mapped_column(String(128), nullable=False)
+    predicate: Mapped[str] = mapped_column(Text, nullable=False)
     object_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("entities.id"),
     )
-    object_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    object_value: Mapped[str | None] = mapped_column(Text, nullable=True)
-    object_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
-    source_raw_page_id: Mapped[int] = mapped_column(
-        ForeignKey("raw_pages.id", ondelete="CASCADE"),
-        nullable=False,
+    object_value: Mapped[str | None] = mapped_column(Text)
+    qualifiers: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
+    confidence_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
-    source_chunk_id: Mapped[int | None] = mapped_column(
-        ForeignKey("page_chunks.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    source_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    text_evidence: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    confidence_score: Mapped[float | None] = mapped_column(Float(), nullable=True)
-    prompt_version: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    validation_verdict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-    raw_page: Mapped[RawPage] = relationship(
-        back_populates="claims",
-        foreign_keys=[source_raw_page_id],
-    )
-    source_chunk: Mapped[PageChunk | None] = relationship()
-    subject_entity: Mapped[Entity | None] = relationship(foreign_keys=[subject_entity_id])
-    object_entity: Mapped[Entity | None] = relationship(foreign_keys=[object_entity_id])
-
-
-class CrawlState(Base):
-    __tablename__ = "crawl_state"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    class_year: Mapped[str] = mapped_column(String(16), nullable=False)
-    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    discovered_via: Mapped[str] = mapped_column(String(255), nullable=False, default="seed")
-
-
-class AuditEvent(Base):
-    __tablename__ = "audit_events"
-    __table_args__ = (
-        Index("ix_audit_events_actor_created_at", "actor", "created_at"),
-        Index("ix_audit_events_action_created_at", "action", "created_at"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    actor: Mapped[str] = mapped_column(String(255), nullable=False, default="anon")
-    action: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
+    last_corroborated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
         default=utc_now,
-        index=True,
     )
 
 
-class ExtractionCache(Base):
-    __tablename__ = "extraction_cache"
-
-    chunk_sha256: Mapped[str] = mapped_column(Text, primary_key=True)
-    prompt_version: Mapped[str] = mapped_column(Text, primary_key=True)
-    model: Mapped[str] = mapped_column(Text, primary_key=True)
-    response_json: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-
-
-class LLMUsage(Base):
-    __tablename__ = "llm_usage"
+class ClaimEvidence(Base):
+    __tablename__ = "claim_evidence"
     __table_args__ = (
-        Index("ix_llm_usage_ts", "ts"),
-        Index("ix_llm_usage_model_ts", "model", "ts"),
+        Index("ix_claim_evidence_claim_raw_id", "claim_raw_id"),
+        Index("ix_claim_evidence_source_id", "source_id"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
-    model: Mapped[str] = mapped_column(String(128), nullable=False)
-    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    dollars: Mapped[float] = mapped_column(Float(), nullable=False, default=0.0)
-    purpose: Mapped[str] = mapped_column(String(64), nullable=False)
-    raw_page_id: Mapped[int | None] = mapped_column(
-        ForeignKey("raw_pages.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+    claim_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
-        ForeignKey("entities.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        primary_key=True,
     )
-
-
-class AuditRun(Base):
-    __tablename__ = "audit_runs"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    run_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
+    claim_raw_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("claims_raw.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("sources.id"),
         nullable=False,
-        default=utc_now,
-        index=True,
     )
-    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    thrifty_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
-    frontier_results: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
-    diff_summary: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False)
+    weight: Mapped[float] = mapped_column(Float, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
 
-class PipelineRun(Base):
-    __tablename__ = "pipeline_runs"
-    __table_args__ = (Index("ix_pipeline_runs_started_at", "started_at"),)
+class ClaimConflict(Base):
+    __tablename__ = "claim_conflicts"
+    __table_args__ = (
+        CheckConstraint(
+            "resolution in ('unresolved','claim_a_wins','claim_b_wins',"
+            "'both_valid_temporal','both_valid_distinct')",
+            name="ck_claim_conflicts_resolution",
+        ),
+        CheckConstraint("claim_a_id < claim_b_id", name="ck_claim_conflicts_order"),
+    )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    started_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    claim_a_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
         nullable=False,
-        default=utc_now,
     )
-    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
-    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    claim_b_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("claims.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    resolution: Mapped[str | None] = mapped_column(Text)
+    resolved_by: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[str | None] = mapped_column(Text)
 
 
-class EntityConsolidated(Base):
-    __tablename__ = "entity_consolidated"
+class HumanSignal(Base):
+    __tablename__ = "human_signals"
+    __table_args__ = (
+        CheckConstraint(
+            "signal_type in ('verify','dispute','correct','add_evidence','redact',"
+            "'merge_entities','split_entity','retract_claim')",
+            name="ck_human_signals_signal_type",
+        ),
+        CheckConstraint(
+            "target_type in ('claim','entity','mention','evidence')",
+            name="ck_human_signals_target_type",
+        ),
+        Index("ix_human_signals_target", "target_type", "target_id"),
+        Index("ix_human_signals_user_id", "user_id"),
+        Index("ix_human_signals_signal_type", "signal_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    signal_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class EntitySummary(Base):
+    __tablename__ = "entity_summary"
 
     entity_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("entities.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    current_employer: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    current_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    class_year: Mapped[str] = mapped_column(String(32), nullable=False, default="")
-    location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    source_ids: Mapped[dict[str, object]] = mapped_column(JSONDict, nullable=False, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(
-        UTCDateTime(),
-        nullable=False,
-        default=utc_now,
-        onupdate=utc_now,
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    primary_attributes: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
+    connection_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    confidence_avg: Mapped[float | None] = mapped_column(Float)
+    last_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
     )
 
-    entity: Mapped[Entity] = relationship()
+
+class EntityNeighborhood(Base):
+    __tablename__ = "entity_neighborhood"
+    __table_args__ = (Index("ix_entity_neighborhood_neighbor_id", "neighbor_id"),)
+
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    neighbor_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    predicates: Mapped[list[str]] = mapped_column(TextArray, nullable=False)
+    evidence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    last_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )

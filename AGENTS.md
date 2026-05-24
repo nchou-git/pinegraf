@@ -36,6 +36,8 @@ from structured rows or raw-page RAG.
 - Pipeline stages should remain independently runnable. Keep database side
   effects isolated to `backend/db/store.py` where practical.
 - Use timezone-aware UTC datetimes (`datetime.now(UTC)`).
+- New intelligence-pipeline primary keys use UUIDv4. UUIDv7 is not available in
+  the Python/Postgres runtime without adding another dependency or extension.
 - One Alembic migration per schema change. Each migration must downgrade cleanly;
   add a round-trip migration test for non-trivial schema changes.
 - Entity resolution is conservative: never merge on name alone. Reuse an entity

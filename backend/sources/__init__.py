@@ -1,1 +1,0 @@
-"""External structured data sources."""

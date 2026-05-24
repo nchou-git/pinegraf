@@ -1,2217 +1,354 @@
 from __future__ import annotations
 
-import gzip
-import json
-import logging
-import re
+import hashlib
 import uuid
-from collections.abc import Iterable
-from datetime import UTC, date, datetime, timedelta
-from difflib import SequenceMatcher
-from hashlib import sha1, sha256
-from pathlib import Path
-from types import SimpleNamespace
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, create_engine, event, func, select, text
+from sqlalchemy import create_engine, event, func, inspect, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError, NoSuchModuleError, OperationalError
-from sqlalchemy.orm import Session, joinedload, sessionmaker
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from backend.config import get_settings
 from backend.db.models import (
-    AlumniProfile,
-    AuditEvent,
-    AuditRun,
     Base,
-    Claim,
-    Connection,
-    CrawlState,
-    Entity,
-    EntityAttribute,
-    EntityConsolidated,
-    ExtractionCache,
-    Fact,
-    HostBoilerplate,
-    LLMUsage,
-    PageChunk,
-    PipelineRun,
-    Project,
-    RawPage,
+    Chunk,
+    Document,
+    DocumentFetch,
+    Fetch,
+    Source,
+    SourceRun,
 )
-from backend.pipeline.position_dates import date_ranges_overlap, parse_position_date
-from backend.pipeline.relationship_types import normalize_relationship_type
 
-logger = logging.getLogger(__name__)
+SCHEMA_TABLES = [
+    "sources",
+    "source_runs",
+    "fetches",
+    "documents",
+    "document_fetches",
+    "chunks",
+    "extractor_runs",
+    "claims_raw",
+    "entities",
+    "entity_aliases",
+    "entity_mentions",
+    "claims",
+    "claim_evidence",
+    "claim_conflicts",
+    "human_signals",
+    "entity_summary",
+    "entity_neighborhood",
+]
 
-SQLITE_FALLBACK_URL = "sqlite:///./pinegraf.db"
-SQLITE_WARNING = "Running on SQLite - this is dev only. Production deployment must use Postgres."
-KEEP_VERDICTS = ("keep",)
-SYNTHESIS_VERDICTS = ("keep", "uncertain")
+INITIAL_SOURCES = [
+    {
+        "kind": "domain",
+        "identifier": "tuck.dartmouth.edu",
+        "trust_weight": 0.9,
+        "display_name": "Tuck School news + alumni",
+        "notes": None,
+    },
+    {
+        "kind": "file",
+        "identifier": "alum_data.xlsx",
+        "trust_weight": 1.0,
+        "display_name": "Curated alumni roster",
+        "notes": None,
+    },
+]
 
 
-def _utcnow() -> datetime:
+def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _is_sqlite_url(database_url: str) -> bool:
-    return database_url.startswith("sqlite:")
+def content_digest(body: bytes) -> bytes:
+    return hashlib.sha256(body).digest()
 
 
-def _is_postgres_url(database_url: str) -> bool:
-    return database_url.startswith("postgresql")
-
-
-def _sqlite_connect_args(database_url: str) -> dict[str, object]:
+def create_engine_for_url(database_url: str) -> Engine:
     connect_args: dict[str, object] = {}
-    if database_url.startswith("sqlite:///"):
-        db_path = database_url.replace("sqlite:///", "", 1)
-        if db_path and db_path != ":memory:":
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    engine_kwargs: dict[str, object] = {"future": True}
+    if database_url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
-    return connect_args
+        if database_url in {"sqlite://", "sqlite:///:memory:"}:
+            engine_kwargs["poolclass"] = StaticPool
+    engine = create_engine(database_url, connect_args=connect_args, **engine_kwargs)
+    if engine.dialect.name == "sqlite":
+        install_sqlite_foreign_keys(engine)
+    return engine
+
+
+def install_sqlite_foreign_keys(engine: Engine) -> None:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection: Any, connection_record: object) -> None:
+        del connection_record
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 
 class Store:
-    def __init__(self, database_url: str) -> None:
-        self.requested_database_url = database_url
-        self.database_url = database_url
-        self.engine: Engine
-        self._session_factory: sessionmaker[Session]
-        try:
-            self._configure_engine(database_url)
-        except (ImportError, ModuleNotFoundError, NoSuchModuleError) as exc:
-            if not _is_postgres_url(database_url):
-                raise
-            logger.warning(
-                "%s Falling back because the Postgres driver is unavailable: %s",
-                SQLITE_WARNING,
-                exc,
-            )
-            self._configure_engine(SQLITE_FALLBACK_URL)
-
-    @property
-    def is_sqlite(self) -> bool:
-        return self.engine.dialect.name == "sqlite"
-
-    @property
-    def is_postgres(self) -> bool:
-        return self.engine.dialect.name == "postgresql"
-
-    def _configure_engine(self, database_url: str) -> None:
-        self.database_url = database_url
-        self.engine = create_engine(
-            database_url,
-            future=True,
-            connect_args=_sqlite_connect_args(database_url),
-        )
-        if self.engine.dialect.name == "sqlite":
-            self._install_sqlite_foreign_key_pragma(self.engine)
-        self._session_factory = sessionmaker(
+    def __init__(self, database_url: str | None = None, *, engine: Engine | None = None) -> None:
+        self.database_url = database_url or get_settings().database_url
+        self.engine = engine or create_engine_for_url(self.database_url)
+        self._session_factory: sessionmaker[Session] = sessionmaker(
             bind=self.engine,
             class_=Session,
             expire_on_commit=False,
         )
 
-    @staticmethod
-    def _install_sqlite_foreign_key_pragma(engine: Engine) -> None:
-        @event.listens_for(engine, "connect")
-        def _set_sqlite_pragma(dbapi_connection: Any, connection_record: object) -> None:
-            del connection_record
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
-
-    def init_db(self) -> None:
-        try:
-            Base.metadata.create_all(self.engine)
-            self._create_postgres_fts_index()
-        except OperationalError as exc:
-            if not _is_postgres_url(self.database_url):
-                raise
-            logger.warning(
-                "%s Falling back because Postgres is unavailable: %s", SQLITE_WARNING, exc
-            )
-            self._configure_engine(SQLITE_FALLBACK_URL)
-            Base.metadata.create_all(self.engine)
-
-    def _create_postgres_fts_index(self) -> None:
-        if not self.is_postgres:
-            return
-        ddl = text(
-            """
-            CREATE INDEX IF NOT EXISTS idx_raw_pages_page_text_fts
-            ON raw_pages
-            USING GIN (to_tsvector('english', page_text))
-            """
-        )
-        with self.engine.begin() as conn:
-            conn.execute(ddl)
+    def create_schema(self) -> None:
+        Base.metadata.create_all(self.engine)
 
     def session(self) -> Session:
         return self._session_factory()
 
-    def upsert_profile(
+    def ensure_initial_sources(self) -> None:
+        for source in INITIAL_SOURCES:
+            self.upsert_source(**source)
+
+    def get_source(self, source_id: uuid.UUID) -> Source | None:
+        with self.session() as session:
+            return session.get(Source, source_id)
+
+    def upsert_source(
         self,
         *,
-        name: str,
-        entity_id: uuid.UUID | str | None = None,
-        class_year: str = "",
-        current_company: str | None = None,
-        current_title: str | None = None,
-        past_companies: list[str] | None = None,
-        education: list[str] | None = None,
-        bio_summary: str | None = None,
-        discovered_via: str = "seed",
-        last_parsed_at: datetime | None = None,
-    ) -> AlumniProfile:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            existing = None
-            if entity_uuid is not None:
-                existing = session.execute(
-                    select(AlumniProfile).where(AlumniProfile.entity_id == entity_uuid)
-                ).scalar_one_or_none()
-            if existing is None and class_year:
-                existing = session.execute(
-                    select(AlumniProfile).where(
-                        AlumniProfile.name == name,
-                        AlumniProfile.class_year == class_year,
-                    )
-                ).scalar_one_or_none()
-            if existing is None and not class_year:
-                existing_rows = list(
-                    session.execute(
-                        select(AlumniProfile).where(AlumniProfile.name == name).limit(2)
-                    ).scalars()
-                )
-                if len(existing_rows) == 1:
-                    existing = existing_rows[0]
-            if entity_uuid is None:
-                if existing is not None and existing.entity_id is not None:
-                    entity_uuid = existing.entity_id
-                else:
-                    context = {"source": discovered_via or "seed"}
-                    if class_year:
-                        context["class_year"] = class_year
-                    entity_uuid = _resolve_entity_in_session(
-                        session,
-                        name=name,
-                        context=context,
-                    )
-            if existing:
-                if entity_uuid is not None:
-                    existing.entity_id = entity_uuid
-                if class_year:
-                    existing.class_year = class_year
-                if current_company is not None:
-                    existing.current_company = current_company
-                if current_title is not None:
-                    existing.current_title = current_title
-                if past_companies is not None:
-                    existing.past_companies = past_companies
-                if education is not None:
-                    existing.education = education
-                if bio_summary is not None:
-                    existing.bio_summary = bio_summary
-                if discovered_via and not existing.discovered_via:
-                    existing.discovered_via = discovered_via
-                if last_parsed_at is not None:
-                    existing.last_parsed_at = last_parsed_at
-                profile = existing
-            else:
-                profile = AlumniProfile(
-                    name=name,
-                    entity_id=entity_uuid,
-                    class_year=class_year,
-                    current_company=current_company or "",
-                    current_title=current_title or "",
-                    past_companies=past_companies or [],
-                    education=education or [],
-                    bio_summary=bio_summary or "",
-                    discovered_via=discovered_via or "seed",
-                    last_parsed_at=last_parsed_at,
-                )
-                session.add(profile)
-            session.commit()
-            return profile
-
-    def get_class_year_for_alum(self, alum_name: str) -> str:
-        with self._session_factory() as session:
-            profile_class = session.execute(
-                select(AlumniProfile.class_year).where(AlumniProfile.name == alum_name)
+        kind: str,
+        identifier: str,
+        trust_weight: float = 0.5,
+        display_name: str | None = None,
+        notes: str | None = None,
+    ) -> Source:
+        with self.session() as session:
+            existing = session.execute(
+                select(Source).where(Source.identifier == identifier)
             ).scalar_one_or_none()
-            if profile_class:
-                return profile_class
-            crawl_class = session.execute(
-                select(CrawlState.class_year)
-                .where(CrawlState.name == alum_name)
-                .order_by(CrawlState.id.asc())
-                .limit(1)
-            ).scalar_one_or_none()
-            return crawl_class or ""
-
-    def get_class_year_for_entity(self, entity_id: uuid.UUID | str) -> str:
-        entity_uuid = _coerce_uuid(entity_id)
-        if entity_uuid is None:
-            return ""
-        with self._session_factory() as session:
-            profile_class = session.execute(
-                select(AlumniProfile.class_year).where(AlumniProfile.entity_id == entity_uuid)
-            ).scalar_one_or_none()
-            return profile_class or ""
-
-    def raw_page_exists(
-        self,
-        alum_name: str,
-        source_url: str,
-        entity_id: uuid.UUID | str | None = None,
-    ) -> bool:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            where_clause = RawPage.source_url == source_url
-            if entity_uuid is not None:
-                where_clause = and_(where_clause, RawPage.entity_id == entity_uuid)
-            else:
-                where_clause = and_(where_clause, RawPage.alum_name == alum_name)
-            return session.execute(select(RawPage.id).where(where_clause)).first() is not None
-
-    def save_raw_page(
-        self,
-        *,
-        alum_name: str,
-        entity_id: uuid.UUID | str | None = None,
-        source_url: str,
-        page_title: str,
-        page_text: str,
-        fetched_at: datetime | None = None,
-        content_sha256: str | None = None,
-        http_etag: str | None = None,
-        http_last_modified: str | None = None,
-        http_status: int | None = None,
-        raw_html: str | None = None,
-        raw_html_gz: bytes | None = None,
-        allow_duplicate_snapshot: bool = False,
-    ) -> RawPage:
-        entity_uuid = _coerce_uuid(entity_id)
-        compressed_html = raw_html_gz if raw_html_gz is not None else _gzip_html(raw_html)
-        content_hash = content_sha256 or _html_sha256(raw_html)
-        with self._session_factory() as session:
-            where_clause = RawPage.source_url == source_url
-            if entity_uuid is not None:
-                where_clause = and_(where_clause, RawPage.entity_id == entity_uuid)
-            else:
-                where_clause = and_(where_clause, RawPage.alum_name == alum_name)
-            existing = None
-            if not allow_duplicate_snapshot:
-                existing = session.execute(
-                    select(RawPage).where(where_clause).order_by(RawPage.id.asc()).limit(1)
-                ).scalar_one_or_none()
-            if existing:
-                if entity_uuid is not None and existing.entity_id is None:
-                    existing.entity_id = entity_uuid
-                    session.commit()
+            if existing is not None:
+                existing.kind = kind
+                existing.trust_weight = trust_weight
+                existing.display_name = display_name
+                existing.notes = notes
+                session.commit()
                 return existing
-            if entity_uuid is None and alum_name:
-                entity_uuid = _profile_entity_for_name(session, alum_name)
-            if entity_uuid is None and alum_name:
-                entity_uuid = _resolve_entity_in_session(
-                    session,
-                    name=alum_name,
-                    context={"source": "legacy_store"},
-                )
-            # If still None, store with NULL entity_id (sitemap crawl).
-            where_clause = and_(RawPage.source_url == source_url, RawPage.entity_id == entity_uuid)
-            raw_page = RawPage(
-                alum_name=alum_name,
-                entity_id=entity_uuid,
-                source_url=source_url,
-                page_title=page_title[:512],
-                page_text=page_text,
-                fetched_at=fetched_at or _utcnow(),
-                parsed_at=None,
-                content_sha256=content_hash,
-                http_etag=http_etag,
-                http_last_modified=http_last_modified,
-                http_status=http_status,
-                raw_html_gz=compressed_html,
+            source = Source(
+                kind=kind,
+                identifier=identifier,
+                trust_weight=trust_weight,
+                display_name=display_name,
+                notes=notes,
             )
-            session.add(raw_page)
+            session.add(source)
+            session.commit()
+            return source
+
+    def create_source_run(
+        self,
+        *,
+        source_id: uuid.UUID,
+        kind: str,
+        spec: dict[str, object],
+        triggered_by: str,
+    ) -> SourceRun:
+        with self.session() as session:
+            run = SourceRun(
+                source_id=source_id,
+                kind=kind,
+                spec=spec,
+                triggered_by=triggered_by,
+                status="running",
+            )
+            session.add(run)
+            session.commit()
+            return run
+
+    def update_source_run(
+        self,
+        run_id: uuid.UUID,
+        *,
+        status: str | None = None,
+        stats: dict[str, object] | None = None,
+        error_message: str | None = None,
+        finished: bool = False,
+    ) -> SourceRun | None:
+        with self.session() as session:
+            run = session.get(SourceRun, run_id)
+            if run is None:
+                return None
+            if status is not None:
+                run.status = status
+            if stats is not None:
+                run.stats = stats
+            if error_message is not None:
+                run.error_message = error_message
+            if finished:
+                run.finished_at = utc_now()
+            session.commit()
+            return run
+
+    def get_source_run(self, run_id: uuid.UUID) -> SourceRun | None:
+        with self.session() as session:
+            return session.get(SourceRun, run_id)
+
+    def add_fetch(
+        self,
+        *,
+        source_run_id: uuid.UUID,
+        url: str,
+        body_bytes: bytes | None,
+        http_status: int | None = None,
+        content_type: str | None = None,
+        error_message: str | None = None,
+    ) -> Fetch:
+        digest = content_digest(body_bytes) if body_bytes is not None else None
+        with self.session() as session:
+            fetch = Fetch(
+                source_run_id=source_run_id,
+                url=url,
+                http_status=http_status,
+                content_hash=digest,
+                body_bytes=body_bytes,
+                content_type=content_type,
+                bytes_size=len(body_bytes) if body_bytes is not None else None,
+                error_message=error_message,
+            )
+            session.add(fetch)
+            session.commit()
+            return fetch
+
+    def get_fetch(self, fetch_id: uuid.UUID) -> Fetch | None:
+        with self.session() as session:
+            return session.get(Fetch, fetch_id)
+
+    def update_fetch_hash(self, fetch_id: uuid.UUID, digest: bytes) -> None:
+        with self.session() as session:
+            fetch = session.get(Fetch, fetch_id)
+            if fetch is not None:
+                fetch.content_hash = digest
+                session.commit()
+
+    def get_document_by_hash(self, digest: bytes) -> Document | None:
+        with self.session() as session:
+            return session.execute(
+                select(Document).where(Document.content_hash == digest)
+            ).scalar_one_or_none()
+
+    def link_document_fetch(self, document_id: uuid.UUID, fetch_id: uuid.UUID) -> None:
+        with self.session() as session:
+            existing = session.get(
+                DocumentFetch,
+                {"document_id": document_id, "fetch_id": fetch_id},
+            )
+            if existing is not None:
+                return
+            session.add(DocumentFetch(document_id=document_id, fetch_id=fetch_id))
             try:
                 session.commit()
             except IntegrityError:
-                if allow_duplicate_snapshot:
-                    raise
                 session.rollback()
-                existing = session.execute(select(RawPage).where(where_clause)).scalar_one()
-                return existing
-            return raw_page
 
-    def list_raw_pages(self) -> list[RawPage]:
-        with self._session_factory() as session:
-            return list(session.execute(select(RawPage).order_by(RawPage.id.asc())).scalars())
-
-    def get_latest_raw_page_by_url(self, source_url: str) -> RawPage | None:
-        with self._session_factory() as session:
-            return session.execute(
-                select(RawPage)
-                .where(RawPage.source_url == source_url)
-                .order_by(RawPage.fetched_at.desc(), RawPage.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-
-    def update_raw_page_fetch_metadata(
+    def create_document_with_chunks(
         self,
-        raw_page_id: int,
         *,
-        fetched_at: datetime | None = None,
-        http_etag: str | None = None,
-        http_last_modified: str | None = None,
-        http_status: int | None = None,
-    ) -> RawPage | None:
-        with self._session_factory() as session:
-            raw_page = session.get(RawPage, raw_page_id)
-            if raw_page is None:
-                return None
-            raw_page.fetched_at = fetched_at or _utcnow()
-            if http_etag is not None:
-                raw_page.http_etag = http_etag
-            if http_last_modified is not None:
-                raw_page.http_last_modified = http_last_modified
-            if http_status is not None:
-                raw_page.http_status = http_status
-            session.commit()
-            return raw_page
-
-    def get_raw_page_html(self, raw_page_id: int) -> str | None:
-        with self._session_factory() as session:
-            raw_page = session.get(RawPage, raw_page_id)
-            if raw_page is None or raw_page.raw_html_gz is None:
-                return None
-            return gzip.decompress(raw_page.raw_html_gz).decode("utf-8")
-
-    def list_raw_pages_for_alum(self, alum_name: str) -> list[RawPage]:
-        with self._session_factory() as session:
-            return list(
-                session.execute(
-                    select(RawPage).where(RawPage.alum_name == alum_name).order_by(RawPage.id.asc())
-                ).scalars()
+        content_hash: bytes,
+        cleaned_text: str,
+        title: str | None,
+        canonical_url: str | None,
+        language: str | None,
+        word_count: int,
+        first_seen_fetch_id: uuid.UUID,
+        chunks: Sequence[tuple[str, int, list[float] | None]],
+    ) -> Document:
+        with self.session() as session:
+            document = Document(
+                content_hash=content_hash,
+                cleaned_text=cleaned_text,
+                title=title,
+                canonical_url=canonical_url,
+                language=language,
+                word_count=word_count,
+                first_seen_fetch_id=first_seen_fetch_id,
             )
-
-    def list_pages_to_parse(
-        self,
-        *,
-        force: bool = False,
-        url_pattern: str | None = None,
-        keywords: Iterable[str] | None = None,
-        limit: int | None = None,
-    ) -> list[RawPage]:
-        with self._session_factory() as session:
-            stmt = select(RawPage).order_by(RawPage.alum_name.asc(), RawPage.id.asc())
-            if not force:
-                stmt = stmt.where(RawPage.parsed_at.is_(None))
-            pages = list(session.execute(stmt).scalars())
-        if url_pattern:
-            try:
-                url_regex = re.compile(url_pattern)
-            except re.error as exc:
-                raise ValueError(f"invalid url_pattern regex: {exc}") from exc
-            pages = [page for page in pages if url_regex.search(page.source_url)]
-        cleaned_keywords = [
-            keyword.strip().lower() for keyword in keywords or [] if keyword.strip()
-        ]
-        if cleaned_keywords:
-            pages = [
-                page
-                for page in pages
-                if any(keyword in _page_keyword_haystack(page) for keyword in cleaned_keywords)
-            ]
-        if limit is not None and limit > 0:
-            pages = pages[:limit]
-        return pages
-
-    def mark_raw_page_parsed(
-        self,
-        raw_page_id: int,
-        parsed_at: datetime | None = None,
-    ) -> None:
-        with self._session_factory() as session:
-            raw_page = session.get(RawPage, raw_page_id)
-            if raw_page is None:
-                return
-            raw_page.parsed_at = parsed_at or _utcnow()
-            session.commit()
-
-    def set_raw_page_entity(self, raw_page_id: int, entity_id: uuid.UUID | str) -> None:
-        entity_uuid = _coerce_uuid(entity_id)
-        if entity_uuid is None:
-            return
-        with self._session_factory() as session:
-            raw_page = session.get(RawPage, raw_page_id)
-            if raw_page is None:
-                return
-            raw_page.entity_id = entity_uuid
-            session.commit()
-
-    def get_host_boilerplate(self, host: str) -> HostBoilerplate | None:
-        with self._session_factory() as session:
-            return session.get(HostBoilerplate, host)
-
-    def upsert_host_boilerplate(
-        self,
-        *,
-        host: str,
-        prefix: str,
-        suffix: str,
-        updated_at: datetime | None = None,
-    ) -> HostBoilerplate:
-        with self._session_factory() as session:
-            row = session.get(HostBoilerplate, host)
-            if row is None:
-                row = HostBoilerplate(
-                    host=host,
-                    prefix=prefix,
-                    suffix=suffix,
-                    updated_at=updated_at or _utcnow(),
-                )
-                session.add(row)
-            else:
-                row.prefix = prefix
-                row.suffix = suffix
-                row.updated_at = updated_at or _utcnow()
-            session.commit()
-            return row
-
-    def update_raw_page_text(
-        self,
-        raw_page_id: int,
-        *,
-        page_title: str | None = None,
-        page_text: str,
-    ) -> None:
-        with self._session_factory() as session:
-            raw_page = session.get(RawPage, raw_page_id)
-            if raw_page is None:
-                return
-            if page_title is not None:
-                raw_page.page_title = page_title[:512]
-            raw_page.page_text = page_text
-            session.commit()
-
-    def replace_page_chunks(
-        self,
-        *,
-        raw_page_id: int,
-        chunks: Iterable[object],
-        embeddings: list[list[float] | None] | None = None,
-    ) -> None:
-        embeddings = embeddings or []
-        with self._session_factory() as session:
-            session.query(PageChunk).filter(PageChunk.raw_page_id == raw_page_id).delete()
-            for index, chunk in enumerate(chunks):
-                text_value = str(getattr(chunk, "text", "") or "").strip()
-                if not text_value:
-                    continue
-                chunk_index = int(getattr(chunk, "chunk_index", index))
-                embedding = embeddings[index] if index < len(embeddings) else None
+            session.add(document)
+            session.flush()
+            for ordinal, (text, token_count, embedding) in enumerate(chunks):
                 session.add(
-                    PageChunk(
-                        raw_page_id=raw_page_id,
-                        chunk_index=chunk_index,
-                        text=text_value,
+                    Chunk(
+                        document_id=document.id,
+                        ordinal=ordinal,
+                        text=text,
+                        token_count=token_count,
                         embedding=embedding,
-                        created_at=_utcnow(),
                     )
                 )
-            session.commit()
+            session.add(DocumentFetch(document_id=document.id, fetch_id=first_seen_fetch_id))
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.execute(
+                    select(Document).where(Document.content_hash == content_hash)
+                ).scalar_one()
+                return existing
+            return document
 
-    def hybrid_retrieve_chunks(
-        self,
-        *,
-        query: str,
-        expanded_queries: Iterable[str],
-        query_embedding: list[float] | None = None,
-        limit: int = 50,
-    ) -> list[dict[str, object]]:
-        queries = [query, *expanded_queries]
-        queries = [item.strip() for item in queries if item.strip()]
-        with self._session_factory() as session:
-            rows = list(
-                session.execute(
-                    select(PageChunk, RawPage)
-                    .join(RawPage, RawPage.id == PageChunk.raw_page_id)
-                    .order_by(PageChunk.raw_page_id.asc(), PageChunk.chunk_index.asc())
-                ).all()
+    def pending_fetch_ids(self, *, source_run_id: uuid.UUID | None = None) -> list[uuid.UUID]:
+        with self.session() as session:
+            query = (
+                select(Fetch.id)
+                .outerjoin(DocumentFetch, DocumentFetch.fetch_id == Fetch.id)
+                .where(DocumentFetch.fetch_id.is_(None))
+                .where(Fetch.body_bytes.is_not(None))
+                .order_by(Fetch.fetched_at.asc())
             )
-            if not rows:
-                rows = [
-                    (_page_as_chunk(page), page)
-                    for page in session.execute(select(RawPage).order_by(RawPage.id.asc()))
-                    .scalars()
-                    .all()
-                ]
-        scored: list[dict[str, object]] = []
-        for chunk, raw_page in rows:
-            text_value = str(getattr(chunk, "text", "") or "")
-            trigram_score = _text_similarity(text_value, queries)
-            vector_score = _embedding_similarity(
-                query_embedding,
-                getattr(chunk, "embedding", None),
-            )
-            score = (trigram_score * 0.65) + (vector_score * 0.35)
-            if score <= 0:
-                continue
-            scored.append(
-                {
-                    "raw_page_id": raw_page.id,
-                    "source_url": raw_page.source_url,
-                    "page_title": raw_page.page_title,
-                    "chunk_index": int(getattr(chunk, "chunk_index", 0) or 0),
-                    "text": text_value,
-                    "score": score,
-                    "trigram_score": trigram_score,
-                    "vector_score": vector_score,
-                }
-            )
-        scored.sort(key=lambda item: float(item["score"]), reverse=True)
-        return scored[:limit]
+            if source_run_id is not None:
+                query = query.where(Fetch.source_run_id == source_run_id)
+            return list(session.execute(query).scalars())
 
-    def get_extraction_cache(
-        self,
-        *,
-        chunk_sha256: str,
-        prompt_version: str,
-        model: str,
-    ) -> dict[str, object] | None:
-        with self._session_factory() as session:
-            row = session.get(ExtractionCache, (chunk_sha256, prompt_version, model))
-            if row is None:
-                return None
-            return row.response_json
-
-    def set_extraction_cache(
-        self,
-        *,
-        chunk_sha256: str,
-        prompt_version: str,
-        model: str,
-        response_json: dict[str, object],
-        created_at: datetime | None = None,
-    ) -> None:
-        with self._session_factory() as session:
-            row = session.get(ExtractionCache, (chunk_sha256, prompt_version, model))
-            if row is None:
-                row = ExtractionCache(
-                    chunk_sha256=chunk_sha256,
-                    prompt_version=prompt_version,
-                    model=model,
-                    response_json=response_json,
-                    created_at=created_at or _utcnow(),
-                )
-                session.add(row)
-            else:
-                row.response_json = response_json
-            session.commit()
-
-    def record_llm_usage(
-        self,
-        *,
-        model: str,
-        prompt_tokens: int,
-        completion_tokens: int,
-        dollars: float,
-        purpose: str,
-        raw_page_id: int | None = None,
-        entity_id: uuid.UUID | str | None = None,
-        ts: datetime | None = None,
-    ) -> None:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            session.add(
-                LLMUsage(
-                    ts=ts or _utcnow(),
-                    model=model,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    dollars=dollars,
-                    purpose=purpose,
-                    raw_page_id=raw_page_id,
-                    entity_id=entity_uuid,
-                )
-            )
-            session.commit()
-
-    def llm_usage_summary(self, *, days: int = 30) -> list[dict[str, object]]:
-        cutoff = _utcnow() - timedelta(days=days)
-        with self._session_factory() as session:
-            rows = list(
-                session.execute(
-                    select(LLMUsage).where(LLMUsage.ts >= cutoff).order_by(LLMUsage.ts.asc())
-                ).scalars()
-            )
-        buckets: dict[tuple[str, str], dict[str, object]] = {}
-        for row in rows:
-            day = row.ts.date().isoformat()
-            key = (day, row.model)
-            bucket = buckets.setdefault(
-                key,
-                {
-                    "day": day,
-                    "model": row.model,
-                    "calls": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "dollars": 0.0,
-                },
-            )
-            _add_usage_row(bucket, row)
-        return [buckets[key] for key in sorted(buckets)]
-
-    def llm_usage_live(self) -> dict[str, object]:
-        with self._session_factory() as session:
-            total_row = session.execute(
-                select(
-                    func.count(LLMUsage.id),
-                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0),
-                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0),
-                    func.coalesce(func.sum(LLMUsage.dollars), 0.0),
-                )
-            ).one()
-            model_rows = session.execute(
-                select(LLMUsage.model, func.coalesce(func.sum(LLMUsage.dollars), 0.0))
-                .group_by(LLMUsage.model)
-                .order_by(LLMUsage.model.asc())
-            ).all()
-        prompt_tokens = int(total_row[1] or 0)
-        completion_tokens = int(total_row[2] or 0)
-        return {
-            "totals": {
-                "calls": int(total_row[0] or 0),
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-                "dollars": float(total_row[3] or 0.0),
-            },
-            "by_model": {str(model): float(dollars or 0.0) for model, dollars in model_rows},
-        }
-
-    def llm_usage_totals_since(self, since: datetime) -> dict[str, object]:
-        with self._session_factory() as session:
-            rows = list(
-                session.execute(
-                    select(LLMUsage).where(LLMUsage.ts >= since).order_by(LLMUsage.ts.asc())
-                ).scalars()
-            )
-        totals: dict[str, object] = {
-            "calls": 0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "dollars": 0.0,
-        }
-        by_model: dict[str, dict[str, object]] = {}
-        for row in rows:
-            _add_usage_row(totals, row)
-            bucket = by_model.setdefault(
-                row.model,
-                {
-                    "model": row.model,
-                    "calls": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "dollars": 0.0,
-                },
-            )
-            _add_usage_row(bucket, row)
-        totals["by_model"] = [by_model[model] for model in sorted(by_model)]
-        return totals
-
-    def create_audit_run(
-        self,
-        *,
-        sample_size: int,
-        thrifty_results: dict[str, object],
-        frontier_results: dict[str, object],
-        diff_summary: dict[str, object],
-        run_at: datetime | None = None,
-    ) -> AuditRun:
-        with self._session_factory() as session:
-            row = AuditRun(
-                run_at=run_at or _utcnow(),
-                sample_size=sample_size,
-                thrifty_results=thrifty_results,
-                frontier_results=frontier_results,
-                diff_summary=diff_summary,
-            )
-            session.add(row)
-            session.commit()
-            return row
-
-    def latest_audit_run(self) -> AuditRun | None:
-        with self._session_factory() as session:
-            return session.execute(
-                select(AuditRun).order_by(AuditRun.run_at.desc(), AuditRun.id.desc()).limit(1)
-            ).scalar_one_or_none()
-
-    def admin_stats(self) -> dict[str, int]:
-        with self._session_factory() as session:
-            return {
-                "alumni": int(
-                    session.execute(select(func.count()).select_from(AlumniProfile)).scalar_one()
-                ),
-                "pages_crawled": int(
-                    session.execute(select(func.count()).select_from(RawPage)).scalar_one()
-                ),
-                "pages_parsed": int(
-                    session.execute(
-                        select(func.count())
-                        .select_from(RawPage)
-                        .where(RawPage.parsed_at.is_not(None))
-                    ).scalar_one()
-                ),
-                "entities": int(
-                    session.execute(select(func.count()).select_from(Entity)).scalar_one()
-                ),
-                "connections": int(
-                    session.execute(
-                        select(func.count())
-                        .select_from(Connection)
-                        .where(Connection.connected_entity_id.is_not(None))
-                    ).scalar_one()
-                ),
-            }
-
-    def pipeline_cost_estimate(self) -> dict[str, float]:
-        stats = self.admin_stats()
-        with self._session_factory() as session:
-            total_dollars = float(
-                session.execute(select(func.coalesce(func.sum(LLMUsage.dollars), 0.0))).scalar_one()
-            )
-        parsed_pages = max(0, stats["pages_parsed"])
-        average = total_dollars / parsed_pages if parsed_pages and total_dollars > 0 else 0.02
-        return {
-            "average_cost_per_page": round(average, 6),
-            "estimated_next_run_cost": round(stats["pages_crawled"] * average, 6),
-        }
-
-    def table_counts(self) -> dict[str, int]:
-        with self._session_factory() as session:
-            return {
-                table.name: int(
+    def table_counts(self, tables: Iterable[str] = SCHEMA_TABLES) -> dict[str, int]:
+        inspector = inspect(self.engine)
+        existing = set(inspector.get_table_names())
+        counts: dict[str, int] = {}
+        with self.session() as session:
+            for table_name in tables:
+                if table_name not in existing:
+                    counts[table_name] = 0
+                    continue
+                table = Base.metadata.tables[table_name]
+                counts[table_name] = int(
                     session.execute(select(func.count()).select_from(table)).scalar_one()
                 )
-                for table in Base.metadata.sorted_tables
-            }
+        return counts
 
-    def reset_extraction_data(self) -> dict[str, int]:
-        models = [
-            Claim,
-            Connection,
-            Fact,
-            Project,
-            PageChunk,
-            RawPage,
-            ExtractionCache,
-            HostBoilerplate,
-        ]
-        deleted: dict[str, int] = {}
-        with self._session_factory() as session:
-            for model in models:
-                deleted[model.__tablename__] = int(
-                    session.query(model).delete(synchronize_session=False)
-                )
-            session.commit()
-        return deleted
 
-    def create_pipeline_run(self, *, started_at: datetime | None = None) -> PipelineRun:
-        with self._session_factory() as session:
-            row = PipelineRun(
-                started_at=started_at or _utcnow(),
-                status="running",
-                error_message="",
-            )
-            session.add(row)
-            session.commit()
-            return row
-
-    def latest_pipeline_run(self) -> PipelineRun | None:
-        with self._session_factory() as session:
-            return session.execute(
-                select(PipelineRun)
-                .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-
-    def active_pipeline_run(self) -> PipelineRun | None:
-        with self._session_factory() as session:
-            return session.execute(
-                select(PipelineRun)
-                .where(PipelineRun.status == "running", PipelineRun.finished_at.is_(None))
-                .order_by(PipelineRun.started_at.desc(), PipelineRun.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
-
-    def finish_pipeline_run(
-        self,
-        run_id: int,
-        *,
-        status: str,
-        error_message: str = "",
-        finished_at: datetime | None = None,
-    ) -> PipelineRun | None:
-        if status not in {"complete", "failed", "canceled"}:
-            raise ValueError("pipeline run status must be complete, failed, or canceled")
-        with self._session_factory() as session:
-            row = session.get(PipelineRun, run_id)
-            if row is None:
-                return None
-            row.status = status
-            row.error_message = error_message
-            row.finished_at = finished_at or _utcnow()
-            session.commit()
-            return row
-
-    def replace_entity_attributes(
-        self,
-        *,
-        entity_id: uuid.UUID | str,
-        source_url: str | None,
-        attributes: Iterable[dict[str, object]],
-    ) -> None:
-        entity_uuid = _coerce_uuid(entity_id)
-        if entity_uuid is None:
-            return
-        with self._session_factory() as session:
-            session.query(EntityAttribute).filter(
-                EntityAttribute.entity_id == entity_uuid,
-                EntityAttribute.source_url == source_url,
-            ).delete()
-            for attribute in attributes:
-                attribute_name = str(attribute.get("attribute_name", "")).strip()
-                attribute_value = str(attribute.get("attribute_value", "")).strip()
-                if not attribute_name or not attribute_value:
-                    continue
-                session.add(
-                    EntityAttribute(
-                        entity_id=entity_uuid,
-                        attribute_name=attribute_name,
-                        attribute_value=attribute_value,
-                        source=(
-                            str(attribute.get("source") or source_url or "store").strip() or "store"
-                        ),
-                        source_url=source_url,
-                        as_of_date=attribute.get("as_of_date")
-                        if isinstance(attribute.get("as_of_date"), date)
-                        else None,
-                        confidence=str(attribute.get("confidence", "medium")).strip() or "medium",
-                        extracted_at=attribute.get("extracted_at")
-                        if isinstance(attribute.get("extracted_at"), datetime)
-                        else _utcnow(),
-                        last_verified_at=attribute.get("last_verified_at")
-                        if isinstance(attribute.get("last_verified_at"), datetime)
-                        else None,
-                        validation_verdict=_clean_verdict(
-                            attribute.get("validation_verdict", "keep")
-                        ),
-                    )
-                )
-            session.commit()
-
-    def list_entity_attributes(
-        self,
-        *,
-        entity_id: uuid.UUID | str | None = None,
-        verdicts: tuple[str, ...] | None = None,
-    ) -> list[EntityAttribute]:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            stmt = select(EntityAttribute).order_by(EntityAttribute.id.asc())
-            if entity_uuid is not None:
-                stmt = stmt.where(EntityAttribute.entity_id == entity_uuid)
-            if verdicts:
-                stmt = stmt.where(EntityAttribute.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def entity_detail(self, entity_id: uuid.UUID | str) -> dict[str, object] | None:
-        return self.entity_detail_with_options(entity_id)
-
-    def entity_detail_with_options(
-        self,
-        entity_id: uuid.UUID | str,
-        *,
-        include_dropped: bool = False,
-        include_diagnostics: bool = False,
-    ) -> dict[str, object] | None:
-        entity_uuid = _coerce_uuid(entity_id)
-        if entity_uuid is None:
-            return None
-        with self._session_factory() as session:
-            entity = session.get(Entity, entity_uuid)
-            if entity is None:
-                return None
-            consolidated = session.get(EntityConsolidated, entity_uuid)
-            profile = (
-                session.execute(
-                    select(AlumniProfile)
-                    .where(AlumniProfile.entity_id == entity_uuid)
-                    .order_by(AlumniProfile.id.asc())
-                )
-                .scalars()
-                .first()
-            )
-            attribute_filters = [EntityAttribute.entity_id == entity_uuid]
-            if not include_dropped:
-                attribute_filters.append(EntityAttribute.validation_verdict != "drop")
-            attributes = list(
-                session.execute(
-                    select(EntityAttribute)
-                    .where(*attribute_filters)
-                    .order_by(EntityAttribute.attribute_name.asc(), EntityAttribute.id.asc())
-                ).scalars()
-            )
-            relationship_filters = [
-                (Connection.entity_id == entity_uuid)
-                | (Connection.connected_entity_id == entity_uuid)
-            ]
-            if not include_dropped:
-                relationship_filters.append(Connection.validation_verdict != "drop")
-            relationships = list(
-                session.execute(
-                    select(Connection)
-                    .options(joinedload(Connection.raw_page))
-                    .where(*relationship_filters)
-                    .order_by(Connection.relationship_type.asc(), Connection.id.asc())
-                ).scalars()
-            )
-            visible_relationships = [
-                connection
-                for connection in relationships
-                if _should_surface_entity_relationship(connection, entity_uuid)
-            ]
-            attribute_dicts = [_entity_attribute_to_dict(attr) for attr in attributes]
-            attribute_dicts.extend(_profile_attribute_dicts(profile, attribute_dicts))
-            output = {
-                "entity_id": str(entity.id),
-                "name": (
-                    consolidated.name
-                    if consolidated
-                    else profile.name
-                    if profile
-                    else entity.canonical_name
-                ),
-                "consolidated": _consolidated_to_dict(consolidated, profile),
-                "attributes": attribute_dicts,
-                "relationships": [
-                    _entity_relationship_to_dict(connection, entity_uuid)
-                    for connection in visible_relationships
-                ],
-            }
-            if include_diagnostics:
-                output["diagnostics"] = _entity_detail_diagnostics(session, entity_uuid)
-            return output
-
-    def backfill_entity_links(self, *, dry_run: bool = True) -> dict[str, object]:
-        with self._session_factory() as session:
-            profile_rows = list(
-                session.execute(
-                    select(AlumniProfile.name, AlumniProfile.entity_id).where(
-                        AlumniProfile.entity_id.is_not(None)
-                    )
-                ).all()
-            )
-            profiles_by_name: dict[str, set[uuid.UUID]] = {}
-            for name, entity_id in profile_rows:
-                if entity_id is None:
-                    continue
-                profiles_by_name.setdefault(_normalize_position_token(name), set()).add(entity_id)
-
-            unique_profiles = {
-                name: next(iter(entity_ids))
-                for name, entity_ids in profiles_by_name.items()
-                if len(entity_ids) == 1
-            }
-            facts = list(session.execute(select(Fact).where(Fact.entity_id.is_(None))).scalars())
-            connections = list(
-                session.execute(select(Connection).where(Connection.entity_id.is_(None))).scalars()
-            )
-            facts_linked = 0
-            connections_linked = 0
-            facts_skipped = 0
-            connections_skipped = 0
-            for fact in facts:
-                entity_id = unique_profiles.get(_normalize_position_token(fact.alum_name))
-                if entity_id is None:
-                    facts_skipped += 1
-                    continue
-                facts_linked += 1
-                if not dry_run:
-                    fact.entity_id = entity_id
-            for connection in connections:
-                entity_id = unique_profiles.get(_normalize_position_token(connection.alum_name))
-                if entity_id is None:
-                    connections_skipped += 1
-                    continue
-                connections_linked += 1
-                if not dry_run:
-                    connection.entity_id = entity_id
-            if not dry_run:
-                session.commit()
-            return {
-                "dry_run": dry_run,
-                "facts_linked": facts_linked,
-                "connections_linked": connections_linked,
-                "entity_attributes_linked": 0,
-                "facts_skipped_ambiguous_or_missing_profile": facts_skipped,
-                "connections_skipped_ambiguous_or_missing_profile": connections_skipped,
-            }
-
-    def replace_structured_items(
-        self,
-        *,
-        raw_page_id: int,
-        alum_name: str,
-        entity_id: uuid.UUID | str | None = None,
-        facts: Iterable[dict[str, object]],
-        connections: Iterable[dict[str, object]],
-        projects: Iterable[dict[str, object]],
-        claims: Iterable[dict[str, object]] | None = None,
-    ) -> None:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            if entity_uuid is None:
-                raw_page = session.get(RawPage, raw_page_id)
-                if raw_page is not None:
-                    entity_uuid = raw_page.entity_id
-            position_facts = [
-                fact
-                for fact in facts
-                if str(fact.get("category", "general")).strip().lower() == "position"
-            ]
-            non_position_facts = [
-                fact
-                for fact in facts
-                if str(fact.get("category", "general")).strip().lower() != "position"
-            ]
-
-            session.query(Fact).filter(
-                Fact.source_raw_page_id == raw_page_id,
-                Fact.category != "position",
-            ).delete()
-            session.query(Connection).filter(Connection.source_raw_page_id == raw_page_id).delete()
-            session.query(Project).filter(Project.source_raw_page_id == raw_page_id).delete()
-            session.query(Claim).filter(Claim.source_raw_page_id == raw_page_id).delete()
-
-            chunk_ids_by_index = {
-                chunk.chunk_index: chunk.id
-                for chunk in session.execute(
-                    select(PageChunk).where(PageChunk.raw_page_id == raw_page_id)
-                ).scalars()
-            }
-            for claim in claims or []:
-                subject_name = str(claim.get("subject_name", "")).strip()
-                predicate = str(claim.get("predicate", "")).strip()
-                subject_entity_id = _coerce_uuid(claim.get("subject_entity_id"))
-                if not subject_name or not predicate or subject_entity_id is None:
-                    continue
-                object_name = str(claim.get("object_name", "")).strip() or None
-                object_value = str(claim.get("object_value", "")).strip() or None
-                source_chunk_index = _as_int_or_none(claim.get("source_chunk_index"))
-                source_chunk_id = _coerce_int(claim.get("source_chunk_id")) or (
-                    chunk_ids_by_index.get(source_chunk_index)
-                    if source_chunk_index is not None
-                    else None
-                )
-                session.add(
-                    Claim(
-                        subject_entity_id=subject_entity_id,
-                        subject_name=subject_name,
-                        predicate=predicate,
-                        object_entity_id=_coerce_uuid(claim.get("object_entity_id")),
-                        object_name=object_name,
-                        object_value=object_value,
-                        object_type=str(claim.get("object_type", "text")).strip() or "text",
-                        source_raw_page_id=raw_page_id,
-                        source_chunk_id=source_chunk_id,
-                        source_chunk_index=source_chunk_index,
-                        text_evidence=str(claim.get("text_evidence", "")).strip(),
-                        confidence_score=_as_float_or_none(claim.get("confidence_score")),
-                        prompt_version=str(claim.get("prompt_version", "")).strip(),
-                        validation_verdict=_clean_verdict(claim.get("validation_verdict")),
-                        created_at=_utcnow(),
-                    )
-                )
-
-            for fact in non_position_facts:
-                content = str(fact.get("content", "")).strip()
-                if not content:
-                    continue
-                session.add(
-                    Fact(
-                        alum_name=alum_name,
-                        entity_id=entity_uuid,
-                        source_raw_page_id=raw_page_id,
-                        category=str(fact.get("category", "general")).strip() or "general",
-                        content=content,
-                        confidence=str(fact.get("confidence", "low")).strip() or "low",
-                        confidence_score=_as_float_or_none(fact.get("confidence_score")),
-                        text_evidence=str(fact.get("text_evidence", "")).strip(),
-                        validation_verdict=_clean_verdict(fact.get("validation_verdict")),
-                    )
-                )
-            self._upsert_position_facts(
-                session=session,
-                alum_name=alum_name,
-                entity_id=entity_uuid,
-                source_raw_page_id=raw_page_id,
-                position_facts=position_facts,
-            )
-            for connection in connections:
-                connected_name = str(connection.get("connected_name", "")).strip()
-                if not connected_name:
-                    continue
-                subject_entity_id = _coerce_uuid(
-                    connection.get("entity_id") or connection.get("subject_entity_id")
-                )
-                connected_entity_id = _coerce_uuid(connection.get("connected_entity_id"))
-                connected_project_id = _coerce_int(connection.get("connected_project_id"))
-                if subject_entity_id is None or connected_entity_id is None:
-                    if subject_entity_id is None or connected_project_id is None:
-                        continue
-                subject_name = (
-                    str(connection.get("subject_name", "")).strip()
-                    or str(connection.get("alum_name", "")).strip()
-                    or alum_name
-                )
-                normalized_type = normalize_relationship_type(
-                    str(connection.get("relationship_type", "associate"))
-                )
-                existing_derivation = str(connection.get("derivation", "")).strip()
-                derivation = _merge_derivation(existing_derivation, normalized_type.derivation)
-                session.add(
-                    Connection(
-                        alum_name=subject_name,
-                        entity_id=subject_entity_id,
-                        connected_entity_id=connected_entity_id,
-                        connected_project_id=connected_project_id,
-                        connected_name=connected_name,
-                        source_raw_page_id=raw_page_id,
-                        context=str(connection.get("context", "")).strip(),
-                        relationship_type=normalized_type.relationship_type,
-                        confidence_score=_as_float_or_none(connection.get("confidence_score")),
-                        text_evidence=str(connection.get("text_evidence", "")).strip(),
-                        is_inferred=bool(connection.get("is_inferred", False)),
-                        derivation=derivation,
-                        source_ids=_as_string_list(connection.get("source_ids")),
-                        validation_verdict=_clean_verdict(connection.get("validation_verdict")),
-                    )
-                )
-            for project in projects:
-                project_name = str(project.get("project_name", "")).strip()
-                if not project_name:
-                    continue
-                project_entity_id = _coerce_uuid(
-                    project.get("entity_id") or project.get("subject_entity_id")
-                )
-                if project_entity_id is None:
-                    continue
-                session.add(
-                    Project(
-                        alum_name=(
-                            str(project.get("subject_name", "")).strip()
-                            or str(project.get("alum_name", "")).strip()
-                            or alum_name
-                        ),
-                        entity_id=project_entity_id,
-                        source_raw_page_id=raw_page_id,
-                        project_name=project_name,
-                        description=str(project.get("description", "")).strip(),
-                        confidence_score=_as_float_or_none(project.get("confidence_score")),
-                        text_evidence=str(project.get("text_evidence", "")).strip(),
-                        validation_verdict=_clean_verdict(project.get("validation_verdict")),
-                    )
-                )
-            session.commit()
-
-    def _upsert_position_facts(
-        self,
-        *,
-        session: Session,
-        alum_name: str,
-        entity_id: uuid.UUID | None,
-        source_raw_page_id: int,
-        position_facts: Iterable[dict[str, object]],
-    ) -> None:
-        existing_rows = list(
-            session.execute(
-                select(Fact).where(
-                    Fact.alum_name == alum_name,
-                    Fact.source_raw_page_id == source_raw_page_id,
-                    Fact.category == "position",
-                )
-            ).scalars()
-        )
-        by_key: dict[tuple[str, str], Fact] = {}
-        for row in existing_rows:
-            payload = _parse_position_content(row.content)
-            key = (
-                _normalize_position_token(payload.get("company")),
-                _normalize_position_token(payload.get("title")),
-            )
-            by_key[key] = row
-
-        seen_keys: set[tuple[str, str]] = set()
-        for fact in position_facts:
-            content = str(fact.get("content", "")).strip()
-            payload = _parse_position_content(content)
-            company = str(payload.get("company", "")).strip()
-            title = str(payload.get("title", "")).strip()
-            if not company or not title:
-                continue
-            key = (_normalize_position_token(company), _normalize_position_token(title))
-            seen_keys.add(key)
-            normalized_payload = {
-                "company": company,
-                "title": title,
-                "location": payload.get("location"),
-                "start_date": payload.get("start_date"),
-                "end_date": payload.get("end_date"),
-                "position_type": payload.get("position_type", "other"),
-                "is_current": payload.get("end_date") is None,
-            }
-            existing = by_key.get(key)
-            if existing is None:
-                session.add(
-                    Fact(
-                        alum_name=alum_name,
-                        entity_id=entity_id,
-                        source_raw_page_id=source_raw_page_id,
-                        category="position",
-                        content=json.dumps(normalized_payload),
-                        confidence=str(fact.get("confidence", "low")).strip() or "low",
-                        confidence_score=_as_float_or_none(fact.get("confidence_score")),
-                        text_evidence=str(fact.get("text_evidence", "")).strip(),
-                        validation_verdict=_clean_verdict(fact.get("validation_verdict")),
-                    )
-                )
-                continue
-
-            existing.content = json.dumps(normalized_payload)
-            if entity_id is not None:
-                existing.entity_id = entity_id
-            existing.confidence = str(fact.get("confidence", "low")).strip() or "low"
-            existing.confidence_score = _as_float_or_none(fact.get("confidence_score"))
-            existing.text_evidence = str(fact.get("text_evidence", "")).strip()
-            existing.validation_verdict = _clean_verdict(fact.get("validation_verdict"))
-
-        for row in existing_rows:
-            payload = _parse_position_content(row.content)
-            key = (
-                _normalize_position_token(payload.get("company")),
-                _normalize_position_token(payload.get("title")),
-            )
-            if key not in seen_keys:
-                session.delete(row)
-
-    def add_facts(
-        self,
-        alum_name: str,
-        source_raw_page_id: int,
-        facts: list[dict[str, object]],
-        entity_id: uuid.UUID | str | None = None,
-    ) -> None:
-        self.replace_structured_items(
-            raw_page_id=source_raw_page_id,
-            alum_name=alum_name,
-            entity_id=entity_id,
-            facts=facts,
-            connections=[],
-            projects=[],
-            claims=[],
-        )
-
-    def delete_fact(self, fact_id: int) -> bool:
-        with self._session_factory() as session:
-            fact = session.get(Fact, fact_id)
-            if fact is None:
-                return False
-            session.delete(fact)
-            session.commit()
-            return True
-
-    def delete_connection(self, connection_id: int) -> bool:
-        with self._session_factory() as session:
-            connection = session.get(Connection, connection_id)
-            if connection is None:
-                return False
-            session.delete(connection)
-            session.commit()
-            return True
-
-    def delete_project(self, project_id: int) -> bool:
-        with self._session_factory() as session:
-            project = session.get(Project, project_id)
-            if project is None:
-                return False
-            session.delete(project)
-            session.commit()
-            return True
-
-    def list_profiles(self) -> list[AlumniProfile]:
-        with self._session_factory() as session:
-            return list(
-                session.execute(select(AlumniProfile).order_by(AlumniProfile.id.asc())).scalars()
-            )
-
-    def list_facts(self, verdicts: tuple[str, ...] | None = None) -> list[Fact]:
-        with self._session_factory() as session:
-            stmt = select(Fact).options(joinedload(Fact.raw_page)).order_by(Fact.id.asc())
-            if verdicts:
-                stmt = stmt.where(Fact.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def list_connections(
-        self,
-        verdicts: tuple[str, ...] | None = None,
-        *,
-        resolved_only: bool = False,
-    ) -> list[Connection]:
-        with self._session_factory() as session:
-            stmt = (
-                select(Connection)
-                .options(joinedload(Connection.raw_page))
-                .order_by(Connection.id.asc())
-            )
-            if verdicts:
-                stmt = stmt.where(Connection.validation_verdict.in_(verdicts))
-            if resolved_only:
-                stmt = stmt.where(
-                    Connection.connected_entity_id.is_not(None)
-                    | Connection.connected_project_id.is_not(None)
-                    | Connection.is_inferred.is_(True)
-                )
-            return list(session.execute(stmt).scalars())
-
-    def list_projects(self, verdicts: tuple[str, ...] | None = None) -> list[Project]:
-        with self._session_factory() as session:
-            stmt = select(Project).options(joinedload(Project.raw_page)).order_by(Project.id.asc())
-            if verdicts:
-                stmt = stmt.where(Project.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def list_claims(self, verdicts: tuple[str, ...] | None = None) -> list[Claim]:
-        with self._session_factory() as session:
-            stmt = select(Claim).options(joinedload(Claim.raw_page)).order_by(Claim.id.asc())
-            if verdicts:
-                stmt = stmt.where(Claim.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def list_facts_for_alum(
-        self,
-        alum_name: str,
-        verdicts: tuple[str, ...] | None = None,
-        *,
-        entity_id: uuid.UUID | str | None = None,
-    ) -> list[Fact]:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            where_clause = (
-                Fact.entity_id == entity_uuid
-                if entity_uuid is not None
-                else Fact.alum_name == alum_name
-            )
-            stmt = (
-                select(Fact)
-                .options(joinedload(Fact.raw_page))
-                .where(where_clause)
-                .order_by(Fact.id.asc())
-            )
-            if verdicts:
-                stmt = stmt.where(Fact.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def list_connections_for_alum(
-        self,
-        alum_name: str,
-        verdicts: tuple[str, ...] | None = None,
-        *,
-        entity_id: uuid.UUID | str | None = None,
-    ) -> list[Connection]:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            where_clause = (
-                Connection.entity_id == entity_uuid
-                if entity_uuid is not None
-                else Connection.alum_name == alum_name
-            )
-            stmt = (
-                select(Connection)
-                .options(joinedload(Connection.raw_page))
-                .where(where_clause)
-                .order_by(Connection.id.asc())
-            )
-            if verdicts:
-                stmt = stmt.where(Connection.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def list_projects_for_alum(
-        self,
-        alum_name: str,
-        verdicts: tuple[str, ...] | None = None,
-        *,
-        entity_id: uuid.UUID | str | None = None,
-    ) -> list[Project]:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            where_clause = (
-                Project.entity_id == entity_uuid
-                if entity_uuid is not None
-                else Project.alum_name == alum_name
-            )
-            stmt = (
-                select(Project)
-                .options(joinedload(Project.raw_page))
-                .where(where_clause)
-                .order_by(Project.id.asc())
-            )
-            if verdicts:
-                stmt = stmt.where(Project.validation_verdict.in_(verdicts))
-            return list(session.execute(stmt).scalars())
-
-    def get_positions_for_alum(
-        self,
-        alum_name: str,
-        verdicts: frozenset[str] = frozenset(KEEP_VERDICTS),
-        *,
-        entity_id: uuid.UUID | str | None = None,
-    ) -> list[dict[str, object]]:
-        entity_uuid = _coerce_uuid(entity_id)
-        with self._session_factory() as session:
-            where_clause = (
-                Fact.entity_id == entity_uuid
-                if entity_uuid is not None
-                else Fact.alum_name == alum_name
-            )
-            stmt = (
-                select(Fact)
-                .options(joinedload(Fact.raw_page))
-                .where(where_clause, Fact.category == "position")
-                .order_by(Fact.id.asc())
-            )
-            if verdicts:
-                stmt = stmt.where(Fact.validation_verdict.in_(verdicts))
-            rows = list(session.execute(stmt).scalars())
-
-        positions: list[dict[str, object]] = []
-        for row in rows:
-            payload = _parse_position_content(row.content)
-            position = {
-                "company": payload.get("company", ""),
-                "title": payload.get("title", ""),
-                "location": payload.get("location"),
-                "start_date": payload.get("start_date"),
-                "end_date": payload.get("end_date"),
-                "position_type": payload.get("position_type", "other"),
-                "is_current": payload.get("end_date") is None,
-                "source_url": row.raw_page.source_url if row.raw_page else "",
-                "merge_group_id": None,
-            }
-            positions.append(position)
-
-        _assign_merge_group_ids(positions)
-
-        positions.sort(
-            key=lambda position: (
-                bool(position.get("is_current")),
-                _date_ordinal(
-                    parse_position_date(_as_str_or_none(position.get("end_date")), is_end_date=True)
-                ),
-                _date_ordinal(
-                    parse_position_date(
-                        _as_str_or_none(position.get("start_date")),
-                        is_end_date=False,
-                    )
-                ),
-            ),
-            reverse=True,
-        )
-        return positions
-
-    def database_context(self, *, verdicts: tuple[str, ...] = KEEP_VERDICTS) -> dict[str, object]:
-        verdict_set = frozenset(verdicts)
-        return {
-            "profiles": [
-                {
-                    "name": profile.name,
-                    "entity_id": str(profile.entity_id) if profile.entity_id else None,
-                    "class_year": profile.class_year,
-                    "current_company": profile.current_company,
-                    "current_title": profile.current_title,
-                    "past_companies": profile.past_companies,
-                    "education": profile.education,
-                    "bio_summary": profile.bio_summary,
-                    "discovered_via": profile.discovered_via,
-                    "last_parsed_at": (
-                        profile.last_parsed_at.isoformat() if profile.last_parsed_at else None
-                    ),
-                    "positions": self.get_positions_for_alum(
-                        profile.name,
-                        verdicts=verdict_set,
-                        entity_id=profile.entity_id,
-                    ),
-                }
-                for profile in self.list_profiles()
-            ],
-            "facts": [fact_to_dict(fact) for fact in self.list_facts(verdicts)],
-            "connections": [
-                connection_to_dict(connection)
-                for connection in self.list_connections(verdicts, resolved_only=True)
-            ],
-            "projects": [project_to_dict(project) for project in self.list_projects(verdicts)],
-            "claims": [claim_to_dict(claim) for claim in self.list_claims(verdicts)],
-        }
-
-    def raw_pages_fts_search(self, question: str, *, limit: int = 20) -> list[RawPage]:
-        if self.is_postgres:
-            return self._postgres_raw_pages_fts_search(question, limit=limit)
-        return self._sqlite_raw_pages_fallback(limit=limit)
-
-    def _postgres_raw_pages_fts_search(self, question: str, *, limit: int) -> list[RawPage]:
-        sql = text(
-            """
-            SELECT id
-            FROM raw_pages
-            WHERE to_tsvector('english', page_text) @@ plainto_tsquery('english', :question)
-            ORDER BY ts_rank_cd(
-                to_tsvector('english', page_text),
-                plainto_tsquery('english', :question)
-            ) DESC,
-            fetched_at ASC,
-            id ASC
-            LIMIT :limit
-            """
-        )
-        with self._session_factory() as session:
-            page_ids = [
-                row[0] for row in session.execute(sql, {"question": question, "limit": limit}).all()
-            ]
-            if not page_ids:
-                return []
-            pages = {
-                page.id: page
-                for page in session.execute(select(RawPage).where(RawPage.id.in_(page_ids)))
-                .scalars()
-                .all()
-            }
-            return [pages[page_id] for page_id in page_ids if page_id in pages]
-
-    def _sqlite_raw_pages_fallback(self, *, limit: int) -> list[RawPage]:
-        with self._session_factory() as session:
-            return list(
-                session.execute(
-                    select(RawPage)
-                    .order_by(RawPage.fetched_at.asc(), RawPage.id.asc())
-                    .limit(limit)
-                ).scalars()
-            )
-
-    def enqueue_crawl(
-        self,
-        name: str,
-        class_year: str,
-        depth: int = 0,
-        discovered_via: str = "seed",
-    ) -> bool:
-        with self._session_factory() as session:
-            existing = session.execute(
-                select(CrawlState).where(
-                    and_(CrawlState.name == name, CrawlState.class_year == class_year)
-                )
-            ).scalar_one_or_none()
-            if existing:
-                if existing.status in {"partial", "failed"}:
-                    existing.status = "pending"
-                    existing.depth = min(existing.depth, depth)
-                    if discovered_via and not existing.discovered_via:
-                        existing.discovered_via = discovered_via
-                    session.commit()
-                return False
-            session.add(
-                CrawlState(
-                    name=name,
-                    class_year=class_year,
-                    depth=depth,
-                    status="pending",
-                    discovered_via=discovered_via or "seed",
-                )
-            )
-            session.commit()
-            return True
-
-    def mark_crawl_status(self, name: str, status: str, class_year: str | None = None) -> None:
-        with self._session_factory() as session:
-            where_clause = CrawlState.name == name
-            if class_year is not None:
-                where_clause = and_(where_clause, CrawlState.class_year == class_year)
-            row = session.execute(select(CrawlState).where(where_clause)).scalars().first()
-            if row:
-                row.status = status
-                session.commit()
-
-    def count_crawl(self) -> int:
-        with self._session_factory() as session:
-            return int(session.execute(select(func.count()).select_from(CrawlState)).scalar_one())
-
-    def count_crawl_done(self) -> int:
-        with self._session_factory() as session:
-            return int(
-                session.execute(
-                    select(func.count()).select_from(CrawlState).where(CrawlState.status == "done")
-                ).scalar_one()
-            )
-
-    def add_audit_event(
-        self,
-        *,
-        actor: str = "anon",
-        action: str,
-        payload: dict[str, object],
-        created_at: datetime | None = None,
-    ) -> AuditEvent:
-        with self._session_factory() as session:
-            event = AuditEvent(
-                actor=actor or "anon",
-                action=action,
-                payload=payload,
-                created_at=created_at or _utcnow(),
-            )
-            session.add(event)
-            session.commit()
-            return event
-
-    def list_audit_events(
-        self,
-        *,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        actor: str | None = None,
-        action: str | None = None,
-        limit: int = 100,
-        before_id: int | None = None,
-    ) -> list[AuditEvent]:
-        capped_limit = min(max(limit, 1), 1000)
-        with self._session_factory() as session:
-            stmt = select(AuditEvent)
-            if since is not None:
-                stmt = stmt.where(AuditEvent.created_at >= since)
-            if until is not None:
-                stmt = stmt.where(AuditEvent.created_at <= until)
-            if actor:
-                stmt = stmt.where(AuditEvent.actor == actor)
-            if action:
-                stmt = stmt.where(AuditEvent.action == action)
-            if before_id is not None:
-                stmt = stmt.where(AuditEvent.id < before_id)
-            stmt = stmt.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(
-                capped_limit
-            )
-            return list(session.execute(stmt).scalars())
-
-
-def _clean_verdict(value: object) -> str:
-    verdict = str(value or "keep").strip().lower()
-    if verdict not in {"keep", "uncertain", "drop"}:
-        return "uncertain"
-    return verdict
-
-
-def _coerce_uuid(value: object) -> uuid.UUID | None:
-    if value is None or isinstance(value, uuid.UUID):
-        return value
-    cleaned = str(value).strip()
-    if not cleaned:
-        return None
-    return uuid.UUID(cleaned)
-
-
-def _coerce_int(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _profile_entity_for_name(session: Session, name: str) -> uuid.UUID | None:
-    rows = list(
-        session.execute(
-            select(AlumniProfile.entity_id)
-            .where(AlumniProfile.name == name, AlumniProfile.entity_id.is_not(None))
-            .distinct()
-            .limit(2)
-        ).scalars()
-    )
-    if len(rows) == 1:
-        return rows[0]
-    return None
-
-
-def _resolve_entity_in_session(
-    session: Session,
-    *,
-    name: str,
-    context: dict[str, str] | None,
-) -> uuid.UUID:
-    from backend.resolution.entity_resolver import resolve_or_create
-
-    return resolve_or_create(name, session=session, context=context)
-
-
-def _html_sha256(raw_html: str | None) -> str | None:
-    if raw_html is None:
-        return None
-    return sha256(raw_html.encode("utf-8")).hexdigest()
-
-
-def _gzip_html(raw_html: str | None) -> bytes | None:
-    if raw_html is None:
-        return None
-    return gzip.compress(raw_html.encode("utf-8"))
-
-
-def _normalize_position_token(value: object) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip().lower())
-
-
-def _parse_position_content(content: str) -> dict[str, object]:
-    try:
-        loaded = json.loads(content)
-    except json.JSONDecodeError:
-        return {}
-    if not isinstance(loaded, dict):
-        return {}
-    return loaded
-
-
-def _page_keyword_haystack(page: RawPage) -> str:
-    return " ".join([page.source_url, page.page_title, page.page_text]).lower()
-
-
-def _add_usage_row(bucket: dict[str, object], row: LLMUsage) -> None:
-    prompt_tokens = int(bucket["prompt_tokens"]) + row.prompt_tokens
-    completion_tokens = int(bucket["completion_tokens"]) + row.completion_tokens
-    bucket["calls"] = int(bucket["calls"]) + 1
-    bucket["prompt_tokens"] = prompt_tokens
-    bucket["completion_tokens"] = completion_tokens
-    bucket["total_tokens"] = prompt_tokens + completion_tokens
-    bucket["dollars"] = float(bucket["dollars"]) + row.dollars
-
-
-def _date_ordinal(value: date | None) -> int:
-    if value is None:
-        return -1
-    return value.toordinal()
-
-
-def _as_str_or_none(value: object) -> str | None:
-    if value is None:
-        return None
-    cleaned = str(value).strip()
-    return cleaned or None
-
-
-def _as_float_or_none(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int_or_none(value: object) -> int | None:
-    return _coerce_int(value)
-
-
-def _as_string_list(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _merge_derivation(existing: str, normalized: str) -> str:
-    if existing and normalized and normalized not in existing:
-        return f"{existing}; {normalized}"
-    return existing or normalized
-
-
-def _page_as_chunk(page: RawPage) -> SimpleNamespace:
-    return SimpleNamespace(
-        raw_page_id=page.id,
-        chunk_index=0,
-        text=page.page_text,
-        embedding=None,
-    )
-
-
-def _text_similarity(text_value: str, queries: list[str]) -> float:
-    haystack = text_value.lower()
-    haystack_tokens = set(re.findall(r"[a-z0-9']+", haystack))
-    best = 0.0
-    for query in queries:
-        needle = query.lower()
-        needle_tokens = set(re.findall(r"[a-z0-9']+", needle))
-        overlap = len(haystack_tokens & needle_tokens) / max(1, len(needle_tokens))
-        direct = 1.0 if needle and needle in haystack else 0.0
-        fuzzy = SequenceMatcher(None, needle, haystack[: max(500, len(needle) * 8)]).ratio()
-        best = max(best, direct, overlap, fuzzy)
-    return best
-
-
-def _embedding_similarity(
-    left: list[float] | None,
-    right: list[float] | None,
-) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    dot = sum(a * b for a, b in zip(left, right, strict=True))
-    left_norm = sum(value * value for value in left) ** 0.5
-    right_norm = sum(value * value for value in right) ** 0.5
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)
-
-
-def _assign_merge_group_ids(positions: list[dict[str, object]]) -> None:
-    company_groups: dict[str, list[int]] = {}
-    for index, position in enumerate(positions):
-        company_key = _normalize_position_token(position.get("company"))
-        if not company_key:
-            continue
-        company_groups.setdefault(company_key, []).append(index)
-
-    for company_key, indices in company_groups.items():
-        if len(indices) < 2:
-            continue
-        overlaps: dict[int, set[int]] = {index: set() for index in indices}
-        for idx, left in enumerate(indices):
-            for right in indices[idx + 1 :]:
-                if _positions_overlap(positions[left], positions[right]):
-                    overlaps[left].add(right)
-                    overlaps[right].add(left)
-
-        visited: set[int] = set()
-        for start_index in indices:
-            if start_index in visited:
-                continue
-            stack = [start_index]
-            component: list[int] = []
-            visited.add(start_index)
-            while stack:
-                node = stack.pop()
-                component.append(node)
-                for neighbor in overlaps[node]:
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        stack.append(neighbor)
-
-            if len(component) < 2:
-                continue
-
-            earliest_start = min(
-                (
-                    parse_position_date(
-                        _as_str_or_none(positions[index].get("start_date")),
-                        is_end_date=False,
-                    )
-                    or date.min
-                )
-                for index in component
-            )
-            merge_group_id = sha1(
-                f"{company_key}:{earliest_start.isoformat()}".encode("utf-8")
-            ).hexdigest()[:12]
-            for index in component:
-                positions[index]["merge_group_id"] = merge_group_id
-
-
-def _positions_overlap(left: dict[str, object], right: dict[str, object]) -> bool:
-    return date_ranges_overlap(
-        start_a=parse_position_date(_as_str_or_none(left.get("start_date")), is_end_date=False),
-        end_a=parse_position_date(_as_str_or_none(left.get("end_date")), is_end_date=True),
-        start_b=parse_position_date(_as_str_or_none(right.get("start_date")), is_end_date=False),
-        end_b=parse_position_date(_as_str_or_none(right.get("end_date")), is_end_date=True),
-    )
-
-
-def fact_to_dict(fact: Fact) -> dict[str, object]:
+def source_to_dict(source: Source) -> dict[str, object]:
     return {
-        "id": fact.id,
-        "alum_name": fact.alum_name,
-        "entity_id": str(fact.entity_id) if fact.entity_id else None,
-        "source_raw_page_id": fact.source_raw_page_id,
-        "source_url": fact.raw_page.source_url if fact.raw_page else "",
-        "category": fact.category,
-        "content": fact.content,
-        "confidence": fact.confidence,
-        "confidence_score": fact.confidence_score,
-        "text_evidence": fact.text_evidence,
-        "validation_verdict": fact.validation_verdict,
+        "id": str(source.id),
+        "kind": source.kind,
+        "identifier": source.identifier,
+        "trust_weight": source.trust_weight,
+        "display_name": source.display_name,
+        "notes": source.notes,
+        "created_at": source.created_at.isoformat(),
     }
 
 
-def _consolidated_to_dict(
-    row: EntityConsolidated | None,
-    profile: AlumniProfile | None = None,
-) -> dict[str, object]:
-    if row is None:
-        if profile is None:
-            return {}
-        return {
-            "entity_id": str(profile.entity_id) if profile.entity_id else None,
-            "name": profile.name,
-            "current_employer": profile.current_company,
-            "current_title": profile.current_title,
-            "class_year": profile.class_year,
-            "location": "",
-            "source_ids": {"profile": [f"alumni_profile:{profile.id}"]},
-            "updated_at": profile.last_parsed_at.isoformat() if profile.last_parsed_at else None,
-        }
+def source_run_to_dict(run: SourceRun | None) -> dict[str, object] | None:
+    if run is None:
+        return None
     return {
-        "entity_id": str(row.entity_id),
-        "name": row.name,
-        "current_employer": row.current_employer or (profile.current_company if profile else ""),
-        "current_title": row.current_title or (profile.current_title if profile else ""),
-        "class_year": row.class_year or (profile.class_year if profile else ""),
-        "location": row.location,
-        "source_ids": row.source_ids,
-        "updated_at": row.updated_at.isoformat(),
-    }
-
-
-def _entity_attribute_to_dict(attribute: EntityAttribute) -> dict[str, object]:
-    return {
-        "id": attribute.id,
-        "attribute_name": attribute.attribute_name,
-        "attribute_value": attribute.attribute_value,
-        "source": attribute.source,
-        "source_url": attribute.source_url,
-        "as_of_date": attribute.as_of_date.isoformat() if attribute.as_of_date else None,
-        "confidence": attribute.confidence,
-        "last_verified_at": (
-            attribute.last_verified_at.isoformat() if attribute.last_verified_at else None
-        ),
-        "validation_verdict": attribute.validation_verdict,
-    }
-
-
-def _profile_attribute_dicts(
-    profile: AlumniProfile | None,
-    existing_attributes: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    if profile is None:
-        return []
-    existing = {
-        (str(attr.get("attribute_name", "")), str(attr.get("attribute_value", "")))
-        for attr in existing_attributes
-    }
-    candidates: list[tuple[str, str]] = [
-        ("class_year", profile.class_year),
-        ("current_company", profile.current_company),
-        ("current_title", profile.current_title),
-        ("bio_summary", profile.bio_summary),
-    ]
-    candidates.extend(("past_company", value) for value in profile.past_companies)
-    candidates.extend(("education", value) for value in profile.education)
-    output: list[dict[str, object]] = []
-    for attribute_name, attribute_value in candidates:
-        cleaned = str(attribute_value or "").strip()
-        if not cleaned or (attribute_name, cleaned) in existing:
-            continue
-        output.append(
-            {
-                "id": None,
-                "attribute_name": attribute_name,
-                "attribute_value": cleaned,
-                "source": "alumni_profiles",
-                "source_url": None,
-                "as_of_date": None,
-                "confidence": "medium",
-                "last_verified_at": None,
-                "validation_verdict": "keep",
-            }
-        )
-    return output
-
-
-def _entity_detail_diagnostics(session: Session, entity_id: uuid.UUID) -> dict[str, int]:
-    total_attributes = int(
-        session.execute(
-            select(func.count())
-            .select_from(EntityAttribute)
-            .where(EntityAttribute.entity_id == entity_id)
-        ).scalar_one()
-    )
-    attributes_dropped = int(
-        session.execute(
-            select(func.count())
-            .select_from(EntityAttribute)
-            .where(
-                EntityAttribute.entity_id == entity_id,
-                EntityAttribute.validation_verdict == "drop",
-            )
-        ).scalar_one()
-    )
-    connection_filter = (Connection.entity_id == entity_id) | (
-        Connection.connected_entity_id == entity_id
-    )
-    total_connections = int(
-        session.execute(
-            select(func.count()).select_from(Connection).where(connection_filter)
-        ).scalar_one()
-    )
-    connections_unresolved = int(
-        session.execute(
-            select(func.count())
-            .select_from(Connection)
-            .where(
-                Connection.entity_id == entity_id,
-                Connection.connected_entity_id.is_(None),
-                Connection.connected_project_id.is_(None),
-                Connection.is_inferred.is_(False),
-            )
-        ).scalar_one()
-    )
-    connections_dropped = int(
-        session.execute(
-            select(func.count())
-            .select_from(Connection)
-            .where(
-                connection_filter,
-                Connection.validation_verdict == "drop",
-            )
-        ).scalar_one()
-    )
-    return {
-        "total_attributes_any_verdict": total_attributes,
-        "attributes_dropped_by_audit": attributes_dropped,
-        "total_connections_any_verdict": total_connections,
-        "connections_unresolved": connections_unresolved,
-        "connections_dropped_by_audit": connections_dropped,
-    }
-
-
-def _should_surface_entity_relationship(connection: Connection, entity_id: uuid.UUID) -> bool:
-    if connection.is_inferred:
-        return True
-    if connection.connected_entity_id is not None or connection.connected_project_id is not None:
-        return connection.entity_id == entity_id or connection.connected_entity_id == entity_id
-    if connection.entity_id != entity_id:
-        return False
-    return _connection_evidence_mentions_subject(connection)
-
-
-def _connection_evidence_mentions_subject(connection: Connection) -> bool:
-    subject_tokens = [
-        token
-        for token in re.findall(r"[a-z0-9']+", connection.alum_name.casefold())
-        if len(token) >= 4
-    ]
-    if not subject_tokens:
-        return False
-    haystack = " ".join([connection.text_evidence, connection.context]).casefold()
-    return any(token in haystack for token in subject_tokens)
-
-
-def _entity_relationship_to_dict(
-    connection: Connection,
-    entity_id: uuid.UUID,
-) -> dict[str, object]:
-    if connection.entity_id == entity_id:
-        other_entity_id = connection.connected_entity_id
-        other_project_id = connection.connected_project_id
-        other_name = connection.connected_name
-    else:
-        other_entity_id = connection.entity_id
-        other_project_id = None
-        other_name = connection.alum_name
-    return {
-        "id": connection.id,
-        "entity_id": str(connection.entity_id) if connection.entity_id else None,
-        "connected_entity_id": str(other_entity_id) if other_entity_id else None,
-        "connected_project_id": other_project_id,
-        "connected_type": (
-            "entity" if other_entity_id else "project" if other_project_id else "unresolved"
-        ),
-        "connected_name": other_name,
-        "is_resolved": other_entity_id is not None or other_project_id is not None,
-        "relationship_type": connection.relationship_type,
-        "context": connection.context,
-        "confidence_score": connection.confidence_score,
-        "is_inferred": connection.is_inferred,
-        "derivation": connection.derivation,
-        "source_ids": connection.source_ids,
-        "source_raw_page_id": connection.source_raw_page_id,
-        "source_url": connection.raw_page.source_url if connection.raw_page else None,
-        "text_evidence": connection.text_evidence,
-    }
-
-
-def connection_to_dict(connection: Connection) -> dict[str, object]:
-    return {
-        "id": connection.id,
-        "alum_name": connection.alum_name,
-        "entity_id": str(connection.entity_id) if connection.entity_id else None,
-        "connected_entity_id": (
-            str(connection.connected_entity_id) if connection.connected_entity_id else None
-        ),
-        "connected_project_id": connection.connected_project_id,
-        "connected_name": connection.connected_name,
-        "source_raw_page_id": connection.source_raw_page_id,
-        "source_url": connection.raw_page.source_url if connection.raw_page else "",
-        "context": connection.context,
-        "relationship_type": connection.relationship_type,
-        "confidence_score": connection.confidence_score,
-        "text_evidence": connection.text_evidence,
-        "is_inferred": connection.is_inferred,
-        "derivation": connection.derivation,
-        "source_ids": connection.source_ids,
-        "validation_verdict": connection.validation_verdict,
-    }
-
-
-def project_to_dict(project: Project) -> dict[str, object]:
-    return {
-        "id": project.id,
-        "alum_name": project.alum_name,
-        "entity_id": str(project.entity_id) if project.entity_id else None,
-        "source_raw_page_id": project.source_raw_page_id,
-        "source_url": project.raw_page.source_url if project.raw_page else "",
-        "project_name": project.project_name,
-        "description": project.description,
-        "confidence_score": project.confidence_score,
-        "text_evidence": project.text_evidence,
-        "validation_verdict": project.validation_verdict,
-    }
-
-
-def claim_to_dict(claim: Claim) -> dict[str, object]:
-    return {
-        "id": claim.id,
-        "subject_entity_id": (str(claim.subject_entity_id) if claim.subject_entity_id else None),
-        "subject_name": claim.subject_name,
-        "predicate": claim.predicate,
-        "object_entity_id": str(claim.object_entity_id) if claim.object_entity_id else None,
-        "object_name": claim.object_name,
-        "object_value": claim.object_value,
-        "object_type": claim.object_type,
-        "source_raw_page_id": claim.source_raw_page_id,
-        "source_url": claim.raw_page.source_url if claim.raw_page else "",
-        "source_chunk_id": claim.source_chunk_id,
-        "source_chunk_index": claim.source_chunk_index,
-        "text_evidence": claim.text_evidence,
-        "confidence_score": claim.confidence_score,
-        "prompt_version": claim.prompt_version,
-        "validation_verdict": claim.validation_verdict,
+        "id": str(run.id),
+        "source_id": str(run.source_id),
+        "kind": run.kind,
+        "spec": run.spec,
+        "status": run.status,
+        "triggered_by": run.triggered_by,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "stats": run.stats,
+        "error_message": run.error_message,
     }
