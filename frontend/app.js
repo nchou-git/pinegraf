@@ -84,9 +84,7 @@ function renderTopbar() {
     : `<a href="${escapeAttr(state.me?.admin_login_url || "/admin/login")}">admin sign-in</a>`;
   sub.innerHTML = `<span>${escapeHtml(peopleLine)}</span><span>·</span>${adminLink}`;
 
-  const tabs = state.me?.is_admin
-    ? [...TAB_DEFS, { id: "admin", label: "Admin", icon: "ti-settings" }]
-    : TAB_DEFS;
+  const tabs = TAB_DEFS;
   const nav = document.getElementById("nav-pills");
   const activeTab = currentTab();
   nav.innerHTML =
@@ -107,11 +105,15 @@ function currentTab() {
 function renderRoute() {
   const route = location.hash.replace(/^#/, "") || "directory";
   const [tab, ...rest] = route.split("/");
+  if (tab === "admin") {
+    history.replaceState(null, "", "#sources");
+    renderTopbar();
+    return renderSources([]);
+  }
   renderTopbar();
   if (tab === "ask") return renderAsk();
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
-  if (tab === "admin" && state.me?.is_admin) return renderAdmin();
   return renderDirectory();
 }
 
@@ -685,22 +687,76 @@ async function renderSources(parts) {
     return renderSourceDetail(parts[0], parts[1]);
   }
   const app = document.getElementById("app");
+  const adminActions = state.me?.is_admin
+    ? `<div class="source-card-actions">
+         <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
+         <button class="btn-primary" id="run-pipeline"><i class="ti ti-player-play"></i> Run pipeline</button>
+       </div>`
+    : "";
   app.innerHTML = `
+    <div class="stats-grid" id="sources-stats">
+      <div class="stat-card"><div class="label">Documents</div><div class="value">—</div></div>
+      <div class="stat-card"><div class="label">Claims</div><div class="value">—</div></div>
+      <div class="stat-card"><div class="label">Entities</div><div class="value">—</div></div>
+      <div class="stat-card"><div class="label">Sources</div><div class="value">—</div></div>
+    </div>
+    <details class="glossary">
+      <summary><i class="ti ti-info-circle"></i> What do these numbers mean?</summary>
+      <div class="glossary-body">
+        <p><span class="term">Documents</span> — articles, files, or records fetched and cleaned. One alumni-roster row or one news article equals one document.</p>
+        <p><span class="term">Claims</span> — structured statements extracted from documents. One document typically yields 5–30 claims.</p>
+        <p><span class="term">Entities</span> — distinct people, organizations, or projects that claims refer to. One person mentioned across 20 documents is still one entity.</p>
+        <p><span class="term">Sources</span> — registered ingestion endpoints (files, sitemaps, APIs) that produce documents.</p>
+      </div>
+    </details>
     <div class="section-header">
       <div>
         <h1>Sources</h1>
         <div class="subtitle" id="sources-summary">Loading…</div>
       </div>
-      ${state.me?.is_admin ? `<button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>` : ""}
+      ${adminActions}
     </div>
     <div class="sources-list" id="sources-list">
       <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
     </div>
+    ${
+      state.me?.is_admin
+        ? `<details class="conflicts" open>
+             <summary class="conflicts-header">
+               <div class="panel-title">Conflicts</div>
+               <span class="conflicts-count-pill" id="conflict-count">0 unresolved</span>
+             </summary>
+             <div id="conflicts-body"><div class="muted small">Loading…</div></div>
+           </details>`
+        : ""
+    }
   `;
   if (state.me?.is_admin) {
     byId("add-source").onclick = openAddSourceModal;
+    byId("run-pipeline").onclick = runFullPipeline;
   }
-  await loadSourcesList();
+  await Promise.all([
+    loadSourcesStats(),
+    loadSourcesList(),
+    state.me?.is_admin ? loadAdminConflicts() : Promise.resolve(),
+  ]);
+}
+
+async function loadSourcesStats() {
+  const statsGrid = byId("sources-stats");
+  try {
+    const stats = await getJSON("/api/stats");
+    state.stats = stats;
+    statsGrid.innerHTML = `
+      <div class="stat-card"><div class="label">Documents</div><div class="value">${formatNumber(stats.documents)}</div></div>
+      <div class="stat-card"><div class="label">Claims</div><div class="value">${formatNumber(stats.claims)}</div></div>
+      <div class="stat-card"><div class="label">Entities</div><div class="value">${formatNumber(stats.entities)}</div></div>
+      <div class="stat-card"><div class="label">Sources</div><div class="value">${formatNumber(stats.sources)}</div></div>
+    `;
+    renderTopbar();
+  } catch (e) {
+    statsGrid.innerHTML = `<div class="muted small">Unable to load stats: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 async function loadSourcesList() {
@@ -1266,101 +1322,7 @@ async function submitAddSource() {
   }
 }
 
-/* ───── Admin ───── */
-
-async function renderAdmin() {
-  const app = document.getElementById("app");
-  app.innerHTML = `
-    <div class="section-header">
-      <div>
-        <h1>Admin</h1>
-        <div class="subtitle" id="admin-summary">Loading…</div>
-      </div>
-      <button class="btn-primary" id="run-pipeline"><i class="ti ti-player-play"></i> Run pipeline</button>
-    </div>
-    <div class="stats-grid" id="admin-stats"></div>
-    <details class="glossary">
-      <summary><i class="ti ti-info-circle"></i> What do these numbers mean?</summary>
-      <div class="glossary-body">
-        <p><span class="term">Documents</span> — articles, files, or records fetched and cleaned. One alumni-roster row or one news article equals one document.</p>
-        <p><span class="term">Claims</span> — structured statements extracted from documents. One document typically yields 5–30 claims.</p>
-        <p><span class="term">Entities</span> — distinct people, organizations, or projects that claims refer to. One person mentioned across 20 documents is still one entity.</p>
-        <p><span class="term">Sources</span> — registered ingestion endpoints (files, sitemaps, APIs) that produce documents.</p>
-      </div>
-    </details>
-    <div class="breakdown">
-      <h3>Per-source breakdown</h3>
-      <div id="breakdown-body"><div class="muted small">Loading…</div></div>
-    </div>
-    <div class="conflicts">
-      <div class="conflicts-header">
-        <div class="panel-title">Conflicts</div>
-        <span class="conflicts-count-pill" id="conflict-count">0</span>
-      </div>
-      <div id="conflicts-body"><div class="muted small">Loading…</div></div>
-    </div>
-  `;
-  byId("run-pipeline").onclick = runFullPipeline;
-  await Promise.all([loadAdminStats(), loadAdminBreakdown(), loadAdminConflicts()]);
-}
-
-async function loadAdminStats() {
-  try {
-    const stats = await getJSON("/admin/stats");
-    state.stats = stats;
-    byId("admin-summary").textContent = `Pipeline ready · ${stats.documents} docs · ${stats.claims} claims`;
-    byId("admin-stats").innerHTML = `
-      <div class="stat-card"><div class="label">Documents</div><div class="value">${formatNumber(stats.documents)}</div></div>
-      <div class="stat-card"><div class="label">Claims</div><div class="value">${formatNumber(stats.claims)}</div></div>
-      <div class="stat-card"><div class="label">Entities</div><div class="value">${formatNumber(stats.entities)}</div></div>
-      <div class="stat-card"><div class="label">Sources</div><div class="value">${formatNumber(stats.sources)}</div></div>
-    `;
-  } catch (e) {
-    byId("admin-stats").innerHTML = `<div class="muted small">Unable to load stats: ${escapeHtml(e.message)}</div>`;
-  }
-}
-
-async function loadAdminBreakdown() {
-  try {
-    const data = await getJSON("/admin/sources/breakdown");
-    const rows = data.results || [];
-    if (!rows.length) {
-      byId("breakdown-body").innerHTML = `<div class="muted small">No sources yet.</div>`;
-      return;
-    }
-    byId("breakdown-body").innerHTML = `
-      <table class="breakdown-table">
-        <thead>
-          <tr>
-            <th>Source</th>
-            <th class="num">Documents</th>
-            <th class="num">Claims</th>
-            <th class="num">Entities</th>
-            <th class="num">Conflicts</th>
-            <th>Last run</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows
-            .map(
-              (r) => `
-            <tr>
-              <td>${escapeHtml(r.display_name)}</td>
-              <td class="num">${formatNumber(r.documents)}</td>
-              <td class="num">${formatNumber(r.claims)}</td>
-              <td class="num">${formatNumber(r.entities_contributed)}</td>
-              <td class="num ${r.conflicts_caused ? "conflict-cell" : ""}">${formatNumber(r.conflicts_caused)}</td>
-              <td class="muted small">${r.last_run_at ? escapeHtml(timeAgo(r.last_run_at)) : "—"}</td>
-            </tr>`,
-            )
-            .join("")}
-        </tbody>
-      </table>
-    `;
-  } catch (e) {
-    byId("breakdown-body").innerHTML = `<div class="muted small">Unable to load breakdown: ${escapeHtml(e.message)}</div>`;
-  }
-}
+/* ───── Source conflicts ───── */
 
 async function loadAdminConflicts() {
   try {
@@ -1433,10 +1395,15 @@ async function runFullPipeline() {
 
 async function adminLogout(event) {
   event.preventDefault();
+  const tab = currentTab();
   await fetch("/admin/logout", { method: "POST" });
-  await loadMe();
+  await Promise.all([loadMe(), loadStats()]);
   renderTopbar();
-  if (currentTab() === "admin") location.hash = "#directory";
+  if (tab === "admin") {
+    location.hash = "#sources";
+  } else if (tab === "sources") {
+    await renderRoute();
+  }
   return false;
 }
 
