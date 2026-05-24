@@ -36,3 +36,15 @@
   existing API, parser, query, audit, and pipeline tests.
 - Alembic migration helpers were left untouched. Some appear isolated by design,
   but migrations need to remain self-contained and downgrade-capable.
+
+## Regression Follow-Up: UUID JSON Serialization
+
+- Investigation found no Job B deletion of a UUID encoder, JSON encoder,
+  `default=str` helper, serializer monkeypatch, or similarly named utility.
+- The parse stream regression came from parse-path payloads that could contain
+  `uuid.UUID` values after entity resolution. Pydantic `model_dump()` in Python
+  mode preserves UUID objects, which is not safe for JSON cache persistence or
+  validation prompt serialization.
+- Fix: extraction cache payloads now use JSON-mode Pydantic dumps, and
+  validation prompt JSON rendering uses `default=str`. Keep this pattern for
+  any future parse-path payload that may include entity IDs.

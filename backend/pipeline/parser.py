@@ -458,7 +458,7 @@ class OpenAIExtractionClient(ExtractionClient):
             chunk_sha256=chunk.sha256,
             prompt_version=prompt_version,
             model=model,
-            response_json=parsed.model_dump(),
+            response_json=_json_model_dump(parsed),
         )
         return parsed
 
@@ -507,7 +507,7 @@ class OpenAIExtractionClient(ExtractionClient):
             chunk_sha256=chunk.sha256,
             prompt_version=prompt_version,
             model=model,
-            response_json=parsed.model_dump(),
+            response_json=_json_model_dump(parsed),
         )
         return TriageOutcome(result=parsed, cache_hit=False)
 
@@ -620,7 +620,7 @@ class OpenAIExtractionClient(ExtractionClient):
             chunk_sha256=chunk.sha256,
             prompt_version=prompt_version,
             model=model,
-            response_json=parsed.model_dump(),
+            response_json=_json_model_dump(parsed),
         )
         return parsed
 
@@ -673,7 +673,7 @@ class OpenAIExtractionClient(ExtractionClient):
             chunk_sha256=chunk.sha256,
             prompt_version=prompt_version,
             model=model,
-            response_json=parsed.model_dump(),
+            response_json=_json_model_dump(parsed),
         )
         return ModelExtractionOutcome(extraction=parsed, cache_hit=False)
 
@@ -769,7 +769,7 @@ class OpenAIValidationClient(ValidationClient):
                             f"Alumnus: {raw_page.alum_name}\n"
                             f"Source URL: {raw_page.source_url}\n\n"
                             f"Page text:\n{raw_page.page_text[:MAX_EXTRACTION_CHARS]}\n\n"
-                            f"Extracted items:\n{json.dumps(payload, indent=2)}"
+                            f"Extracted items:\n{json.dumps(payload, indent=2, default=str)}"
                         ),
                     },
                 ],
@@ -847,7 +847,7 @@ class OpenAIValidationClient(ValidationClient):
                         f"Alumnus: {raw_page.alum_name}\n"
                         f"Source URL: {raw_page.source_url}\n\n"
                         f"Page text:\n{raw_page.page_text[:MAX_EXTRACTION_CHARS]}\n\n"
-                        f"Extracted items:\n{json.dumps(payload, indent=2)}"
+                        f"Extracted items:\n{json.dumps(payload, indent=2, default=str)}"
                     ),
                 },
             ],
@@ -2405,6 +2405,10 @@ def _confidence_score_from_label(confidence: str) -> float:
 def _prompt_version(prompt: str, model_type: type[BaseModel]) -> str:
     payload = json.dumps(model_type.model_json_schema(), sort_keys=True)
     return sha256(f"{prompt}\n{payload}".encode("utf-8")).hexdigest()
+
+
+def _json_model_dump(model: BaseModel) -> dict[str, object]:
+    return model.model_dump(mode="json")
 
 
 def _usage_tokens(response: object) -> tuple[int, int]:
