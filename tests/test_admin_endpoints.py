@@ -16,15 +16,10 @@ def test_admin_auth_required_and_happy_paths(store, admin_headers, monkeypatch) 
             triggered_by=triggered_by,
         ).id
 
-    async def fake_normalize_run(run_id, *, store):
-        del store
-        return [uuid.UUID(str(run_id))]
-
     monkeypatch.setattr(main_module, "start_run", fake_start_run)
-    monkeypatch.setattr(main_module, "normalize_run", fake_normalize_run)
 
     with TestClient(main_module.create_app(store)) as client:
-        assert client.get("/admin/stats").status_code == 401
+        assert client.get("/admin/conflicts").status_code == 401
 
         source_response = client.post(
             "/admin/sources",
@@ -40,25 +35,12 @@ def test_admin_auth_required_and_happy_paths(store, admin_headers, monkeypatch) 
         source_id = source_response.json()["id"]
 
         run_response = client.post(
-            "/admin/runs/adhoc",
+            f"/admin/sources/{source_id}/crawl",
             headers=admin_headers,
-            json={"source_id": source_id, "urls": ["https://example.com/a"]},
         )
         assert run_response.status_code == 200
-        run_id = run_response.json()["run_id"]
+        assert run_response.json()["status"] == "started"
 
-        get_run_response = client.get(f"/admin/runs/{run_id}", headers=admin_headers)
-        assert get_run_response.status_code == 200
-        assert get_run_response.json()["kind"] == "adhoc"
-
-        normalize_response = client.post(
-            f"/admin/runs/{run_id}/normalize",
-            headers=admin_headers,
-        )
-        assert normalize_response.status_code == 200
-        assert normalize_response.json()["document_ids"] == [run_id]
-
-        stats_response = client.get("/admin/stats", headers=admin_headers)
-        assert stats_response.status_code == 200
-        assert stats_response.json()["sources"] == 1
-        assert stats_response.json()["source_runs"] == 1
+        counts = store.table_counts(["sources", "source_runs"])
+        assert counts["sources"] == 1
+        assert counts["source_runs"] == 1

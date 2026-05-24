@@ -8,7 +8,7 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import func, or_, select
 
 from backend.config import get_settings
 from backend.db.models import (
@@ -21,7 +21,6 @@ from backend.db.models import (
     DocumentFetch,
     Entity,
     EntityAlias,
-    EntityMention,
     EntityNeighborhood,
     EntitySummary,
     Fetch,
@@ -417,34 +416,6 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
         }
 
 
-def source_breakdown(store: Store) -> list[dict[str, object]]:
-    sources = list_sources(store)
-    return [
-        {
-            "source_id": source["id"],
-            "display_name": source["display_name"],
-            "kind": source["kind"],
-            "documents": source["coverage"]["documents"],
-            "claims": source["coverage"]["claims"],
-            "entities_contributed": _entities_contributed(store, uuid.UUID(source["id"])),
-            "conflicts_caused": source["coverage"].get("conflicts", 0),
-            "last_run_at": source["last_run_at"],
-            "last_status": source["last_status"],
-        }
-        for source in sources
-    ]
-
-
-def _entities_contributed(store: Store, source_id: uuid.UUID) -> int:
-    with store.session() as session:
-        return session.execute(
-            select(func.count(func.distinct(Claim.subject_entity_id)))
-            .select_from(ClaimEvidence)
-            .join(Claim, Claim.id == ClaimEvidence.claim_id)
-            .where(ClaimEvidence.source_id == source_id)
-        ).scalar_one()
-
-
 def update_source(
     store: Store,
     source_id: uuid.UUID,
@@ -486,21 +457,6 @@ def update_source(
 
 def delete_source(store: Store, source_id: uuid.UUID) -> bool:
     return update_source(store, source_id, status="archived") is not None
-
-
-def admin_corpus_stats(store: Store) -> dict[str, int]:
-    counts = store.table_counts()
-    return {
-        "documents": counts.get("documents", 0),
-        "claims": counts.get("claims", 0),
-        "entities": counts.get("entities", 0),
-        "sources": counts.get("sources", 0),
-        "source_runs": counts.get("source_runs", 0),
-        "conflicts": counts.get("claim_conflicts", 0),
-        "fetches": counts.get("fetches", 0),
-        "chunks": counts.get("chunks", 0),
-        "claims_raw": counts.get("claims_raw", 0),
-    }
 
 
 def list_conflicts(store: Store, page: int = 1, page_size: int = 25) -> dict[str, object]:
@@ -558,24 +514,6 @@ def resolve_conflict(
                     payload={"conflict_id": str(conflict.id), "notes": notes},
                 )
             )
-        session.commit()
-
-
-def reset_extraction(store: Store) -> None:
-    with store.session() as session:
-        for model in (
-            EntityNeighborhood,
-            EntitySummary,
-            ClaimConflict,
-            ClaimEvidence,
-            Claim,
-            EntityMention,
-            ClaimRaw,
-            Chunk,
-            DocumentFetch,
-            Document,
-        ):
-            session.execute(delete(model))
         session.commit()
 
 

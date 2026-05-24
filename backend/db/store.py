@@ -320,20 +320,3 @@ def source_to_dict(source: Source) -> dict[str, object]:
         "notes": source.notes,
         "created_at": source.created_at.isoformat(),
     }
-
-
-def source_run_to_dict(run: SourceRun | None) -> dict[str, object] | None:
-    if run is None:
-        return None
-    return {
-        "id": str(run.id),
-        "source_id": str(run.source_id),
-        "kind": run.kind,
-        "spec": run.spec,
-        "status": run.status,
-        "triggered_by": run.triggered_by,
-        "started_at": run.started_at.isoformat(),
-        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-        "stats": run.stats,
-        "error_message": run.error_message,
-    }

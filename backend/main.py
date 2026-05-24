@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import re
 import secrets
@@ -19,13 +18,11 @@ from pydantic import BaseModel, Field
 from backend.admin_auth import is_admin_request, require_admin
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
-from backend.db.store import Store, source_run_to_dict, source_to_dict
+from backend.db.store import Store, source_to_dict
 from backend.ingestion.orchestrator import start_run
-from backend.normalization.runner import normalize_run
-from backend.pipeline.orchestrator import run_full_pipeline, subscribe
+from backend.pipeline.orchestrator import run_full_pipeline
 from backend.site_auth import SiteAuthMiddleware
 from backend.web_api import (
-    admin_corpus_stats,
     ask_stream,
     delete_source,
     document_detail,
@@ -34,9 +31,7 @@ from backend.web_api import (
     list_directory,
     list_source_documents,
     list_sources,
-    reset_extraction,
     resolve_conflict,
-    source_breakdown,
     source_detail,
     stats,
     update_source,
@@ -58,21 +53,6 @@ class SourceUpdate(BaseModel):
     notes: str | None = None
 
 
-class SitemapRunCreate(BaseModel):
-    source_id: uuid.UUID
-    sitemap_url: str
-
-
-class SeedRunCreate(BaseModel):
-    source_id: uuid.UUID
-    seed_file_path: str
-
-
-class AdhocRunCreate(BaseModel):
-    source_id: uuid.UUID
-    urls: list[str]
-
-
 class AskRequest(BaseModel):
     question: str
     max_results: int = Field(default=10, ge=1, le=50)
@@ -87,10 +67,6 @@ class ConflictResolveRequest(BaseModel):
         "both_valid_distinct",
     ]
     notes: str | None = None
-
-
-class ResetExtractionRequest(BaseModel):
-    confirm: str
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -402,96 +378,6 @@ def create_app(store: Store | None = None) -> FastAPI:
         asyncio.create_task(run_full_pipeline(latest.id, store=_store(request)))
         return {"run_id": str(latest.id), "status": "parsing"}
 
-    @app.post("/admin/runs/sitemap")
-    async def admin_run_sitemap(request: Request, payload: SitemapRunCreate) -> dict[str, str]:
-        require_admin(request)
-        _ensure_source(_store(request), payload.source_id)
-        run_id = await start_run(
-            "sitemap",
-            {"source_id": str(payload.source_id), "sitemap_url": payload.sitemap_url},
-            "admin",
-            store=_store(request),
-        )
-        return {"run_id": str(run_id)}
-
-    @app.post("/admin/runs/seed")
-    async def admin_run_seed(request: Request, payload: SeedRunCreate) -> dict[str, str]:
-        require_admin(request)
-        _ensure_source(_store(request), payload.source_id)
-        run_id = await start_run(
-            "seed",
-            {"source_id": str(payload.source_id), "seed_file_path": payload.seed_file_path},
-            "admin",
-            store=_store(request),
-        )
-        return {"run_id": str(run_id)}
-
-    @app.post("/admin/runs/adhoc")
-    async def admin_run_adhoc(request: Request, payload: AdhocRunCreate) -> dict[str, str]:
-        require_admin(request)
-        _ensure_source(_store(request), payload.source_id)
-        run_id = await start_run(
-            "adhoc",
-            {"source_id": str(payload.source_id), "urls": payload.urls},
-            "admin",
-            store=_store(request),
-        )
-        return {"run_id": str(run_id)}
-
-    @app.post("/admin/runs/{run_id}/normalize")
-    async def admin_normalize_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
-        require_admin(request)
-        if _store(request).get_source_run(run_id) is None:
-            raise HTTPException(status_code=404, detail="run not found")
-        document_ids = await normalize_run(run_id, store=_store(request))
-        return {"run_id": str(run_id), "document_ids": [str(value) for value in document_ids]}
-
-    @app.post("/admin/runs/{run_id}/pipeline")
-    async def admin_run_pipeline(
-        request: Request,
-        run_id: uuid.UUID,
-    ) -> dict[str, str]:
-        require_admin(request)
-        if _store(request).get_source_run(run_id) is None:
-            raise HTTPException(status_code=404, detail="run not found")
-        asyncio.create_task(run_full_pipeline(run_id, store=_store(request)))
-        return {"run_id": str(run_id), "status": "started"}
-
-    @app.get("/admin/runs/{run_id}/stream")
-    async def admin_run_stream(request: Request, run_id: uuid.UUID) -> StreamingResponse:
-        require_admin(request)
-
-        async def events() -> AsyncIterator[bytes]:
-            async for event in subscribe(run_id):
-                payload = {
-                    "stage": event.stage,
-                    "status": event.status,
-                    "message": event.message,
-                    "percent": event.percent,
-                    "data": event.data,
-                }
-                yield f"data: {json.dumps(payload, default=str)}\n\n".encode("utf-8")
-
-        return StreamingResponse(events(), media_type="text/event-stream")
-
-    @app.get("/admin/runs/{run_id}")
-    async def admin_get_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
-        require_admin(request)
-        row = source_run_to_dict(_store(request).get_source_run(run_id))
-        if row is None:
-            raise HTTPException(status_code=404, detail="run not found")
-        return row
-
-    @app.get("/admin/stats")
-    async def admin_stats(request: Request) -> dict[str, int]:
-        require_admin(request)
-        return admin_corpus_stats(_store(request))
-
-    @app.get("/admin/sources/breakdown")
-    async def admin_source_breakdown(request: Request) -> dict[str, object]:
-        require_admin(request)
-        return {"results": source_breakdown(_store(request))}
-
     @app.get("/admin/conflicts")
     async def admin_conflicts(
         request: Request,
@@ -516,27 +402,11 @@ def create_app(store: Store | None = None) -> FastAPI:
         )
         return {"status": "ok"}
 
-    @app.post("/admin/reset-extraction")
-    async def admin_reset_extraction(
-        request: Request,
-        payload: ResetExtractionRequest,
-    ) -> dict[str, str]:
-        require_admin(request)
-        if payload.confirm != "RESET":
-            raise HTTPException(status_code=400, detail='confirm must be "RESET"')
-        reset_extraction(_store(request))
-        return {"status": "ok"}
-
     return app
 
 
 def _store(request: Request) -> Store:
     return request.app.state.store
-
-
-def _ensure_source(store: Store, source_id: uuid.UUID) -> None:
-    if store.get_source(source_id) is None:
-        raise HTTPException(status_code=404, detail="source not found")
 
 
 def _admin_login_html(error: str | None) -> str:

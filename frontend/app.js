@@ -33,35 +33,16 @@ const SOURCE_KINDS = [
     ],
   },
   {
-    id: "structured-file",
+    id: "file",
     kind: "file",
-    label: "Upload structured data",
-    icon: "ti-table-import",
-    description: "Upload xlsx or csv records.",
-    hint: "Spreadsheet rows become records. Columns become attributes.",
+    label: "Upload a file",
+    icon: "ti-upload",
+    description: "Upload a source file.",
     fields: [
       {
         name: "file",
-        label: "File (xlsx, csv)",
+        label: "File",
         type: "file",
-        accept: ".xlsx,.csv",
-        required: true,
-      },
-    ],
-  },
-  {
-    id: "unstructured-file",
-    kind: "file",
-    label: "Upload unstructured data",
-    icon: "ti-file-text",
-    description: "Upload text, markdown, or pdf documents.",
-    hint: "Documents are chunked and extracted via the LLM pipeline.",
-    fields: [
-      {
-        name: "file",
-        label: "File (txt, pdf, md)",
-        type: "file",
-        accept: ".txt,.md,.pdf",
         required: true,
       },
     ],
@@ -987,12 +968,7 @@ function sourceMetaLine(source) {
       domain: "Sitemap",
       file: "Manual upload",
     }[source.kind] || source.kind;
-  return `${kindLabel} · ${source.identifier} · trust ${formatTrust(source.trust_weight)}`;
-}
-
-function formatTrust(value) {
-  if (value == null) return "—";
-  return Number(value).toFixed(2);
+  return `${kindLabel} · ${source.identifier}`;
 }
 
 function toggleMenu(card, sourceId) {
@@ -1008,7 +984,6 @@ function toggleMenu(card, sourceId) {
   menu.className = "menu";
   menu.innerHTML = `
     <button class="menu-item" data-act="rename"><i class="ti ti-pencil"></i> Rename</button>
-    <button class="menu-item" data-act="trust"><i class="ti ti-percentage"></i> Edit trust</button>
     ${source && source.kind === "file" ? `<button class="menu-item" data-act="download"><i class="ti ti-download"></i> Download original</button>` : ""}
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
     <button class="menu-item danger" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
@@ -1041,17 +1016,6 @@ async function handleMenuAction(action, sourceId) {
     if (!name) return;
     await patchSource(sourceId, { display_name: name });
     toast("Renamed.", "success");
-    loadSourcesList();
-  } else if (action === "trust") {
-    const value = prompt("Trust weight (0.0–1.0)", String(source.trust_weight ?? 0.5));
-    if (!value) return;
-    const n = Number(value);
-    if (Number.isNaN(n) || n < 0 || n > 1) {
-      toast("Trust must be between 0 and 1.", "error");
-      return;
-    }
-    await patchSource(sourceId, { trust_weight: n });
-    toast("Trust updated.", "success");
     loadSourcesList();
   } else if (action === "pause") {
     await patchSource(sourceId, { status: "paused" });
@@ -1298,10 +1262,6 @@ function renderSourceConfig(detail) {
             <input value="${escapeAttr(detail.identifier)}" disabled />
             <span class="field-hint">Identifier cannot be changed after creation.</span>
           </label>
-          <label class="field">
-            <span class="field-label">Trust weight</span>
-            <input id="cfg-trust" type="number" step="0.05" min="0" max="1" value="${escapeAttr(String(detail.trust_weight ?? 0.5))}" ${adminOnly ? "disabled" : ""} />
-          </label>
         </div>
         <label class="field">
           <span class="field-label">Notes</span>
@@ -1319,7 +1279,6 @@ function renderSourceConfig(detail) {
     byId("cfg-save").onclick = async () => {
       const body = {
         display_name: byId("cfg-name").value.trim() || null,
-        trust_weight: Number(byId("cfg-trust").value),
         notes: byId("cfg-notes").value.trim() || null,
       };
       await patchSource(detail.id, body);
@@ -1348,7 +1307,6 @@ function openAddSourceModal() {
 
 function renderAddSourceModal() {
   const selected = SOURCE_KINDS.find((k) => k.id === modalKind) || SOURCE_KINDS[0];
-  const trustDefault = selected.kind === "file" ? 0.95 : 0.9;
   openModal(`
     <div class="modal-header">
       <div>
@@ -1374,16 +1332,16 @@ function renderAddSourceModal() {
         </div>
       </div>
       <label class="field">
-        <span class="field-label">Display name</span>
-        <input id="new-name" placeholder="e.g. Tuck news" />
-        <span class="field-hint">You can rename this anytime.</span>
+        <span class="field-label">Label</span>
+        <input id="new-name" placeholder="e.g. Dartmouth News" />
+        <span class="field-hint">Used everywhere this source appears.</span>
       </label>
       ${selected.fields
         .map((f) => {
           if (f.type === "file") {
             return `<label class="field">
                 <span class="field-label">${escapeHtml(f.label)}</span>
-                <input id="new-${f.name}" type="file" accept="${escapeAttr(f.accept || "")}" />
+                <input id="new-${f.name}" type="file" />
               </label>`;
           }
           return `<label class="field">
@@ -1392,12 +1350,6 @@ function renderAddSourceModal() {
             </label>`;
         })
         .join("")}
-      ${selected.hint ? `<div class="field-hint">${escapeHtml(selected.hint)}</div>` : ""}
-      <label class="field">
-        <span class="field-label">Trust weight</span>
-        <input id="new-trust" type="number" step="0.05" min="0" max="1" value="${trustDefault}" />
-        <span class="field-hint">How much to weight evidence from this source. 1.0 = ground truth.</span>
-      </label>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1417,9 +1369,8 @@ async function submitAddSource() {
   const selected = SOURCE_KINDS.find((k) => k.id === modalKind) || SOURCE_KINDS[0];
   const kind = selected.kind;
   const display_name = byId("new-name").value.trim();
-  const trust = Number(byId("new-trust").value || 0.75);
   if (!display_name) {
-    toast("Display name is required.", "error");
+    toast("Label is required.", "error");
     return;
   }
   try {
@@ -1431,7 +1382,6 @@ async function submitAddSource() {
       }
       const form = new FormData();
       form.append("display_name", display_name);
-      form.append("trust_weight", String(trust));
       form.append("file", input.files[0]);
       const res = await fetch("/admin/sources/upload", { method: "POST", body: form });
       if (!res.ok) throw new Error(`${res.status}`);
@@ -1444,7 +1394,6 @@ async function submitAddSource() {
       const body = {
         kind,
         identifier,
-        trust_weight: trust,
         display_name,
       };
       const res = await fetch("/admin/sources", {

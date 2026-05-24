@@ -74,6 +74,6 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
         assert conflicts_response.status_code == 200
         assert conflicts_response.json()["results"] == []
 
-        pipeline_response = client.post(f"/admin/runs/{run.id}/pipeline", headers=admin_headers)
+        pipeline_response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
         assert pipeline_response.status_code == 200
-        assert pipeline_response.json()["status"] == "started"
+        assert pipeline_response.json()["status"] == "parsing"
