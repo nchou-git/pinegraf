@@ -25,7 +25,7 @@ async def normalize_fetch(fetch_id: uuid.UUID | str, *, store: Store) -> uuid.UU
         store.link_document_fetch(existing.id, fetch_uuid)
         return existing.id
 
-    cleaned_text, title = clean_html(fetch.body_bytes, fetch.content_type)
+    cleaned_text, title = clean_html(fetch.body_bytes)
     chunks = chunk_text(cleaned_text)
     embeddings = await embed_chunks([chunk.text for chunk in chunks])
     chunk_rows = [

@@ -11,12 +11,10 @@ from backend.extraction.cascading_extractor import PROMPT_VERSION, extract_claim
 
 
 async def extract_pending(
-    workspace_id: str = "tuck",
     limit: int | None = None,
     *,
     store: Store,
 ) -> list[uuid.UUID]:
-    del workspace_id
     with store.session() as session:
         query = (
             select(Chunk.id, Chunk.text)

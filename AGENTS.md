@@ -9,19 +9,23 @@ from structured rows or raw-page RAG.
 - Python 3.11+, FastAPI, SQLAlchemy 2.x, Alembic, Postgres 14+ for production,
   SQLite for local tests, pytest.
 - OpenAI Python SDK; use mock clients in tests.
-- `httpx` async crawler with `h2`, `selectolax` HTML parsing, plain HTML/JS
-  frontend served by FastAPI.
+- `httpx` async crawler with `h2`, `trafilatura`/`langdetect`
+  normalization, plain HTML/JS frontend served by FastAPI.
 
 ## Architecture
 
-- Crawl: `backend/pipeline/crawler.py`, `backend/pipeline/page_fetcher.py`
-- Parse: `backend/pipeline/parser.py`
-- Resolve: `backend/resolution/entity_resolver.py`
-- Query: `backend/pipeline/query.py`
+- Ingestion: `backend/ingestion/`
+- Normalization: `backend/normalization/`
+- Extraction: `backend/extraction/`
+- Resolve: `backend/resolution/resolver.py`
+- Corroboration: `backend/corroboration/`
+- Projection: `backend/projections/`
+- Query/API helpers: `backend/web_api.py`
 - Persistence: `backend/db/store.py`
 - ORM schema: `backend/db/models.py`
 - FastAPI route definitions: `backend/main.py`
-- Audit middleware and admin helpers: `backend/audit.py`
+- Auth helpers: `backend/admin_auth.py`, `backend/admin_session.py`,
+  `backend/site_auth.py`
 
 ## Conventions
 
@@ -42,8 +46,6 @@ from structured rows or raw-page RAG.
   add a round-trip migration test for non-trivial schema changes.
 - Entity resolution is conservative: never merge on name alone. Reuse an entity
   only when deterministic context rules produce exactly one match.
-- Keep legacy `alum_name`/profile name columns until a later cleanup; identity is
-  `entity_id`.
 
 ## Commands
 
@@ -52,8 +54,6 @@ from structured rows or raw-page RAG.
 - Migrate: `alembic upgrade head`
 - Run dev server: `uvicorn backend.main:app --reload`
 - Test: `pytest -v`
-- Eval: `python -m scripts.eval_extraction`
-- Benchmark: `python -m scripts.bench_crawl`
 
 ## Things To Avoid
 

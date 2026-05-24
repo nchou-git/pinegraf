@@ -10,12 +10,10 @@ from backend.resolution.resolver import ENTITY_OBJECT_TYPES, resolve_mention, wr
 
 
 async def resolve_pending(
-    workspace_id: str = "tuck",
     limit: int | None = None,
     *,
     store: Store,
 ) -> list[uuid.UUID]:
-    del workspace_id
     with store.session() as session:
         query = (
             select(ClaimRaw)
@@ -32,7 +30,6 @@ async def resolve_pending(
             row.subject_text,
             "person",
             store=store,
-            context=row.raw_quote,
         )
         if subject is not None:
             write_mention(
@@ -48,7 +45,6 @@ async def resolve_pending(
                 row.object_text,
                 row.object_type or "org",
                 store=store,
-                context=row.raw_quote,
             )
             if object_resolution is not None:
                 write_mention(

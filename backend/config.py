@@ -66,13 +66,9 @@ def get_settings() -> Settings:
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
             cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
             frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),
-            workspace_display_name=os.getenv(
-                "WORKSPACE_DISPLAY_NAME", "Tuck School of Business"
-            ),
+            workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),
-            workspace_tagline=os.getenv(
-                "WORKSPACE_TAGLINE", "Where alumni stories connect."
-            ),
+            workspace_tagline=os.getenv("WORKSPACE_TAGLINE", "Where alumni stories connect."),
             uploads_dir=os.getenv("UPLOADS_DIR", "/tmp/pinegraf_uploads"),
         )
     except ValidationError as exc:

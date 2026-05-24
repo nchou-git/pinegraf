@@ -19,7 +19,6 @@ COPY backend ./backend
 COPY frontend ./frontend
 COPY alembic ./alembic
 COPY alembic.ini ./
-COPY scripts ./scripts
 
 RUN pip install --no-cache-dir -e .
 

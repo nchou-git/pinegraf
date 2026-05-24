@@ -9,12 +9,10 @@ from backend.db.store import Store
 
 
 async def corroborate_pending(
-    workspace_id: str = "tuck",
     *,
     store: Store,
 ) -> set[uuid.UUID]:
-    del workspace_id
     touched = promote_pending(store)
-    touched.update(detect_conflicts(store, touched))
+    touched.update(detect_conflicts(store))
     rescore_claims(store, touched)
     return touched

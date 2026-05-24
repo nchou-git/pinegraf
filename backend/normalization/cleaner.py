@@ -7,8 +7,7 @@ import trafilatura
 from langdetect import LangDetectException, detect
 
 
-def clean_html(raw_bytes: bytes, content_type: str | None) -> tuple[str, str | None]:
-    del content_type
+def clean_html(raw_bytes: bytes) -> tuple[str, str | None]:
     html = raw_bytes.decode("utf-8", errors="replace")
     metadata = trafilatura.extract_metadata(html)
     title = metadata.title if metadata is not None else None

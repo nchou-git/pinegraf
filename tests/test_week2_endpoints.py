@@ -54,8 +54,8 @@ def test_user_api_requires_site_auth_and_lists_directory(store, monkeypatch) -> 
 
 
 def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypatch) -> None:
-    async def fake_run_full_pipeline(workspace_id, source_run_id, *, store):
-        del workspace_id, source_run_id, store
+    async def fake_run_full_pipeline(source_run_id, *, store):
+        del source_run_id, store
         return set()
 
     monkeypatch.setattr(main_module, "run_full_pipeline", fake_run_full_pipeline)

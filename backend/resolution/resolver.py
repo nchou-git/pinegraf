@@ -27,7 +27,6 @@ async def resolve_mention(
     kind: str,
     *,
     store: Store,
-    context: str = "",
 ) -> Resolution | None:
     normalized = normalize_name(mention_text)
     if not normalized:
@@ -41,9 +40,6 @@ async def resolve_mention(
     embedding = await _embedding_match(store, normalized, kind)
     if embedding is not None and embedding.confidence >= 0.82:
         return embedding
-    if embedding is not None and 0.70 <= embedding.confidence < 0.82:
-        if _llm_accepts(context, mention_text):
-            return Resolution(embedding.entity_id, "llm", embedding.confidence)
     if looks_like_entity(mention_text):
         return await _create_entity(store, mention_text, kind)
     return None
@@ -170,11 +166,6 @@ async def _create_entity(store: Store, mention_text: str, kind: str) -> Resoluti
         )
         session.commit()
         return Resolution(entity.id, "new_entity", 0.75)
-
-
-def _llm_accepts(context: str, mention_text: str) -> bool:
-    del context, mention_text
-    return False
 
 
 def _cosine(left: list[float], right: list[float]) -> float:

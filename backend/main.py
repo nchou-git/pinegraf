@@ -116,10 +116,6 @@ class ResetExtractionRequest(BaseModel):
     confirm: str
 
 
-class AdminLoginRequest(BaseModel):
-    password: str
-
-
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 
@@ -396,9 +392,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {"status": "archived"}
 
     @app.post("/admin/sources/{source_id}/crawl")
-    async def admin_source_crawl(
-        request: Request, source_id: uuid.UUID
-    ) -> dict[str, str]:
+    async def admin_source_crawl(request: Request, source_id: uuid.UUID) -> dict[str, str]:
         require_admin(request)
         source = _store(request).get_source(source_id)
         if source is None:
@@ -428,15 +422,11 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {"run_id": str(run_id), "status": "started"}
 
     @app.post("/admin/sources/{source_id}/parse")
-    async def admin_source_parse(
-        request: Request, source_id: uuid.UUID
-    ) -> dict[str, str]:
+    async def admin_source_parse(request: Request, source_id: uuid.UUID) -> dict[str, str]:
         require_admin(request)
         source = _store(request).get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
-        runs = _store(request).table_counts(["source_runs"])
-        del runs
         from sqlalchemy import select
 
         from backend.db.models import SourceRun
@@ -450,9 +440,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             ).scalar_one_or_none()
         if latest is None:
             raise HTTPException(status_code=400, detail="no source run to parse — crawl first")
-        asyncio.create_task(
-            run_full_pipeline(get_settings().workspace_slug, latest.id, store=_store(request))
-        )
+        asyncio.create_task(run_full_pipeline(latest.id, store=_store(request)))
         return {"run_id": str(latest.id), "status": "parsing"}
 
     @app.post("/admin/runs/sitemap")
@@ -507,9 +495,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         require_admin(request)
         if _store(request).get_source_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
-        asyncio.create_task(
-            run_full_pipeline(get_settings().workspace_slug, run_id, store=_store(request))
-        )
+        asyncio.create_task(run_full_pipeline(run_id, store=_store(request)))
         return {"run_id": str(run_id), "status": "started"}
 
     @app.get("/admin/runs/{run_id}/stream")
@@ -605,9 +591,7 @@ def _ensure_source(store: Store, source_id: uuid.UUID) -> None:
 
 
 def _admin_login_html(error: str | None) -> str:
-    error_block = (
-        f'<div class="login-error">{error}</div>' if error else ""
-    )
+    error_block = f'<div class="login-error">{error}</div>' if error else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -622,7 +606,10 @@ def _admin_login_html(error: str | None) -> str:
     <div class="login-card">
       <div class="login-brand">
         <svg width="36" height="36" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
-          <polygon points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14" fill="#00693E"/>
+          <polygon
+            points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
+            fill="#00693E"
+          />
           <rect x="18" y="32" width="4" height="4" fill="#00693E"/>
         </svg>
         <div>

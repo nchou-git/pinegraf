@@ -692,33 +692,23 @@ function drawGraph(data) {
   });
 }
 
-async function loadClaimForEdge(edge) {
+function loadClaimForEdge(edge) {
   const panel = byId("claim-panel");
-  panel.innerHTML = `<div class="muted small">Loading evidence…</div>`;
-  try {
-    const params = new URLSearchParams({
-      q: "",
-      page_size: "1",
-    });
-    void params;
-    const subject = edge.source.name || edge.source;
-    const object = edge.target.name || edge.target;
-    panel.innerHTML = `
-      <div class="claim-statement">
-        <span class="entity">${escapeHtml(subject)}</span>
-        <span class="predicate">${escapeHtml((edge.predicates || []).join(", "))}</span>
-        <span class="entity">${escapeHtml(object)}</span>
-      </div>
-      <div class="claim-meta">
-        <span><strong>${edge.evidence_count || 0}</strong> evidence rows</span>
-        <span>·</span>
-        <span>${Math.round((edge.confidence || 0) * 100)}% corroborated</span>
-      </div>
-      <div class="muted small">Click the names in this graph to drill into each entity.</div>
-    `;
-  } catch (e) {
-    panel.innerHTML = `<div class="muted small">Unable to load claim: ${escapeHtml(e.message)}</div>`;
-  }
+  const subject = edge.source.name || edge.source;
+  const object = edge.target.name || edge.target;
+  panel.innerHTML = `
+    <div class="claim-statement">
+      <span class="entity">${escapeHtml(subject)}</span>
+      <span class="predicate">${escapeHtml((edge.predicates || []).join(", "))}</span>
+      <span class="entity">${escapeHtml(object)}</span>
+    </div>
+    <div class="claim-meta">
+      <span><strong>${edge.evidence_count || 0}</strong> evidence rows</span>
+      <span>·</span>
+      <span>${Math.round((edge.confidence || 0) * 100)}% corroborated</span>
+    </div>
+    <div class="muted small">Click the names in this graph to drill into each entity.</div>
+  `;
 }
 
 /* ───── Sources ───── */

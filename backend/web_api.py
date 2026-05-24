@@ -348,9 +348,7 @@ def source_detail(store: Store, source_id: uuid.UUID) -> dict[str, object] | Non
                     "spec": run.spec,
                     "stats": run.stats,
                     "started_at": run.started_at.isoformat(),
-                    "finished_at": (
-                        run.finished_at.isoformat() if run.finished_at else None
-                    ),
+                    "finished_at": (run.finished_at.isoformat() if run.finished_at else None),
                     "error_message": run.error_message,
                     "triggered_by": run.triggered_by,
                 }
@@ -385,9 +383,7 @@ def list_source_documents(
             .where(SourceRun.source_id == source_id)
         ).scalar_one()
         rows = list(
-            session.execute(
-                base_query.offset((page - 1) * page_size).limit(page_size)
-            ).all()
+            session.execute(base_query.offset((page - 1) * page_size).limit(page_size)).all()
         )
         seen: set[uuid.UUID] = set()
         results = []
@@ -432,9 +428,7 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
         fetch = session.get(Fetch, document.first_seen_fetch_id)
         chunks = list(
             session.execute(
-                select(Chunk)
-                .where(Chunk.document_id == document.id)
-                .order_by(Chunk.ordinal.asc())
+                select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ordinal.asc())
             ).scalars()
         )
         claims_raw = list(
@@ -529,9 +523,7 @@ def update_source(
                 source.notes = note_body or None
             else:
                 source.notes = (
-                    f"status:{status}\n{note_body}".strip()
-                    if note_body
-                    else f"status:{status}"
+                    f"status:{status}\n{note_body}".strip() if note_body else f"status:{status}"
                 )
         if notes is not None and status is None:
             existing_status_line = ""
@@ -554,6 +546,7 @@ def admin_corpus_stats(store: Store) -> dict[str, int]:
         "claims": counts.get("claims", 0),
         "entities": counts.get("entities", 0),
         "sources": counts.get("sources", 0),
+        "source_runs": counts.get("source_runs", 0),
         "conflicts": counts.get("claim_conflicts", 0),
         "fetches": counts.get("fetches", 0),
         "chunks": counts.get("chunks", 0),

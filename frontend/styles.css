@@ -30,7 +30,6 @@
   --font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
-  --font-serif: ui-serif, Georgia, "Times New Roman", serif;
 }
 
 * {
@@ -66,9 +65,6 @@ a:hover {
 
 .muted {
   color: var(--text-muted);
-}
-.faint {
-  color: var(--text-faint);
 }
 .small {
   font-size: var(--fs-sm);
@@ -245,15 +241,6 @@ a:hover {
   background: var(--surface);
 }
 
-.btn-danger {
-  color: var(--conflict);
-  border-color: var(--conflict);
-  background: white;
-}
-.btn-danger:hover {
-  background: var(--conflict-bg);
-}
-
 /* ─── Forms ────────────────────────────────────────────────────────── */
 
 .input,
@@ -283,10 +270,6 @@ select:focus {
   border-color: var(--green);
   box-shadow: 0 0 0 3px var(--green-tint);
 }
-.input.has-value,
-input.has-value {
-  border-color: var(--green);
-}
 textarea {
   resize: vertical;
   min-height: 80px;
@@ -308,11 +291,6 @@ textarea {
   font-size: var(--fs-xs);
   color: var(--text-faint);
 }
-.field-error {
-  font-size: var(--fs-xs);
-  color: var(--conflict);
-}
-
 .input-with-icon {
   position: relative;
 }
@@ -789,47 +767,6 @@ textarea {
 .claim-meta strong {
   color: var(--text);
   font-weight: 400;
-}
-
-.evidence-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.evidence-item .evidence-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-  flex-wrap: wrap;
-}
-.evidence-source-badge {
-  font-size: var(--fs-xs);
-  padding: 2px 6px;
-  background: var(--green-tint);
-  color: var(--green);
-  border-radius: var(--radius-sm);
-  font-weight: 500;
-}
-.evidence-source-badge.verified {
-  background: var(--green);
-  color: white;
-}
-.evidence-url {
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.evidence-quote {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-  font-style: italic;
-  line-height: 1.5;
-  padding-left: 8px;
-  border-left: 2px solid var(--green);
-  font-family: var(--font-serif);
 }
 
 /* ─── Sources ──────────────────────────────────────────────────────── */

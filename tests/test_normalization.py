@@ -28,7 +28,7 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
         body_bytes=b"<html><title>One</title><main>Same body.</main></html>",
     )
 
-    monkeypatch.setattr(normalizer, "clean_html", lambda raw, content_type: ("Same body.", "One"))
+    monkeypatch.setattr(normalizer, "clean_html", lambda raw: ("Same body.", "One"))
     monkeypatch.setattr(normalizer, "detect_language", lambda text: "en")
     monkeypatch.setattr(normalizer, "chunk_text", lambda text: [Chunk(text=text, token_count=3)])
 

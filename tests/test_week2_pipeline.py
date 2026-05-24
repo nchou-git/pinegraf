@@ -73,7 +73,7 @@ async def test_full_pipeline_promotes_claims_and_builds_projections(store, monke
     )
 
     text = "Errik Anderson partnered with Daniella Reichstetter to license the invention."
-    monkeypatch.setattr(normalizer, "clean_html", lambda raw, content_type: (text, "Story"))
+    monkeypatch.setattr(normalizer, "clean_html", lambda raw: (text, "Story"))
     monkeypatch.setattr(normalizer, "detect_language", lambda value: "en")
     monkeypatch.setattr(normalizer, "chunk_text", lambda value: [Chunk(text=value, token_count=12)])
 
@@ -82,7 +82,7 @@ async def test_full_pipeline_promotes_claims_and_builds_projections(store, monke
 
     monkeypatch.setattr(normalizer, "embed_chunks", fake_embed)
 
-    rebuilt = await run_full_pipeline("tuck", run.id, store=store)
+    rebuilt = await run_full_pipeline(run.id, store=store)
 
     with store.session() as session:
         errik = session.execute(

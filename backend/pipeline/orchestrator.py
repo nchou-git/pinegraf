@@ -27,7 +27,6 @@ _SUBSCRIBERS: dict[uuid.UUID, list[asyncio.Queue[PipelineEvent]]] = defaultdict(
 
 
 async def run_full_pipeline(
-    workspace_id: str,
     source_run_id: uuid.UUID | str,
     *,
     store: Store,
@@ -42,22 +41,22 @@ async def run_full_pipeline(
         store.update_source_run(run_id, stats=stats)
 
         await _emit(run_id, PipelineEvent("extraction", "running", "Extracting claims", 35))
-        extractor_runs = await extract_pending(workspace_id, store=store)
+        extractor_runs = await extract_pending(store=store)
         stats["extractor_runs"] = [str(value) for value in extractor_runs]
         store.update_source_run(run_id, stats=stats)
 
         await _emit(run_id, PipelineEvent("resolution", "running", "Resolving mentions", 60))
-        touched.update(await resolve_pending(workspace_id, store=store))
+        touched.update(await resolve_pending(store=store))
         stats["resolved_entities"] = len(touched)
         store.update_source_run(run_id, stats=stats)
 
         await _emit(run_id, PipelineEvent("corroboration", "running", "Promoting claims", 80))
-        touched_claims = await corroborate_pending(workspace_id, store=store)
+        touched_claims = await corroborate_pending(store=store)
         stats["touched_claims"] = len(touched_claims)
         store.update_source_run(run_id, stats=stats)
 
         await _emit(run_id, PipelineEvent("projection", "running", "Rebuilding projections", 92))
-        rebuilt = await rebuild_projections(workspace_id, touched or None, store=store)
+        rebuilt = await rebuild_projections(touched or None, store=store)
         stats["projected_entities"] = len(rebuilt)
         store.update_source_run(run_id, stats=stats)
 

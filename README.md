@@ -1,6 +1,6 @@
 # Pinegraf
 
-Pinegraf is being rebuilt as a five-layer intelligence pipeline:
+Pinegraf is a five-layer intelligence pipeline:
 
 1. Ingestion: `sources`, `source_runs`, `fetches`
 2. Normalization: `documents`, `document_fetches`, `chunks`
@@ -8,10 +8,9 @@ Pinegraf is being rebuilt as a five-layer intelligence pipeline:
 4. Corroboration: entities, claims, evidence, conflicts, human signals
 5. Projection: entity summaries and neighborhoods
 
-Week 1 ships the foundation schema, Layer 1 ingestion runners, Layer 2
-normalization, and minimal admin endpoints. Extraction, resolution,
-corroboration logic, projections, and user-facing UI are intentionally not
-built yet.
+The current app includes ingestion runners, normalization, extraction,
+entity resolution, corroboration, projections, admin endpoints, and a plain
+HTML/JS UI.
 
 ## Setup
 

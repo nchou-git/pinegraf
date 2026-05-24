@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ID="pinegraf-prod"
-PROJECT_NUMBER="119418200766"
-BILLING_ACCOUNT="01D07B-2696F0-52D834"
-REGION="us-east4"
-INSTANCE_NAME="pinegraf-db"
-DATABASE_NAME="pinegraf"
-DB_USER="pinegraf_app"
+: "${PROJECT_ID:?Set PROJECT_ID}"
+: "${PROJECT_NUMBER:?Set PROJECT_NUMBER}"
+: "${BILLING_ACCOUNT:?Set BILLING_ACCOUNT}"
+
+REGION="${REGION:-us-east4}"
+INSTANCE_NAME="${INSTANCE_NAME:-pinegraf-db}"
+DATABASE_NAME="${DATABASE_NAME:-pinegraf}"
+DB_USER="${DB_USER:-pinegraf_app}"
 CONNECTION_NAME="${PROJECT_ID}:${REGION}:${INSTANCE_NAME}"
 SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
@@ -104,7 +105,6 @@ gcloud run deploy pinegraf \
   --max-instances=4 \
   --concurrency=80 \
   --timeout=300 \
-  --set-env-vars="USE_MOCK_FETCH=false,USE_MOCK_EXTRACT=false,USE_MOCK_QUERY=false" \
   --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,SITE_AUTH_USER=SITE_AUTH_USER:latest,SITE_AUTH_PASSWORD=SITE_AUTH_PASSWORD:latest,DATABASE_URL=DATABASE_URL:latest"
 
 SERVICE_URL="$(gcloud run services describe pinegraf \
@@ -124,5 +124,3 @@ gcloud billing budgets create \
   --threshold-rule=percent=0.9 \
   --threshold-rule=percent=1.0 \
   --filter-projects="projects/${PROJECT_NUMBER}"
-
-fly apps destroy pinegraf --yes

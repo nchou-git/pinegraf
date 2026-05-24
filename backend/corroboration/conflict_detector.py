@@ -17,11 +17,7 @@ SINGLE_VALUED_PREDICATES = {
 }
 
 
-def detect_conflicts(
-    store: Store,
-    touched_claim_ids: set[uuid.UUID] | None = None,
-) -> set[uuid.UUID]:
-    del touched_claim_ids
+def detect_conflicts(store: Store) -> set[uuid.UUID]:
     touched: set[uuid.UUID] = set()
     with store.session() as session:
         rows = list(
