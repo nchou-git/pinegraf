@@ -107,15 +107,6 @@ gcloud run deploy pinegraf \
   --timeout=300 \
   --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,SITE_AUTH_USER=SITE_AUTH_USER:latest,SITE_AUTH_PASSWORD=SITE_AUTH_PASSWORD:latest,DATABASE_URL=DATABASE_URL:latest"
 
-SERVICE_URL="$(gcloud run services describe pinegraf \
-  --region="${REGION}" \
-  --format='value(status.url)')"
-
-curl -fsS "${SERVICE_URL}/health"
-curl -i "${SERVICE_URL}/"
-
-gcloud run services logs read pinegraf --region="${REGION}" --limit=100
-
 gcloud billing budgets create \
   --billing-account="${BILLING_ACCOUNT}" \
   --display-name="Pinegraf demo budget" \
