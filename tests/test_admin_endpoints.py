@@ -60,5 +60,5 @@ def test_admin_auth_required_and_happy_paths(store, admin_headers, monkeypatch) 
 
         stats_response = client.get("/admin/stats", headers=admin_headers)
         assert stats_response.status_code == 200
-        assert stats_response.json()["sources"] == 3
+        assert stats_response.json()["sources"] == 1
         assert stats_response.json()["source_runs"] == 1

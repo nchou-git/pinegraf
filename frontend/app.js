@@ -19,7 +19,8 @@ const TAB_DEFS = [
 const SOURCE_KINDS = [
   {
     id: "domain",
-    label: "Sitemap",
+    kind: "domain",
+    label: "Webcrawl a sitemap",
     icon: "ti-world",
     description: "Crawl a public website via sitemap.xml.",
     fields: [
@@ -32,11 +33,69 @@ const SOURCE_KINDS = [
     ],
   },
   {
-    id: "file",
-    label: "Manual upload",
-    icon: "ti-upload",
-    description: "xlsx or csv seed file.",
-    fields: [{ name: "file", label: "File", type: "file", required: true }],
+    id: "structured-file",
+    kind: "file",
+    label: "Upload structured data",
+    icon: "ti-table-import",
+    description: "Upload xlsx or csv records.",
+    hint: "Spreadsheet rows become records. Columns become attributes.",
+    fields: [
+      {
+        name: "file",
+        label: "File (xlsx, csv)",
+        type: "file",
+        accept: ".xlsx,.csv",
+        required: true,
+      },
+    ],
+  },
+  {
+    id: "unstructured-file",
+    kind: "file",
+    label: "Upload unstructured data",
+    icon: "ti-file-text",
+    description: "Upload text, markdown, or pdf documents.",
+    hint: "Documents are chunked and extracted via the LLM pipeline.",
+    fields: [
+      {
+        name: "file",
+        label: "File (txt, pdf, md)",
+        type: "file",
+        accept: ".txt,.md,.pdf",
+        required: true,
+      },
+    ],
+  },
+];
+
+const STAT_CARDS = [
+  {
+    key: "documents",
+    label: "Documents",
+    ariaLabel: "What is a document?",
+    definition:
+      "Articles, files, or records fetched and cleaned. One xlsx row or one news article = one document.",
+  },
+  {
+    key: "claims",
+    label: "Claims",
+    ariaLabel: "What is a claim?",
+    definition:
+      "Structured statements extracted from documents. One document typically yields 5–30 claims.",
+  },
+  {
+    key: "entities",
+    label: "Entities",
+    ariaLabel: "What is an entity?",
+    definition:
+      "Distinct people, organizations, or projects that claims refer to. One person mentioned across 20 documents is still one entity.",
+  },
+  {
+    key: "sources",
+    label: "Sources",
+    ariaLabel: "What is a source?",
+    definition:
+      "Registered ingestion endpoints (files, sitemaps, APIs) that produce documents.",
   },
 ];
 
@@ -75,14 +134,12 @@ async function loadStats() {
 }
 
 function renderTopbar() {
+  ensureBrandHomeLink();
   const sub = document.getElementById("brand-sub");
   const workspaceName = state.me?.workspace?.display_name || "Workspace";
   const entityCount = state.stats?.entities || 0;
-  const peopleLine = entityCount > 0 ? `${workspaceName} · ${entityCount} people` : workspaceName;
-  const adminLink = state.me?.is_admin
-    ? `<a href="${escapeAttr(state.me.admin_logout_url || "/admin/logout")}" onclick="return adminLogout(event)">sign out</a>`
-    : `<a href="${escapeAttr(state.me?.admin_login_url || "/admin/login")}">admin sign-in</a>`;
-  sub.innerHTML = `<span>${escapeHtml(peopleLine)}</span><span>·</span>${adminLink}`;
+  const peopleLabel = entityCount === 1 ? "person" : "people";
+  sub.innerHTML = `<span>${escapeHtml(workspaceName)} · ${formatNumber(entityCount)} ${peopleLabel}</span>`;
 
   const tabs = TAB_DEFS;
   const nav = document.getElementById("nav-pills");
@@ -94,7 +151,63 @@ function renderTopbar() {
           `<a class="nav-pill ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}"><i class="ti ${tab.icon}" aria-hidden="true"></i>${escapeHtml(tab.label)}</a>`,
       )
       .join("") +
-    `<span class="avatar" title="${escapeAttr(state.me?.is_admin ? "admin" : "user")}">${state.me?.is_admin ? "AD" : "NC"}</span>`;
+    `<span class="user-menu-anchor">
+       <button class="avatar" id="user-avatar" type="button" aria-label="Open user menu" title="${escapeAttr(state.me?.is_admin ? "admin" : "user")}">${state.me?.is_admin ? "AD" : "NC"}</button>
+     </span>`;
+  byId("user-avatar").onclick = toggleUserMenu;
+}
+
+function ensureBrandHomeLink() {
+  const brand = document.querySelector(".brand");
+  if (!brand || brand.querySelector(".brand-home")) return;
+  const link = document.createElement("a");
+  link.className = "brand-home";
+  link.href = "#directory";
+  link.setAttribute("aria-label", "Go to Directory");
+  while (brand.firstChild) link.appendChild(brand.firstChild);
+  brand.appendChild(link);
+}
+
+function toggleUserMenu(event) {
+  event.stopPropagation();
+  const anchor = event.currentTarget.closest(".user-menu-anchor");
+  const existing = anchor.querySelector(".menu");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  document.querySelectorAll(".menu").forEach((menu) => menu.remove());
+  const workspaceName = state.me?.workspace?.display_name || "Workspace";
+  const menu = document.createElement("div");
+  menu.className = "menu user-menu";
+  menu.innerHTML = `
+    <div class="menu-header">Workspace: ${escapeHtml(workspaceName)}</div>
+    ${
+      state.me?.is_admin
+        ? `<button class="menu-item" data-act="admin-logout"><i class="ti ti-logout" aria-hidden="true"></i> Sign out of admin</button>`
+        : `<button class="menu-item" data-act="admin-login"><i class="ti ti-login" aria-hidden="true"></i> Sign in as admin</button>`
+    }
+  `;
+  anchor.appendChild(menu);
+  menu.querySelector("[data-act]").onclick = (clickEvent) => {
+    clickEvent.stopPropagation();
+    const action = clickEvent.currentTarget.dataset.act;
+    if (action === "admin-login") {
+      window.location.href = state.me?.admin_login_url || "/admin/login";
+      return;
+    }
+    adminLogout(clickEvent);
+  };
+  setTimeout(() => {
+    document.addEventListener(
+      "click",
+      function onAway() {
+        menu.remove();
+        document.removeEventListener("click", onAway);
+      },
+      { once: true },
+    );
+  }, 0);
 }
 
 function currentTab() {
@@ -122,25 +235,27 @@ function renderRoute() {
 async function renderDirectory() {
   const app = document.getElementById("app");
   app.innerHTML = `
-    <section class="toolbar">
-      <label class="input-with-icon">
-        <i class="ti ti-search icon" aria-hidden="true"></i>
-        <input id="dir-q" placeholder="Name" value="${escapeAttr(state.directoryFilters.q)}" />
-      </label>
-      <input id="dir-org" placeholder="Organization" value="${escapeAttr(state.directoryFilters.org)}" />
-      <input id="dir-class" placeholder="Class year" value="${escapeAttr(state.directoryFilters.class_year)}" />
-      <button class="btn-primary" id="dir-search">
-        <i class="ti ti-search" aria-hidden="true"></i> Search
-      </button>
-    </section>
-    <section class="chip-strip" id="chip-strip">
-      <span class="chip-strip-label">Sources</span>
-      <span class="chip-strip-label">Loading…</span>
-    </section>
-    <section class="results" id="results">
-      <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
-    </section>
-    <div class="pagination" id="pagination"></div>
+    <div class="page-content">
+      <section class="toolbar">
+        <label class="input-with-icon">
+          <i class="ti ti-search icon" aria-hidden="true"></i>
+          <input id="dir-q" placeholder="Name" value="${escapeAttr(state.directoryFilters.q)}" />
+        </label>
+        <input id="dir-org" placeholder="Organization" value="${escapeAttr(state.directoryFilters.org)}" />
+        <input id="dir-class" placeholder="Class year" value="${escapeAttr(state.directoryFilters.class_year)}" />
+        <button class="btn-primary" id="dir-search">
+          <i class="ti ti-search" aria-hidden="true"></i> Search
+        </button>
+      </section>
+      <section class="chip-strip" id="chip-strip">
+        <span class="chip-strip-label">Sources</span>
+        <span class="chip-strip-label">Loading…</span>
+      </section>
+      <section class="results" id="results">
+        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
+      </section>
+      <div class="pagination" id="pagination"></div>
+    </div>
   `;
   const onSearch = () => {
     state.directoryFilters = {
@@ -220,7 +335,7 @@ async function loadDirectory() {
       const entitiesTotal = state.stats?.entities || 0;
       results.innerHTML = entitiesTotal
         ? `<div class="empty-state"><i class="ti ti-search-off" aria-hidden="true"></i><div>No matches. Try a different name or organization.</div></div>`
-        : `<div class="empty-state"><i class="ti ti-database-off" aria-hidden="true"></i><div>No data yet. ${state.me?.is_admin ? "Go to <a href=\"#admin\">Admin</a> to run the pipeline." : "Sign in as admin to ingest sources."}</div></div>`;
+        : `<div class="empty-state"><i class="ti ti-database-off" aria-hidden="true"></i><div>No data yet. ${state.me?.is_admin ? "Go to <a href=\"#sources\">Sources</a> to add and ingest data." : "Sign in as admin to ingest sources."}</div></div>`;
       byId("pagination").innerHTML = "";
       return;
     }
@@ -423,15 +538,14 @@ async function renderGraph(entityId) {
   const app = document.getElementById("app");
   if (!entityId) {
     app.innerHTML = `
-      <section class="toolbar">
-        <label class="input-with-icon" style="grid-column: span 3">
-          <i class="ti ti-search icon" aria-hidden="true"></i>
+      <div class="graph-empty">
+        <h2>Open a graph view</h2>
+        <p class="muted">Find a person, organization, or project to see its connections.</p>
+        <div class="search-row">
           <input id="graph-search" placeholder="Search for a person, organization, or project" />
-        </label>
-        <button class="btn-primary" id="graph-search-go"><i class="ti ti-search" aria-hidden="true"></i> Find</button>
-      </section>
-      <div class="results" id="graph-results">
-        <div class="empty-state"><i class="ti ti-vector-triangle" aria-hidden="true"></i><div>Search above to open an entity's graph view.</div></div>
+          <button class="btn-primary" id="graph-search-go"><i class="ti ti-search" aria-hidden="true"></i> Find</button>
+        </div>
+        <div id="graph-results"></div>
       </div>
     `;
     const go = async () => {
@@ -694,21 +808,7 @@ async function renderSources(parts) {
        </div>`
     : "";
   app.innerHTML = `
-    <div class="stats-grid" id="sources-stats">
-      <div class="stat-card"><div class="label">Documents</div><div class="value">—</div></div>
-      <div class="stat-card"><div class="label">Claims</div><div class="value">—</div></div>
-      <div class="stat-card"><div class="label">Entities</div><div class="value">—</div></div>
-      <div class="stat-card"><div class="label">Sources</div><div class="value">—</div></div>
-    </div>
-    <details class="glossary">
-      <summary><i class="ti ti-info-circle"></i> What do these numbers mean?</summary>
-      <div class="glossary-body">
-        <p><span class="term">Documents</span> — articles, files, or records fetched and cleaned. One alumni-roster row or one news article equals one document.</p>
-        <p><span class="term">Claims</span> — structured statements extracted from documents. One document typically yields 5–30 claims.</p>
-        <p><span class="term">Entities</span> — distinct people, organizations, or projects that claims refer to. One person mentioned across 20 documents is still one entity.</p>
-        <p><span class="term">Sources</span> — registered ingestion endpoints (files, sitemaps, APIs) that produce documents.</p>
-      </div>
-    </details>
+    <div class="stats-grid" id="sources-stats">${statCards(state.stats || {})}</div>
     <div class="section-header">
       <div>
         <h1>Sources</h1>
@@ -735,6 +835,7 @@ async function renderSources(parts) {
     byId("add-source").onclick = openAddSourceModal;
     byId("run-pipeline").onclick = runFullPipeline;
   }
+  setupStatInfoButtons();
   await Promise.all([
     loadSourcesStats(),
     loadSourcesList(),
@@ -747,16 +848,48 @@ async function loadSourcesStats() {
   try {
     const stats = await getJSON("/api/stats");
     state.stats = stats;
-    statsGrid.innerHTML = `
-      <div class="stat-card"><div class="label">Documents</div><div class="value">${formatNumber(stats.documents)}</div></div>
-      <div class="stat-card"><div class="label">Claims</div><div class="value">${formatNumber(stats.claims)}</div></div>
-      <div class="stat-card"><div class="label">Entities</div><div class="value">${formatNumber(stats.entities)}</div></div>
-      <div class="stat-card"><div class="label">Sources</div><div class="value">${formatNumber(stats.sources)}</div></div>
-    `;
+    statsGrid.innerHTML = statCards(stats);
+    setupStatInfoButtons();
     renderTopbar();
   } catch (e) {
     statsGrid.innerHTML = `<div class="muted small">Unable to load stats: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function statCards(stats) {
+  return STAT_CARDS.map(
+    (card) => `
+      <div class="stat-card">
+        <div class="stat-card-head">
+          <div class="label">${escapeHtml(card.label)}</div>
+          <button class="stat-info" aria-label="${escapeAttr(card.ariaLabel)}" data-term="${escapeAttr(card.key)}"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
+        </div>
+        <div class="value">${formatNumber(stats?.[card.key])}</div>
+      </div>`,
+  ).join("");
+}
+
+function setupStatInfoButtons() {
+  document.querySelectorAll(".stat-info").forEach((button) => {
+    button.onclick = (event) => {
+      event.stopPropagation();
+      const card = button.closest(".stat-card");
+      const existing = card?.querySelector(".stat-tooltip");
+      closeStatTooltips();
+      if (!card || existing) return;
+      const def = STAT_CARDS.find((item) => item.key === button.dataset.term)?.definition;
+      if (!def) return;
+      const tooltip = document.createElement("div");
+      tooltip.className = "menu stat-tooltip";
+      tooltip.textContent = def;
+      card.appendChild(tooltip);
+      setTimeout(() => document.addEventListener("click", closeStatTooltips, { once: true }), 0);
+    };
+  });
+}
+
+function closeStatTooltips() {
+  document.querySelectorAll(".stat-tooltip").forEach((tooltip) => tooltip.remove());
 }
 
 async function loadSourcesList() {
@@ -771,7 +904,15 @@ async function loadSourcesList() {
       `${active.length} active · ${paused.length} paused · ${archived.length} archived`;
     const list = byId("sources-list");
     if (!sources.length) {
-      list.innerHTML = `<div class="empty-state"><i class="ti ti-database-off"></i><div>No sources yet.</div></div>`;
+      list.innerHTML = state.me?.is_admin
+        ? `<div class="empty-state">
+             <i class="ti ti-database-off" aria-hidden="true"></i>
+             <div>No sources yet. Click 'Add source' to add one.</div>
+             <button class="btn-primary" id="empty-add-source"><i class="ti ti-plus" aria-hidden="true"></i> Add source</button>
+           </div>`
+        : `<div class="empty-state"><i class="ti ti-database-off" aria-hidden="true"></i><div>No sources yet.</div></div>`;
+      const emptyAddSource = byId("empty-add-source");
+      if (emptyAddSource) emptyAddSource.onclick = openAddSourceModal;
       return;
     }
     list.innerHTML = sources
@@ -1207,12 +1348,12 @@ function openAddSourceModal() {
 
 function renderAddSourceModal() {
   const selected = SOURCE_KINDS.find((k) => k.id === modalKind) || SOURCE_KINDS[0];
-  const trustDefault = selected.id === "file" ? 0.95 : selected.id === "domain" ? 0.9 : 0.75;
+  const trustDefault = selected.kind === "file" ? 0.95 : 0.9;
   openModal(`
     <div class="modal-header">
       <div>
         <div class="modal-title">Add source</div>
-        <div class="modal-subtitle">Add a crawlable domain or upload a seed file.</div>
+        <div class="modal-subtitle">Add a crawlable sitemap or upload a file.</div>
       </div>
       <button class="modal-close" onclick="closeModal()" aria-label="Close">×</button>
     </div>
@@ -1242,7 +1383,7 @@ function renderAddSourceModal() {
           if (f.type === "file") {
             return `<label class="field">
                 <span class="field-label">${escapeHtml(f.label)}</span>
-                <input id="new-${f.name}" type="file" />
+                <input id="new-${f.name}" type="file" accept="${escapeAttr(f.accept || "")}" />
               </label>`;
           }
           return `<label class="field">
@@ -1251,6 +1392,7 @@ function renderAddSourceModal() {
             </label>`;
         })
         .join("")}
+      ${selected.hint ? `<div class="field-hint">${escapeHtml(selected.hint)}</div>` : ""}
       <label class="field">
         <span class="field-label">Trust weight</span>
         <input id="new-trust" type="number" step="0.05" min="0" max="1" value="${trustDefault}" />
@@ -1272,7 +1414,8 @@ function renderAddSourceModal() {
 }
 
 async function submitAddSource() {
-  const kind = modalKind;
+  const selected = SOURCE_KINDS.find((k) => k.id === modalKind) || SOURCE_KINDS[0];
+  const kind = selected.kind;
   const display_name = byId("new-name").value.trim();
   const trust = Number(byId("new-trust").value || 0.75);
   if (!display_name) {
@@ -1316,7 +1459,7 @@ async function submitAddSource() {
     }
     closeModal();
     toast("Source added.", "success");
-    loadSourcesList();
+    await Promise.all([loadSourcesStats(), loadSourcesList()]);
   } catch (e) {
     toast(`Add failed: ${e.message}`, "error");
   }
@@ -1490,4 +1633,3 @@ function timeAgo(iso) {
 
 window.closeModal = closeModal;
 window.closeModalOnBackdrop = closeModalOnBackdrop;
-window.adminLogout = adminLogout;

@@ -43,22 +43,7 @@ SCHEMA_TABLES = [
     "entity_neighborhood",
 ]
 
-INITIAL_SOURCES = [
-    {
-        "kind": "domain",
-        "identifier": "tuck.dartmouth.edu",
-        "trust_weight": 0.9,
-        "display_name": "Tuck School news + alumni",
-        "notes": None,
-    },
-    {
-        "kind": "file",
-        "identifier": "alum_data.xlsx",
-        "trust_weight": 1.0,
-        "display_name": "Curated alumni roster",
-        "notes": None,
-    },
-]
+INITIAL_SOURCES = []
 
 
 def utc_now() -> datetime:
