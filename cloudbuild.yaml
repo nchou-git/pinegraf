@@ -1,0 +1,15 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - -t
+      - us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID
+      - -t
+      - us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:latest
+      - .
+  - name: "gcr.io/cloud-builders/docker"
+    args: [push, us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID]
+  - name: "gcr.io/cloud-builders/docker"
+    args: [push, us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:latest]
+options:
+  logging: CLOUD_LOGGING_ONLY
