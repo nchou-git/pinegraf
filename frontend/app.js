@@ -25,29 +25,50 @@ const SOURCE_KINDS = [
   {
     id: "domain",
     kind: "domain",
-    label: "Webcrawl a sitemap",
+    label: "Sitemap",
     icon: "ti-world",
     description: "Crawl a public website via sitemap.xml.",
     fields: [
       {
         name: "identifier",
-        label: "Domain or sitemap URL",
+        label: "URL or domain",
         placeholder: "tuck.dartmouth.edu",
         required: true,
       },
     ],
   },
   {
-    id: "file",
+    id: "dataset",
     kind: "file",
-    label: "Upload a file",
-    icon: "ti-upload",
-    description: "Upload a source file.",
+    format: "dataset",
+    label: "Dataset",
+    icon: "ti-table",
+    description: "Structured records. Rows become entities.",
+    hint: "Structured records. Rows become entities.",
     fields: [
       {
         name: "file",
-        label: "File",
+        label: "Dataset file",
         type: "file",
+        accept: ".xlsx,.csv,.json,.tsv",
+        required: true,
+      },
+    ],
+  },
+  {
+    id: "text",
+    kind: "file",
+    format: "text",
+    label: "General Text",
+    icon: "ti-file-text",
+    description: "Unstructured. Chunked and extracted by the LLM pipeline.",
+    hint: "Unstructured. Chunked and extracted by the LLM pipeline.",
+    fields: [
+      {
+        name: "file",
+        label: "Text file",
+        type: "file",
+        accept: ".txt,.md,.pdf,.html",
         required: true,
       },
     ],
@@ -1968,7 +1989,8 @@ function renderAddSourceModal() {
           if (f.type === "file") {
             return `<label class="field">
                 <span class="field-label">${escapeHtml(f.label)}</span>
-                <input id="new-${f.name}" type="file" />
+                <input id="new-${f.name}" type="file" ${f.accept ? `accept="${escapeAttr(f.accept)}"` : ""} />
+                ${selected.hint ? `<span class="field-hint">${escapeHtml(selected.hint)}</span>` : ""}
               </label>`;
           }
           return `<label class="field">
@@ -2009,6 +2031,7 @@ async function submitAddSource() {
       }
       const form = new FormData();
       form.append("display_name", display_name);
+      if (selected.format) form.append("notes", `format:${selected.format}`);
       form.append("file", input.files[0]);
       const res = await fetch("/admin/sources/upload", { method: "POST", body: form });
       if (!res.ok) throw new Error(`${res.status}`);
@@ -2022,6 +2045,7 @@ async function submitAddSource() {
         kind,
         identifier,
         display_name,
+        notes: selected.format ? `format:${selected.format}` : null,
       };
       const res = await fetch("/admin/sources", {
         method: "POST",
