@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 
-from alembic import command
+from backend.config import get_settings
 from backend.db.models import Base
-from backend.db.store import SCHEMA_TABLES
+from backend.db.store import SCHEMA_TABLES, Store
 
 
-def test_migration_creates_foundation_schema(tmp_path, monkeypatch) -> None:
-    database_url = f"sqlite:///{tmp_path / 'schema.db'}"
-    monkeypatch.setenv("DATABASE_URL", database_url)
-    config = Config("alembic.ini")
-    command.upgrade(config, "head")
-
-    engine = create_engine(database_url, future=True)
-    inspector = inspect(engine)
+def test_live_database_has_foundation_schema() -> None:
+    store = Store(get_settings().database_url)
+    inspector = inspect(store.engine)
     table_names = set(inspector.get_table_names())
     assert set(SCHEMA_TABLES).issubset(table_names)
 

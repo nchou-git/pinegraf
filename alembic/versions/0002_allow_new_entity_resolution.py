@@ -19,12 +19,26 @@ OLD_CHECK = "resolution_method in ('exact_match','alias','embedding','llm','huma
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("entity_mentions") as batch_op:
-        batch_op.drop_constraint("ck_entity_mentions_resolution_method", type_="check")
-        batch_op.create_check_constraint("ck_entity_mentions_resolution_method", NEW_CHECK)
+    op.drop_constraint(
+        "ck_entity_mentions_resolution_method",
+        "entity_mentions",
+        type_="check",
+    )
+    op.create_check_constraint(
+        "ck_entity_mentions_resolution_method",
+        "entity_mentions",
+        NEW_CHECK,
+    )
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("entity_mentions") as batch_op:
-        batch_op.drop_constraint("ck_entity_mentions_resolution_method", type_="check")
-        batch_op.create_check_constraint("ck_entity_mentions_resolution_method", OLD_CHECK)
+    op.drop_constraint(
+        "ck_entity_mentions_resolution_method",
+        "entity_mentions",
+        type_="check",
+    )
+    op.create_check_constraint(
+        "ck_entity_mentions_resolution_method",
+        "entity_mentions",
+        OLD_CHECK,
+    )

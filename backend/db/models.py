@@ -20,11 +20,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.types import JSON
 
-JSONDict = JSONB().with_variant(JSON(), "sqlite")
-EmbeddingVector = Vector(1536).with_variant(JSON(), "sqlite")
-TextArray = ARRAY(Text()).with_variant(JSON(), "sqlite")
+JSONDict = JSONB()
+EmbeddingVector = Vector(1536)
+TextArray = ARRAY(Text())
 
 
 class Base(DeclarativeBase):

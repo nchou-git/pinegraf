@@ -5,9 +5,10 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
+from sqlalchemy import text
 
 from backend.config import get_settings
-from backend.db.store import Store
+from backend.db.store import SCHEMA_TABLES, Store
 from backend.ingestion import fetcher
 
 
@@ -57,10 +58,17 @@ def isolated_settings(monkeypatch) -> Iterator[None]:
 
 
 @pytest.fixture
-def store(tmp_path) -> Iterator[Store]:
-    db = Store(f"sqlite:///{tmp_path / 'pinegraf-test.db'}")
-    db.create_schema()
+def store() -> Iterator[Store]:
+    db = Store()
+    clean_store(db)
     yield db
+    clean_store(db)
+
+
+def clean_store(store: Store) -> None:
+    tables = ", ".join(f'"{table}"' for table in SCHEMA_TABLES)
+    with store.engine.begin() as connection:
+        connection.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture

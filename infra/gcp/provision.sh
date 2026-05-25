@@ -11,6 +11,7 @@ DATABASE_NAME="${DATABASE_NAME:-pinegraf}"
 DB_USER="${DB_USER:-pinegraf_app}"
 CONNECTION_NAME="${PROJECT_ID}:${REGION}:${INSTANCE_NAME}"
 SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+DEV_IP="$(curl -fsS https://api.ipify.org || true)"
 
 gcloud config set project "${PROJECT_ID}"
 
@@ -25,6 +26,7 @@ gcloud sql instances create "${INSTANCE_NAME}" \
   --backup-start-time=07:00 \
   --backup \
   --enable-point-in-time-recovery \
+  ${DEV_IP:+--authorized-networks="${DEV_IP}/32"} \
   --database-flags=cloudsql.iam_authentication=on
 
 gcloud sql instances describe "${INSTANCE_NAME}" --format="value(state)"
@@ -41,25 +43,16 @@ echo -n "${PASSWORD}" | gcloud secrets create DB_PASSWORD \
   --data-file=- \
   --replication-policy=automatic
 
-curl -L \
-  https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.13.0/cloud-sql-proxy.linux.amd64 \
-  -o "${HOME}/cloud-sql-proxy"
-chmod +x "${HOME}/cloud-sql-proxy"
-
-"${HOME}/cloud-sql-proxy" "${CONNECTION_NAME}" --port 5433 &
-PROXY_PID="$!"
-sleep 3
+INSTANCE_IP="$(gcloud sql instances describe "${INSTANCE_NAME}" --format="value(ipAddresses[0].ipAddress)")"
 
 PGPASSWORD="$(gcloud secrets versions access latest --secret=DB_PASSWORD)" \
-  psql "host=127.0.0.1 port=5433 user=${DB_USER} dbname=${DATABASE_NAME}" \
+  psql "host=${INSTANCE_IP} port=5432 user=${DB_USER} dbname=${DATABASE_NAME} sslmode=require" \
   -v ON_ERROR_STOP=1 \
   -c "CREATE EXTENSION IF NOT EXISTS vector;" \
   -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" \
   -c "\\dx"
 
-kill "${PROXY_PID}"
-
-DATABASE_URL="postgresql+psycopg://${DB_USER}:${PASSWORD}@/${DATABASE_NAME}?host=/cloudsql/${CONNECTION_NAME}"
+DATABASE_URL="postgresql+psycopg://${DB_USER}:${PASSWORD}@${INSTANCE_IP}:5432/${DATABASE_NAME}?sslmode=require"
 
 echo -n "${DATABASE_URL}" | gcloud secrets create DATABASE_URL \
   --data-file=- \
@@ -98,14 +91,13 @@ gcloud run deploy pinegraf \
   --region="${REGION}" \
   --platform=managed \
   --allow-unauthenticated \
-  --add-cloudsql-instances="${CONNECTION_NAME}" \
   --memory=1Gi \
   --cpu=1 \
   --min-instances=0 \
   --max-instances=4 \
   --concurrency=80 \
   --timeout=300 \
-  --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,DATABASE_URL=DATABASE_URL:latest"
+  --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,DATABASE_URL=DATABASE_URL:latest,DB_PASSWORD=DB_PASSWORD:latest"
 
 gcloud billing budgets create \
   --billing-account="${BILLING_ACCOUNT}" \

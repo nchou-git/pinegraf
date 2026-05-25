@@ -13,7 +13,7 @@ load_dotenv()
 class Settings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    database_url: str = Field(default="sqlite:///./pinegraf.db")
+    database_url: str
     openai_api_key: str = Field(default="")
 
     pinegraf_admin_password: str = Field(default="Pinegrafposen$")
@@ -49,8 +49,11 @@ def get_settings() -> Settings:
         admin_secret = os.getenv("ADMIN_SESSION_SECRET", "")
         if not admin_secret:
             admin_secret = secrets_mod.token_urlsafe(48)
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            raise RuntimeError("DATABASE_URL is required")
         return Settings(
-            database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
+            database_url=database_url,
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$"),
             admin_session_secret=admin_secret,

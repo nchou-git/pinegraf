@@ -6,8 +6,7 @@ from structured rows or raw-page RAG.
 
 ## Stack
 
-- Python 3.11+, FastAPI, SQLAlchemy 2.x, Alembic, Postgres 14+ for production,
-  SQLite for local tests, pytest.
+- Python 3.11+, FastAPI, SQLAlchemy 2.x, Alembic, Cloud SQL Postgres, pytest.
 - OpenAI Python SDK; use mock clients in tests.
 - `httpx` async crawler with `trafilatura`/`langdetect` normalization, plain
   HTML/JS frontend served by FastAPI.
@@ -49,7 +48,6 @@ from structured rows or raw-page RAG.
 ## Commands
 
 - Install: `pip install -e .`
-- Start local Postgres: `docker compose up -d postgres`
 - Migrate: `alembic upgrade head`
 - Run dev server: `uvicorn backend.main:app --reload`
 - Test: `pytest -v`
@@ -58,5 +56,5 @@ from structured rows or raw-page RAG.
 
 - Do not add Next.js, React, or any heavy frontend framework. Plain HTML/JS only.
 - Do not scrape LinkedIn directly.
-- Do not commit `.env`, `*.db`, `*.egg-info/`, `.ruff_cache/`, `.codex/`,
+- Do not commit `.env`, `*.egg-info/`, `.ruff_cache/`, `.codex/`,
   `__pycache__/`, `.pytest_cache/`, `.venv/`, or generated eval output.

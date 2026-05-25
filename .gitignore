@@ -1,6 +1,5 @@
 __pycache__/
 *.py[cod]
-*.db
 .env
 .env.*
 .gcp-secrets-staging

@@ -4,13 +4,11 @@ import hashlib
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from typing import Any
 
-from sqlalchemy import create_engine, event, func, inspect, select
+from sqlalchemy import create_engine, func, inspect, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend.config import get_settings
 from backend.db.models import (
@@ -55,25 +53,7 @@ def content_digest(body: bytes) -> bytes:
 
 
 def create_engine_for_url(database_url: str) -> Engine:
-    connect_args: dict[str, object] = {}
-    engine_kwargs: dict[str, object] = {"future": True}
-    if database_url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
-        if database_url in {"sqlite://", "sqlite:///:memory:"}:
-            engine_kwargs["poolclass"] = StaticPool
-    engine = create_engine(database_url, connect_args=connect_args, **engine_kwargs)
-    if engine.dialect.name == "sqlite":
-        install_sqlite_foreign_keys(engine)
-    return engine
-
-
-def install_sqlite_foreign_keys(engine: Engine) -> None:
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection: Any, connection_record: object) -> None:
-        del connection_record
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    return create_engine(database_url, future=True)
 
 
 class Store:
