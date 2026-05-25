@@ -38,7 +38,7 @@ class SiteAuthMiddleware(BaseHTTPMiddleware):
         settings = get_settings()
         expected_password = settings.site_auth_password
         if not expected_password:
-            return PlainTextResponse("site auth is not configured", status_code=503)
+            return await call_next(request)
 
         credentials = basic_credentials(request.headers.get("authorization"))
         if credentials is None:

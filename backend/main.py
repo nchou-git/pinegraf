@@ -117,23 +117,29 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.post("/admin/login", response_model=None)
     async def admin_login_submit(request: Request):
         content_type = request.headers.get("content-type", "")
+        username = ""
         password = ""
         next_url = "/"
         if "application/json" in content_type:
             data = await request.json()
+            username = str(data.get("username", ""))
             password = str(data.get("password", ""))
             next_url = str(data.get("next", "/"))
         else:
             form = await request.form()
+            username = str(form.get("username", ""))
             password = str(form.get("password", ""))
             next_url = str(form.get("next", "/"))
         if not next_url.startswith("/"):
             next_url = "/"
         settings = get_settings()
+        expected_user = settings.site_auth_user or "pinegraf"
         expected = settings.pinegraf_admin_password or ""
-        if not expected or not secrets.compare_digest(password, expected):
+        user_ok = not username or secrets.compare_digest(username, expected_user)
+        password_ok = bool(expected) and secrets.compare_digest(password, expected)
+        if not (user_ok and password_ok):
             return HTMLResponse(
-                _admin_login_html(error="Wrong password."),
+                _admin_login_html(error="Wrong username or password."),
                 status_code=401,
             )
         token = issue(user="admin")
@@ -439,15 +445,16 @@ def _admin_login_html(error: str | None) -> str:
       {error_block}
       <form method="post" action="/admin/login" class="login-form">
         <label class="field">
+          <span>Admin username</span>
+          <input name="username" autocomplete="username" autofocus required />
+        </label>
+        <label class="field">
           <span>Admin password</span>
-          <input name="password" type="password" autofocus required />
+          <input name="password" type="password" autocomplete="current-password" required />
         </label>
         <input type="hidden" name="next" value="/" />
         <button type="submit" class="btn-primary">Sign in</button>
       </form>
-      <p class="muted small">
-        This is a separate password from the site-wide sign-in.
-      </p>
     </div>
   </main>
 </body>
