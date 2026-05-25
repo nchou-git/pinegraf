@@ -85,6 +85,28 @@ def _slugify(value: str) -> str:
     return SLUG_PATTERN.sub("-", value.strip().lower()).strip("-") or "source"
 
 
+async def _store_upload(
+    file: UploadFile,
+    *,
+    display_name: str,
+    uploads_dir: str,
+    validate_extension: bool,
+) -> tuple[str, str, bytes]:
+    os.makedirs(uploads_dir, exist_ok=True)
+    original_name = file.filename or "upload.bin"
+    suffix = Path(original_name).suffix
+    if validate_extension and suffix.lower() not in FILE_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="file type not supported")
+    slug = _slugify(Path(original_name).stem)
+    unique = hashlib.sha256(
+        f"{display_name}|{original_name}|{uuid.uuid4()}".encode("utf-8")
+    ).hexdigest()[:8]
+    stored_name = f"{slug}-{unique}{suffix}"
+    body = await file.read()
+    (Path(uploads_dir) / stored_name).write_bytes(body)
+    return stored_name, original_name, body
+
+
 def create_app(store: Store | None = None) -> FastAPI:
     app_store = store or Store()
     install_log_handler()
@@ -315,17 +337,12 @@ def create_app(store: Store | None = None) -> FastAPI:
     ) -> dict[str, object]:
         require_admin(request)
         settings = get_settings()
-        os.makedirs(settings.uploads_dir, exist_ok=True)
-        original_name = file.filename or "upload.bin"
-        slug = _slugify(Path(original_name).stem)
-        suffix = Path(original_name).suffix
-        unique = hashlib.sha256(
-            f"{display_name}|{original_name}|{uuid.uuid4()}".encode("utf-8")
-        ).hexdigest()[:8]
-        stored_name = f"{slug}-{unique}{suffix}"
-        path = Path(settings.uploads_dir) / stored_name
-        body = await file.read()
-        path.write_bytes(body)
+        stored_name, original_name, body = await _store_upload(
+            file,
+            display_name=display_name,
+            uploads_dir=settings.uploads_dir,
+            validate_extension=False,
+        )
         source = _store(request).upsert_source(
             kind="file",
             identifier=stored_name,
@@ -354,22 +371,13 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="source is not a file kind")
 
         settings = get_settings()
-        os.makedirs(settings.uploads_dir, exist_ok=True)
-        original_name = file.filename or "upload.bin"
-        suffix = Path(original_name).suffix
-        if suffix.lower() not in FILE_UPLOAD_EXTENSIONS:
-            raise HTTPException(status_code=400, detail="file type not supported")
-
-        slug = _slugify(Path(original_name).stem)
-        unique = hashlib.sha256(
-            f"{source.display_name or source.identifier}|{original_name}|{uuid.uuid4()}".encode(
-                "utf-8"
-            )
-        ).hexdigest()[:8]
-        stored_name = f"{slug}-{unique}{suffix}"
+        stored_name, _, _ = await _store_upload(
+            file,
+            display_name=source.display_name or source.identifier,
+            uploads_dir=settings.uploads_dir,
+            validate_extension=True,
+        )
         path = Path(settings.uploads_dir) / stored_name
-        body = await file.read()
-        path.write_bytes(body)
 
         from backend.db.models import Source
 

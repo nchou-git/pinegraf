@@ -114,24 +114,20 @@
   border-color: var(--conflict-bg);
 }
 
-.btn-icon-only,
-.btn-source.icon-only,
-.btn-secondary.icon-only {
+.btn-icon-only {
   width: var(--button-h-small);
   height: var(--button-h-small);
   padding: 0;
 }
 
-.btn-icon-only,
-.btn-source.icon-only {
+.btn-icon-only {
   background-color: var(--bg);
   color: var(--text-muted);
   border-color: var(--line);
   font-weight: 400;
 }
 
-.btn-icon-only:hover,
-.btn-source.icon-only:hover {
+.btn-icon-only:hover {
   background-color: var(--surface);
   color: var(--text);
 }
@@ -275,13 +271,6 @@ input[type="file"]::file-selector-button {
   background-color: var(--surface);
 }
 
-.chip.active {
-  background-color: var(--green);
-  color: var(--bg);
-  border-color: var(--green);
-  font-weight: 500;
-}
-
 .source-badge,
 .status-pill,
 .conflict-pill {
@@ -361,10 +350,6 @@ input[type="file"]::file-selector-button {
 
 .menu-item:hover {
   background-color: var(--surface);
-}
-
-.menu-item.danger {
-  color: var(--conflict);
 }
 
 .menu-header {
@@ -486,11 +471,6 @@ input[type="file"]::file-selector-button {
   color: var(--green);
   font-size: var(--fs-xs);
   font-weight: 500;
-}
-
-.avatar-circle.compact {
-  width: var(--button-h-small);
-  height: var(--button-h-small);
 }
 
 /* Modals */

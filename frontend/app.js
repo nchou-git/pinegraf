@@ -755,7 +755,7 @@ function directoryTableRow(row) {
     <tr class="directory-table-row" data-entity-id="${escapeAttr(row.entity_id)}">
       <td>
         <div class="directory-name-cell">
-          <div class="avatar-circle compact">${escapeHtml(initials || "??")}</div>
+          <div class="avatar-circle">${escapeHtml(initials || "??")}</div>
           <div>
             <div class="directory-person-name">${escapeHtml(row.canonical_name || "Unknown")}</div>
             <div class="directory-person-sub">${attrs.class_year ? `T'${escapeHtml(String(attrs.class_year).replace(/^T'?/, ""))}` : escapeHtml(capitalize(row.kind || "entity"))}</div>
@@ -2392,7 +2392,7 @@ function renderSourceConfig(detail) {
     byId("cfg-save").onclick = async () => {
       const body = {
         display_name: byId("cfg-name").value.trim() || null,
-        notes: buildSourceNotes(detail, byId("cfg-notes").value.trim()),
+        notes: byId("cfg-notes").value.trim() || null,
       };
       await patchSource(detail.id, body);
       renderSourceDetail(detail.id, "config");
@@ -2406,10 +2406,6 @@ function stripSourceMetaLines(notes) {
     .filter((line) => !line.startsWith("status:"))
     .join("\n")
     .trim();
-}
-
-function buildSourceNotes(_source, userNotes) {
-  return userNotes || null;
 }
 
 /* ───── Add source modal ───── */
