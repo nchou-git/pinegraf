@@ -8,6 +8,7 @@ const state = {
   directoryRows: [],
   directoryOptionRows: [],
   sourcesCache: null,
+  askHistory: JSON.parse(sessionStorage.getItem("pinegraf.askHistory") || "[]"),
   sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
 };
 
@@ -832,29 +833,46 @@ function renderPagination(page, totalPages) {
 function renderAsk() {
   setPageHeader({
     title: "Ask",
-    subtitle: "Query extracted people, projects, organizations, and source evidence.",
+    subtitle: "Run focused questions against the extracted graph and source evidence.",
   });
   const app = document.getElementById("app");
   app.innerHTML = `
-    <section class="ask-question-box">
-      <i class="ti ti-message-question icon" aria-hidden="true"></i>
-      <textarea id="ask-input" placeholder="Ask about people, projects, or organizations…" rows="1"></textarea>
-      <button class="btn-primary" id="ask-submit"><i class="ti ti-send" aria-hidden="true"></i> Ask</button>
-    </section>
-    <div id="ask-result"></div>
+    <div class="ask-tool">
+      <section class="ask-input-panel">
+        <div class="ask-command">
+          <input id="ask-input" placeholder="Ask about people, projects, or organizations" />
+          <button class="btn-primary" id="ask-submit"><i class="ti ti-send" aria-hidden="true"></i> Run</button>
+        </div>
+        <div class="ask-examples">
+          ${[
+            "Tuck alums in healthcare",
+            "Who founded Gyrobike?",
+            "Show me PE alums class of 2010-2015",
+          ]
+            .map((query) => `<button class="ask-example" type="button">${escapeHtml(query)}</button>`)
+            .join("")}
+        </div>
+      </section>
+      <section class="ask-live-result" id="ask-result" hidden></section>
+      <section class="recent-questions" id="recent-questions"></section>
+    </div>
+    <aside class="side-drawer" id="ask-side-drawer" hidden></aside>
   `;
   const input = byId("ask-input");
-  input.addEventListener("input", () => {
-    input.style.height = "auto";
-    input.style.height = `${input.scrollHeight}px`;
-  });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter") {
       e.preventDefault();
       ask();
     }
   });
   byId("ask-submit").onclick = ask;
+  document.querySelectorAll(".ask-example").forEach((button) => {
+    button.onclick = () => {
+      input.value = button.textContent.trim();
+      input.focus();
+    };
+  });
+  renderRecentQuestions();
   input.focus();
 }
 
@@ -862,13 +880,15 @@ async function ask() {
   const input = byId("ask-input");
   const question = input.value.trim();
   if (!question) return;
+  rememberQuestion(question);
   const result = byId("ask-result");
+  result.hidden = false;
   result.innerHTML = `
     <div class="ask-answer">
-      <div class="ask-answer-label"><i class="ti ti-sparkles" aria-hidden="true"></i><span>Answer</span></div>
+      <div class="ask-answer-label">Answer</div>
       <div class="ask-answer-text" id="answer-text"><span class="muted">Thinking…</span></div>
     </div>
-    <div class="ask-citations" id="ask-citations-wrap" style="display:none">
+    <div class="ask-citations" id="ask-citations-wrap">
       <div class="ask-citations-label">Sources</div>
       <div id="ask-citations"></div>
     </div>
@@ -915,21 +935,96 @@ async function ask() {
   }
 }
 
+function rememberQuestion(question) {
+  const key = question.toLowerCase();
+  state.askHistory = [
+    question,
+    ...state.askHistory.filter((item) => item.toLowerCase() !== key),
+  ].slice(0, 5);
+  sessionStorage.setItem("pinegraf.askHistory", JSON.stringify(state.askHistory));
+  renderRecentQuestions();
+}
+
+function renderRecentQuestions() {
+  const root = byId("recent-questions");
+  if (!root) return;
+  if (!state.askHistory.length) {
+    root.innerHTML = "";
+    return;
+  }
+  root.innerHTML = `
+    <div class="recent-questions-title">Recent questions</div>
+    <div class="recent-question-list">
+      ${state.askHistory
+        .map(
+          (question) => `
+          <button class="recent-question" type="button">${escapeHtml(question)}</button>`,
+        )
+        .join("")}
+    </div>
+  `;
+  root.querySelectorAll(".recent-question").forEach((button) => {
+    button.onclick = () => {
+      byId("ask-input").value = button.textContent.trim();
+      ask();
+    };
+  });
+}
+
 function renderCitations(citations) {
-  if (!citations.length) return;
   const wrap = byId("ask-citations-wrap");
   const list = byId("ask-citations");
-  wrap.style.display = "";
+  if (!citations.length) {
+    list.innerHTML = `<div class="ask-citations-empty">Answered from corpus-level patterns, no specific citations.</div>`;
+    return;
+  }
   list.innerHTML = citations
     .map(
       (c, i) => `
-      <div class="ask-citation">
-        <span class="num">[${i + 1}]</span>
-        <span class="muted small">${escapeHtml(c.quote || c.source_id || "source")}</span>
-        <i class="ti ti-external-link" aria-hidden="true"></i>
-      </div>`,
+      <button class="ask-citation-card" type="button" data-citation-index="${i}">
+        <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
+        <strong>${escapeHtml(c.title || c.source_title || `Source ${i + 1}`)}</strong>
+        <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
+      </button>`,
     )
     .join("");
+  list.querySelectorAll("[data-citation-index]").forEach((button) => {
+    button.onclick = () => openCitationDrawer(citations[Number(button.dataset.citationIndex)] || {});
+  });
+}
+
+function openCitationDrawer(citation) {
+  const drawer = byId("ask-side-drawer");
+  drawer.hidden = false;
+  drawer.innerHTML = `
+    <div class="side-drawer-header">
+      <div>
+        <div class="side-drawer-title">${escapeHtml(citation.title || citation.source_title || "Source")}</div>
+        <div class="side-drawer-subtitle">${escapeHtml(citation.source_id || citation.claim_id || "Citation")}</div>
+      </div>
+      <button class="modal-close" type="button" onclick="closeSideDrawer()" aria-label="Close">×</button>
+    </div>
+    <div class="side-drawer-body">
+      <div class="field-label">Snippet</div>
+      <blockquote>${escapeHtml(citation.quote || "No snippet returned for this citation.")}</blockquote>
+      <div class="field-label">Source reference</div>
+      <div class="side-drawer-meta">${escapeHtml(citation.source_id || "No source id returned.")}</div>
+      ${
+        citation.document_id
+          ? `<button class="btn-secondary" type="button" data-document-id="${escapeAttr(citation.document_id)}"><i class="ti ti-file-text" aria-hidden="true"></i> Open document</button>`
+          : `<div class="muted small">The current API response does not include a document id for this citation.</div>`
+      }
+    </div>
+  `;
+  const documentButton = drawer.querySelector("[data-document-id]");
+  if (documentButton) {
+    documentButton.onclick = () => openDocumentModal(documentButton.dataset.documentId);
+  }
+}
+
+function closeSideDrawer() {
+  const drawer = byId("ask-side-drawer");
+  if (drawer) drawer.hidden = true;
 }
 
 /* ───── Graph ───── */
@@ -2007,3 +2102,4 @@ function timeAgo(iso) {
 window.closeModal = closeModal;
 window.closeModalOnBackdrop = closeModalOnBackdrop;
 window.resetDirectoryFilters = resetDirectoryFilters;
+window.closeSideDrawer = closeSideDrawer;
