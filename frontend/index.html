@@ -17,29 +17,49 @@
     <script src="/app.js?v=43927ff" defer></script>
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <svg
-          width="26"
-          height="26"
-          viewBox="0 0 40 40"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <polygon
-            points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
-            fill="#00693E"
-          />
-          <rect x="18" y="32" width="4" height="4" fill="#00693E" />
-        </svg>
-        <div class="brand-text">
-          <div class="wordmark">Pinegraf</div>
-          <div class="brand-sub" id="brand-sub">Loading…</div>
+    <div class="shell" id="shell">
+      <aside class="sidebar" id="sidebar">
+        <a class="sidebar-brand" href="#directory" aria-label="Go to Directory">
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 40 40"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <polygon
+              points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
+              fill="#00693E"
+            />
+            <rect x="18" y="32" width="4" height="4" fill="#00693E" />
+          </svg>
+          <span class="sidebar-brand-copy">
+            <span class="wordmark">Pinegraf</span>
+            <span class="workspace-label" id="workspace-label">Loading…</span>
+          </span>
+        </a>
+        <div class="sidebar-tagline" id="sidebar-tagline">Where alumni stories connect.</div>
+        <nav class="sidebar-nav" id="sidebar-nav" aria-label="Primary"></nav>
+        <div class="sidebar-footer">
+          <div class="system-status" id="system-status">
+            <span class="status-dot idle" aria-hidden="true"></span>
+            <span class="system-status-copy">Checking status…</span>
+          </div>
+          <a class="sidebar-admin" id="sidebar-admin" href="/admin/login">Admin sign-in</a>
+          <button class="sidebar-collapse" id="sidebar-collapse" type="button" aria-label="Collapse sidebar">
+            <i class="ti ti-chevron-left" aria-hidden="true"></i>
+          </button>
         </div>
-      </div>
-      <nav class="nav-pills" id="nav-pills" aria-label="Primary"></nav>
-    </header>
-    <main id="app" class="app"></main>
+      </aside>
+      <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop"></div>
+      <main class="main-pane">
+        <button class="mobile-menu-button" id="mobile-menu-button" type="button" aria-label="Open navigation">
+          <i class="ti ti-menu-2" aria-hidden="true"></i>
+        </button>
+        <header class="page-header" id="page-header"></header>
+        <section id="app" class="app"></section>
+      </main>
+    </div>
     <div id="modal-root"></div>
     <div id="toast-root" aria-live="polite"></div>
   </body>

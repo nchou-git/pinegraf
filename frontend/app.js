@@ -7,6 +7,7 @@ const state = {
   directoryPage: 1,
   directoryFilters: { q: "", org: "", class_year: "" },
   sourcesCache: null,
+  sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
 };
 
 const TAB_DEFS = [
@@ -84,7 +85,10 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   await Promise.all([loadMe(), loadStats()]);
-  renderTopbar();
+  setupShell();
+  renderShell();
+  refreshSystemStatus();
+  setInterval(refreshSystemStatus, 30000);
   window.addEventListener("hashchange", renderRoute);
   renderRoute();
 }
@@ -114,76 +118,101 @@ async function loadStats() {
   }
 }
 
-function renderTopbar() {
-  ensureBrandHomeLink();
-  const sub = document.getElementById("brand-sub");
+function setupShell() {
+  byId("sidebar-collapse").onclick = toggleSidebar;
+  byId("mobile-menu-button").onclick = openMobileSidebar;
+  byId("mobile-sidebar-backdrop").onclick = closeMobileSidebar;
+}
+
+function renderShell() {
+  const shell = byId("shell");
+  shell.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  shell.classList.toggle("sidebar-open", Boolean(state.mobileSidebarOpen));
+
+  const workspaceLabel = byId("workspace-label");
   const workspaceName = state.me?.workspace?.display_name || "Workspace";
   const entityCount = state.stats?.entities || 0;
   const peopleLabel = entityCount === 1 ? "person" : "people";
-  sub.innerHTML = `<span>${escapeHtml(workspaceName)} · ${formatNumber(entityCount)} ${peopleLabel}</span>`;
+  workspaceLabel.textContent = `${workspaceName} · ${formatNumber(entityCount)} ${peopleLabel}`;
+  byId("sidebar-tagline").textContent =
+    state.me?.workspace?.tagline || "Where alumni stories connect.";
 
-  const tabs = TAB_DEFS;
-  const nav = document.getElementById("nav-pills");
+  const nav = byId("sidebar-nav");
   const activeTab = currentTab();
-  nav.innerHTML = tabs
+  nav.innerHTML = TAB_DEFS
     .map(
       (tab) =>
-        `<a class="nav-pill ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}"><i class="ti ${tab.icon}" aria-hidden="true"></i>${escapeHtml(tab.label)}</a>`,
+        `<a class="sidebar-nav-item ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}">
+           <i class="ti ${tab.icon}" aria-hidden="true"></i>
+           <span>${escapeHtml(tab.label)}</span>
+         </a>`,
     )
     .join("");
-}
 
-function ensureBrandHomeLink() {
-  const brand = document.querySelector(".brand");
-  if (!brand || brand.querySelector(".brand-home")) return;
-  const link = document.createElement("a");
-  link.className = "brand-home";
-  link.href = "#directory";
-  link.setAttribute("aria-label", "Go to Directory");
-  while (brand.firstChild) link.appendChild(brand.firstChild);
-  brand.appendChild(link);
-}
-
-function toggleUserMenu(event) {
-  event.stopPropagation();
-  const anchor = event.currentTarget.closest(".user-menu-anchor");
-  const existing = anchor.querySelector(".menu");
-  if (existing) {
-    existing.remove();
-    return;
+  const admin = byId("sidebar-admin");
+  if (state.me?.is_admin) {
+    admin.href = "#";
+    admin.textContent = "Sign out of admin";
+    admin.onclick = adminLogout;
+  } else {
+    admin.href = "/admin/login";
+    admin.textContent = "Admin sign-in";
+    admin.onclick = null;
   }
-  document.querySelectorAll(".menu").forEach((menu) => menu.remove());
-  const workspaceName = state.me?.workspace?.display_name || "Workspace";
-  const menu = document.createElement("div");
-  menu.className = "menu user-menu";
-  menu.innerHTML = `
-    <div class="menu-header">Workspace: ${escapeHtml(workspaceName)}</div>
-    ${
-      state.me?.is_admin
-        ? `<button class="menu-item" data-act="admin-logout"><i class="ti ti-logout" aria-hidden="true"></i> Sign out of admin</button>`
-        : `<button class="menu-item" data-act="admin-login"><i class="ti ti-login" aria-hidden="true"></i> Sign in as admin</button>`
-    }
+
+  const collapse = byId("sidebar-collapse");
+  collapse.setAttribute(
+    "aria-label",
+    state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
+  );
+  collapse.innerHTML = `<i class="ti ${state.sidebarCollapsed ? "ti-chevron-right" : "ti-chevron-left"}" aria-hidden="true"></i>`;
+}
+
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  sessionStorage.setItem("pinegraf.sidebarCollapsed", String(state.sidebarCollapsed));
+  renderShell();
+}
+
+function openMobileSidebar() {
+  state.mobileSidebarOpen = true;
+  renderShell();
+}
+
+function closeMobileSidebar() {
+  state.mobileSidebarOpen = false;
+  renderShell();
+}
+
+async function refreshSystemStatus() {
+  await loadStats();
+  let status = "idle";
+  let summary = `${formatNumber(state.stats?.documents || 0)} docs · ${formatNumber(state.stats?.entities || 0)} entities`;
+  try {
+    const data = await getJSON("/api/sources");
+    state.sourcesCache = data.sources || state.sourcesCache;
+    const runs = (data.sources || [])
+      .map((source) => ({
+        name: source.display_name || source.identifier,
+        status: source.last_status,
+        at: source.last_run_at,
+      }))
+      .filter((run) => run.status);
+    const latest = runs
+      .filter((run) => run.at)
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())[0];
+    if (runs.some((run) => run.status === "running")) status = "running";
+    else if (runs.some((run) => run.status === "failed")) status = "error";
+    if (latest) summary = `${latest.name}: ${latest.status} ${timeAgo(latest.at)}`;
+  } catch (_) {
+    status = "error";
+    summary = "Status unavailable";
+  }
+  const statusRow = byId("system-status");
+  statusRow.innerHTML = `
+    <span class="status-dot ${status}" aria-hidden="true"></span>
+    <span class="system-status-copy">${escapeHtml(status)} · ${escapeHtml(summary)}</span>
   `;
-  anchor.appendChild(menu);
-  menu.querySelector("[data-act]").onclick = (clickEvent) => {
-    clickEvent.stopPropagation();
-    const action = clickEvent.currentTarget.dataset.act;
-    if (action === "admin-login") {
-      window.location.href = state.me?.admin_login_url || "/admin/login";
-      return;
-    }
-    adminLogout(clickEvent);
-  };
-  setTimeout(() => {
-    document.addEventListener(
-      "click",
-      function onAway() {
-        menu.remove();
-        document.removeEventListener("click", onAway);
-      },
-      { once: true },
-    );
-  }, 0);
 }
 
 function currentTab() {
@@ -196,19 +225,35 @@ function renderRoute() {
   const [tab, ...rest] = route.split("/");
   if (tab === "admin") {
     history.replaceState(null, "", "#sources");
-    renderTopbar();
+    renderShell();
     return renderSources([]);
   }
-  renderTopbar();
+  closeMobileSidebar();
+  renderShell();
   if (tab === "ask") return renderAsk();
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
   return renderDirectory();
 }
 
+function setPageHeader({ title, subtitle = "", eyebrow = "", actions = "" }) {
+  byId("page-header").innerHTML = `
+    <div class="page-title-block">
+      ${eyebrow ? `<div class="page-eyebrow">${eyebrow}</div>` : ""}
+      <h1 id="page-title">${escapeHtml(title)}</h1>
+      <div class="page-subtitle" id="page-subtitle">${escapeHtml(subtitle)}</div>
+    </div>
+    <div class="page-actions" id="page-actions">${actions}</div>
+  `;
+}
+
 /* ───── Directory ───── */
 
 async function renderDirectory() {
+  setPageHeader({
+    title: "Directory",
+    subtitle: `${formatNumber(state.stats?.entities || 0)} people`,
+  });
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="page-content">
@@ -410,6 +455,10 @@ function renderPagination(page, totalPages) {
 /* ───── Ask ───── */
 
 function renderAsk() {
+  setPageHeader({
+    title: "Ask",
+    subtitle: "Query extracted people, projects, organizations, and source evidence.",
+  });
   const app = document.getElementById("app");
   app.innerHTML = `
     <section class="ask-question-box">
@@ -511,6 +560,10 @@ function renderCitations(citations) {
 /* ───── Graph ───── */
 
 async function renderGraph(entityId) {
+  setPageHeader({
+    title: "Graph",
+    subtitle: entityId ? "Inspect one entity's relationships." : "Search for an entity to open its graph.",
+  });
   const app = document.getElementById("app");
   if (!entityId) {
     app.innerHTML = `
@@ -776,22 +829,16 @@ async function renderSources(parts) {
   if (parts[0]) {
     return renderSourceDetail(parts[0], parts[1]);
   }
-  const app = document.getElementById("app");
   const adminActions = state.me?.is_admin
     ? `<div class="source-card-actions">
          <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
          <button class="btn-primary" id="run-pipeline"><i class="ti ti-player-play"></i> Run pipeline</button>
        </div>`
     : "";
+  setPageHeader({ title: "Sources", subtitle: "Loading…", actions: adminActions });
+  const app = document.getElementById("app");
   app.innerHTML = `
     <div class="stats-grid" id="sources-stats">${statCards(state.stats || {})}</div>
-    <div class="section-header">
-      <div>
-        <h1>Sources</h1>
-        <div class="subtitle" id="sources-summary">Loading…</div>
-      </div>
-      ${adminActions}
-    </div>
     <div class="sources-list" id="sources-list">
       <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
     </div>
@@ -826,7 +873,7 @@ async function loadSourcesStats() {
     state.stats = stats;
     statsGrid.innerHTML = statCards(stats);
     setupStatInfoButtons();
-    renderTopbar();
+    renderShell();
   } catch (e) {
     statsGrid.innerHTML = `<div class="muted small">Unable to load stats: ${escapeHtml(e.message)}</div>`;
   }
@@ -876,8 +923,11 @@ async function loadSourcesList() {
     const active = sources.filter((s) => s.status === "active");
     const paused = sources.filter((s) => s.status === "paused");
     const archived = sources.filter((s) => s.status === "archived");
-    byId("sources-summary").textContent =
-      `${active.length} active · ${paused.length} paused · ${archived.length} archived`;
+    const pageSubtitle = byId("page-subtitle");
+    if (pageSubtitle) {
+      pageSubtitle.textContent =
+        `${active.length} active · ${paused.length} paused · ${archived.length} archived`;
+    }
     const list = byId("sources-list");
     if (!sources.length) {
       list.innerHTML = state.me?.is_admin
@@ -1061,13 +1111,13 @@ async function runSourceAction(sourceId, action) {
 
 async function renderSourceDetail(sourceId, tab) {
   const activeTab = tab || "documents";
+  setPageHeader({
+    title: "Loading…",
+    subtitle: "Sources",
+    eyebrow: `<a href="#sources">Sources</a> / Source detail`,
+  });
   const app = document.getElementById("app");
   app.innerHTML = `
-    <nav class="breadcrumb">
-      <a href="#sources">Sources</a>
-      <i class="ti ti-chevron-right"></i>
-      <span id="bc-source-name">Loading…</span>
-    </nav>
     <div id="source-detail-head"></div>
     <div class="tabs-sub" id="source-detail-tabs">
       <button class="tab-sub ${activeTab === "documents" ? "active" : ""}" data-tab="documents">Documents</button>
@@ -1085,7 +1135,11 @@ async function renderSourceDetail(sourceId, tab) {
     });
   try {
     const detail = await getJSON(`/api/sources/${sourceId}`);
-    byId("bc-source-name").textContent = detail.display_name || detail.identifier;
+    setPageHeader({
+      title: detail.display_name || detail.identifier,
+      subtitle: sourceMetaLine(detail),
+      eyebrow: `<a href="#sources">Sources</a> / Source detail`,
+    });
     renderSourceDetailHead(detail);
     if (activeTab === "documents") renderSourceDocuments(sourceId);
     else if (activeTab === "runs") renderSourceRuns(detail);
@@ -1485,7 +1539,7 @@ async function adminLogout(event) {
   const tab = currentTab();
   await fetch("/admin/logout", { method: "POST" });
   await Promise.all([loadMe(), loadStats()]);
-  renderTopbar();
+  renderShell();
   if (tab === "admin") {
     location.hash = "#sources";
   } else if (tab === "sources") {
