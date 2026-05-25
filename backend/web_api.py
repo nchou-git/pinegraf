@@ -53,6 +53,9 @@ def list_directory(
 ) -> dict[str, object]:
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
+    org_filters = _csv_filter(org)
+    class_year_filters = _csv_filter(class_year)
+    source_filters = _csv_filter(source)
     with store.session() as session:
         rows = list(
             session.execute(
@@ -76,14 +79,15 @@ def list_directory(
             ).casefold()
             if q and q.casefold() not in haystack:
                 continue
-            if org and org.casefold() not in haystack:
+            if org_filters and not any(value in haystack for value in org_filters):
                 continue
-            if class_year and class_year.casefold() not in haystack:
+            if class_year_filters and not any(value in haystack for value in class_year_filters):
                 continue
             if summary.confidence_avg is not None and summary.confidence_avg < min_confidence:
                 continue
             source_mix = _source_mix(session, entity.id)
-            if source and source.lower() not in {"all", ""} and source not in source_mix:
+            source_keys = {identifier.casefold() for identifier in source_mix}
+            if source_filters and not any(value in source_keys for value in source_filters):
                 continue
             filtered.append((summary, entity, source_mix))
         total = len(filtered)
@@ -108,6 +112,14 @@ def list_directory(
                 for summary, entity, source_mix in page_rows
             ],
         }
+
+
+def _csv_filter(value: str) -> list[str]:
+    return [
+        part.casefold()
+        for part in (item.strip() for item in value.split(","))
+        if part and part.casefold() != "all"
+    ]
 
 
 def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | None:

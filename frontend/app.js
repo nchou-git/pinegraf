@@ -3,9 +3,10 @@
 const state = {
   me: null,
   stats: null,
-  selectedSource: "all",
   directoryPage: 1,
-  directoryFilters: { q: "", org: "", class_year: "" },
+  directoryFilters: { q: "", sources: [], class_years: [], orgs: [], sort: "name_asc" },
+  directoryRows: [],
+  directoryOptionRows: [],
   sourcesCache: null,
   sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
 };
@@ -252,116 +253,155 @@ function setPageHeader({ title, subtitle = "", eyebrow = "", actions = "" }) {
 async function renderDirectory() {
   setPageHeader({
     title: "Directory",
-    subtitle: `${formatNumber(state.stats?.entities || 0)} people`,
+    subtitle: `${formatNumber(state.stats?.entities || 0)} people across ${formatNumber((state.sourcesCache || []).length)} sources`,
+    actions: directoryHeaderActions(),
   });
   const app = document.getElementById("app");
   app.innerHTML = `
-    <div class="page-content">
-      <section class="toolbar">
-        <label class="input-with-icon">
+    <div class="directory-page">
+      <section class="directory-filter-bar">
+        <label class="directory-search input-with-icon">
           <i class="ti ti-search icon" aria-hidden="true"></i>
-          <input id="dir-q" placeholder="Name" value="${escapeAttr(state.directoryFilters.q)}" />
+          <input id="dir-q" placeholder="Search people" value="${escapeAttr(state.directoryFilters.q)}" />
         </label>
-        <input id="dir-org" placeholder="Organization" value="${escapeAttr(state.directoryFilters.org)}" />
-        <input id="dir-class" placeholder="Class year" value="${escapeAttr(state.directoryFilters.class_year)}" />
-        <button class="btn-primary" id="dir-search">
-          <i class="ti ti-search" aria-hidden="true"></i> Search
-        </button>
+        <div class="directory-filter" id="source-filter-wrap">
+          <button class="filter-button" id="filter-source" type="button">
+            <strong id="filter-source-label">All sources</strong>
+            <i class="ti ti-chevron-down" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="directory-filter" id="class-filter-wrap">
+          <button class="filter-button" id="filter-class" type="button">
+            <strong id="filter-class-label">All classes</strong>
+            <i class="ti ti-chevron-down" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="directory-filter" id="org-filter-wrap">
+          <button class="filter-button" id="filter-org" type="button">
+            <strong id="filter-org-label">All organizations</strong>
+            <i class="ti ti-chevron-down" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="directory-filter directory-sort" id="sort-filter-wrap">
+          <button class="filter-button" id="filter-sort" type="button">
+            <span>Sort</span>
+            <strong id="filter-sort-label">Name A-Z</strong>
+            <i class="ti ti-chevron-down" aria-hidden="true"></i>
+          </button>
+        </div>
+        <button class="reset-filters" id="reset-filters" type="button" hidden>Reset filters</button>
       </section>
-      <section class="chip-strip" id="chip-strip">
-        <span class="chip-strip-label">Sources</span>
-        <span class="chip-strip-label">Loading…</span>
-      </section>
-      <section class="results" id="results">
+      <section class="directory-results" id="results">
         <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
       </section>
-      <div class="pagination" id="pagination"></div>
+      <div class="pagination directory-pagination" id="pagination"></div>
     </div>
   `;
   const onSearch = () => {
-    state.directoryFilters = {
-      q: byId("dir-q").value,
-      org: byId("dir-org").value,
-      class_year: byId("dir-class").value,
-    };
+    state.directoryFilters.q = byId("dir-q").value.trim();
     state.directoryPage = 1;
     loadDirectory();
   };
-  byId("dir-search").onclick = onSearch;
-  ["dir-q", "dir-org", "dir-class"].forEach((id) => {
-    byId(id).addEventListener("keydown", (e) => {
-      if (e.key === "Enter") onSearch();
-    });
+  byId("dir-q").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") onSearch();
   });
-  await loadSourceChips();
+  byId("filter-source").onclick = (event) => openDirectoryFilter("source", event.currentTarget);
+  byId("filter-class").onclick = (event) => openDirectoryFilter("class_year", event.currentTarget);
+  byId("filter-org").onclick = (event) => openDirectoryFilter("org", event.currentTarget);
+  byId("filter-sort").onclick = (event) => openDirectorySort(event.currentTarget);
+  byId("reset-filters").onclick = resetDirectoryFilters;
+  await loadDirectorySources();
+  await loadDirectoryOptions();
   await loadDirectory();
 }
 
-async function loadSourceChips() {
-  const strip = byId("chip-strip");
+function directoryHeaderActions() {
+  return `
+    <button class="btn-secondary icon-only" type="button" disabled title="Coming soon" aria-label="Add person coming soon">
+      <i class="ti ti-plus" aria-hidden="true"></i>
+    </button>
+  `;
+}
+
+async function loadDirectorySources() {
   try {
     const data = await getJSON("/api/sources");
     state.sourcesCache = data.sources || [];
-    const active = state.sourcesCache.filter((s) => s.status !== "archived");
-    const chips = [
-      { id: "all", label: "All" },
-      ...active.map((s) => ({
-        id: s.identifier,
-        label: s.display_name || s.identifier,
-      })),
-    ];
-    strip.innerHTML =
-      `<span class="chip-strip-label">Sources</span>` +
-      chips
-        .map(
-          (c) =>
-            `<button class="chip ${state.selectedSource === c.id ? "active" : ""}" data-source="${escapeAttr(c.id)}">${escapeHtml(c.label)}</button>`,
-        )
-        .join("") +
-      `<span class="result-count" id="result-count"></span>`;
-    strip.querySelectorAll(".chip").forEach((chip) => {
-      chip.onclick = () => {
-        state.selectedSource = chip.dataset.source;
-        state.directoryPage = 1;
-        loadSourceChips();
-        loadDirectory();
-      };
-    });
+    updateDirectoryFilterLabels();
   } catch (e) {
-    strip.innerHTML =
-      `<span class="chip-strip-label">Sources</span><span class="chip-strip-label">Unable to load</span>`;
+    state.sourcesCache = [];
+    toast(`Unable to load sources: ${e.message}`, "error");
+  }
+}
+
+async function loadDirectoryOptions() {
+  try {
+    const data = await getJSON("/api/directory?page_size=100");
+    state.directoryOptionRows = data.results || [];
+  } catch (_) {
+    state.directoryOptionRows = [];
   }
 }
 
 async function loadDirectory() {
   const params = new URLSearchParams({
     q: state.directoryFilters.q || "",
-    org: state.directoryFilters.org || "",
-    class_year: state.directoryFilters.class_year || "",
-    source: state.selectedSource === "all" ? "" : state.selectedSource,
+    org: state.directoryFilters.orgs.join(","),
+    class_year: state.directoryFilters.class_years.join(","),
+    source: state.directoryFilters.sources.join(","),
     page: String(state.directoryPage),
+    page_size: "50",
   });
   const results = byId("results");
   try {
     const data = await getJSON(`/api/directory?${params.toString()}`);
     const total = data.total || 0;
-    const totalPages = Math.max(1, Math.ceil(total / (data.page_size || 25)));
-    const countLabel = byId("result-count");
-    if (countLabel) {
-      countLabel.textContent = total
-        ? `${total} result${total === 1 ? "" : "s"} · page ${data.page} of ${totalPages}`
-        : "no results";
-    }
-    if (!data.results.length) {
-      const entitiesTotal = state.stats?.entities || 0;
-      results.innerHTML = entitiesTotal
-        ? `<div class="empty-state"><i class="ti ti-search-off" aria-hidden="true"></i><div>No matches. Try a different name or organization.</div></div>`
-        : `<div class="empty-state"><i class="ti ti-database-off" aria-hidden="true"></i><div>No data yet. ${state.me?.is_admin ? "Go to <a href=\"#sources\">Sources</a> to add and ingest data." : "Sign in as admin to ingest sources."}</div></div>`;
+    const sourceTotal = (state.sourcesCache || []).filter((s) => s.status !== "archived").length;
+    const totalPages = Math.max(1, Math.ceil(total / (data.page_size || 50)));
+    state.directoryRows = sortDirectoryRows(data.results || []);
+    setPageHeader({
+      title: "Directory",
+      subtitle: `${formatNumber(total || state.stats?.entities || 0)} people across ${formatNumber(sourceTotal)} source${sourceTotal === 1 ? "" : "s"}`,
+      actions: directoryHeaderActions(),
+    });
+    updateDirectoryFilterLabels();
+    bindDirectoryHeaderFilters();
+    if (!sourceTotal) {
+      results.innerHTML = `
+        <div class="directory-empty-panel">
+          <i class="ti ti-database-off" aria-hidden="true"></i>
+          <h2>No sources yet</h2>
+          <p>Add your first source to start ingesting people, projects, and connections.</p>
+          <a class="btn-primary" href="#sources"><i class="ti ti-arrow-right" aria-hidden="true"></i> Go to Sources</a>
+        </div>`;
       byId("pagination").innerHTML = "";
       return;
     }
-    results.innerHTML = data.results.map(directoryRow).join("");
-    results.querySelectorAll(".entity-row").forEach((row) => {
+    if (!data.results.length) {
+      const entitiesTotal = state.stats?.entities || 0;
+      if (!entitiesTotal) {
+        results.innerHTML = `
+          <div class="directory-empty-panel">
+            <i class="ti ti-route-off" aria-hidden="true"></i>
+            <h2>Pipeline hasn't run yet</h2>
+            <p>Go to Sources to crawl your first source.</p>
+            <a class="btn-primary" href="#sources"><i class="ti ti-arrow-right" aria-hidden="true"></i> Open Sources</a>
+          </div>`;
+        byId("pagination").innerHTML = "";
+        return;
+      }
+      results.innerHTML = `
+        <div class="directory-inline-empty">
+          <span>No people matched those filters.</span>
+          <button class="reset-filters inline" type="button" onclick="resetDirectoryFilters()">Reset filters</button>
+        </div>
+        ${directoryTable([])}
+      `;
+      byId("pagination").innerHTML = "";
+      return;
+    }
+    results.innerHTML = directoryTable(state.directoryRows);
+    results.querySelectorAll(".directory-table-row").forEach((row) => {
       row.onclick = (e) => {
         if (e.target.closest(".source-badge,.conflict-pill")) return;
         location.hash = `#graph/${row.dataset.entityId}`;
@@ -371,6 +411,341 @@ async function loadDirectory() {
   } catch (e) {
     results.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load directory: ${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+function bindDirectoryHeaderFilters() {
+  byId("filter-source").onclick = (event) => openDirectoryFilter("source", event.currentTarget);
+  byId("filter-class").onclick = (event) => openDirectoryFilter("class_year", event.currentTarget);
+  byId("filter-org").onclick = (event) => openDirectoryFilter("org", event.currentTarget);
+  byId("filter-sort").onclick = (event) => openDirectorySort(event.currentTarget);
+  byId("reset-filters").onclick = resetDirectoryFilters;
+}
+
+function updateDirectoryFilterLabels() {
+  const sourceLabel = byId("filter-source-label");
+  const classLabel = byId("filter-class-label");
+  const orgLabel = byId("filter-org-label");
+  const sortLabel = byId("filter-sort-label");
+  const reset = byId("reset-filters");
+  if (sourceLabel) {
+    const count = state.directoryFilters.sources.length;
+    sourceLabel.textContent = count ? `${count} source${count === 1 ? "" : "s"}` : "All sources";
+  }
+  if (classLabel) {
+    const count = state.directoryFilters.class_years.length;
+    classLabel.textContent = count ? `${count} class${count === 1 ? "" : "es"}` : "All classes";
+  }
+  if (orgLabel) {
+    const count = state.directoryFilters.orgs.length;
+    orgLabel.textContent = count ? `${count} org${count === 1 ? "" : "s"}` : "All organizations";
+  }
+  if (sortLabel) sortLabel.textContent = directorySortLabel(state.directoryFilters.sort);
+  if (reset) reset.hidden = !hasDirectoryFilters();
+}
+
+function openDirectoryFilter(type, anchor) {
+  document.querySelectorAll(".filter-popover").forEach((popover) => popover.remove());
+  const wrap = anchor.closest(".directory-filter");
+  if (!wrap) return;
+  const options = directoryFilterOptions(type);
+  const popover = document.createElement("div");
+  popover.className = "filter-popover";
+  popover.innerHTML = `
+    <input class="filter-popover-search" placeholder="${escapeAttr(directoryFilterSearchPlaceholder(type))}" />
+    <div class="filter-options">
+      ${options
+        .map(
+          (option) => `
+          <label class="filter-option">
+            <input type="checkbox" data-value="${escapeAttr(option.value)}" ${option.active ? "checked" : ""} />
+            <span class="filter-option-label">
+              ${option.icon ? `<i class="ti ${escapeAttr(option.icon)}" aria-hidden="true"></i>` : ""}
+              <span>${escapeHtml(option.label)}</span>
+            </span>
+            <span class="filter-count">${formatNumber(option.count || 0)}</span>
+          </label>`,
+        )
+        .join("")}
+    </div>
+    <div class="filter-popover-footer">
+      <button type="button" data-filter-action="all">Select all</button>
+      <button type="button" data-filter-action="clear">Clear</button>
+    </div>
+  `;
+  wrap.appendChild(popover);
+  const search = popover.querySelector(".filter-popover-search");
+  search.focus();
+  search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    popover.querySelectorAll(".filter-option").forEach((button) => {
+      button.hidden = q && !button.textContent.toLowerCase().includes(q);
+    });
+  };
+  popover.querySelectorAll("input[type=checkbox]").forEach((input) => {
+    input.onchange = () => {
+      toggleDirectoryFilterValue(type, input.dataset.value || "", input.checked);
+    };
+  });
+  popover.querySelector("[data-filter-action=all]").onclick = () => {
+    popover.querySelectorAll("input[type=checkbox]").forEach((input) => {
+      input.checked = true;
+    });
+    setDirectoryFilterValues(
+      type,
+      options.map((option) => option.value),
+    );
+  };
+  popover.querySelector("[data-filter-action=clear]").onclick = () => {
+    popover.querySelectorAll("input[type=checkbox]").forEach((input) => {
+      input.checked = false;
+    });
+    setDirectoryFilterValues(type, []);
+  };
+  setTimeout(() => {
+    document.addEventListener(
+      "click",
+      function onAway(event) {
+        if (popover.contains(event.target) || event.target === anchor) return;
+        popover.remove();
+        document.removeEventListener("click", onAway);
+      },
+    );
+  }, 0);
+}
+
+function directoryFilterOptions(type) {
+  if (type === "source") {
+    const sources = (state.sourcesCache || []).filter((s) => s.status !== "archived");
+    const counts = sourceCountsForRows(state.directoryRows);
+    return sources.map((source) => ({
+        value: source.identifier,
+        label: source.display_name || source.identifier,
+        icon: source.icon_hint || "ti-database",
+        count: counts[source.identifier] || 0,
+        active: state.directoryFilters.sources.includes(source.identifier),
+      }));
+  }
+  const attr = type === "class_year" ? "class_year" : "current_employer";
+  const selected =
+    type === "class_year" ? state.directoryFilters.class_years : state.directoryFilters.orgs;
+  const counts = valueCountsForRows(state.directoryRows, attr);
+  const values = Array.from(
+    new Set(
+      (state.directoryOptionRows.length ? state.directoryOptionRows : state.directoryRows)
+        .map((row) => row.primary_attributes?.[attr])
+        .filter(Boolean)
+        .map(String),
+    ),
+  ).sort();
+  return values.map((value) => ({
+    value,
+    label: value,
+    count: counts[value] || 0,
+    active: selected.includes(value),
+  }));
+}
+
+function directoryFilterSearchPlaceholder(type) {
+  if (type === "source") return "Search sources";
+  if (type === "class_year") return "Search class years";
+  return "Search organizations";
+}
+
+function selectedDirectoryFilterArray(type) {
+  if (type === "source") return state.directoryFilters.sources;
+  if (type === "class_year") return state.directoryFilters.class_years;
+  return state.directoryFilters.orgs;
+}
+
+function toggleDirectoryFilterValue(type, value, checked) {
+  const values = selectedDirectoryFilterArray(type);
+  const next = checked
+    ? Array.from(new Set([...values, value]))
+    : values.filter((item) => item !== value);
+  setDirectoryFilterValues(type, next);
+}
+
+function setDirectoryFilterValues(type, values) {
+  if (type === "source") state.directoryFilters.sources = values;
+  if (type === "class_year") state.directoryFilters.class_years = values;
+  if (type === "org") state.directoryFilters.orgs = values;
+  state.directoryPage = 1;
+  updateDirectoryFilterLabels();
+  loadDirectory();
+}
+
+function openDirectorySort(anchor) {
+  document.querySelectorAll(".filter-popover").forEach((popover) => popover.remove());
+  const wrap = anchor.closest(".directory-filter");
+  const options = [
+    ["name_asc", "Name A-Z"],
+    ["name_desc", "Name Z-A"],
+    ["connected_desc", "Most connected"],
+    ["conflicts_desc", "Most conflicts"],
+  ];
+  const popover = document.createElement("div");
+  popover.className = "filter-popover sort-popover";
+  popover.innerHTML = options
+    .map(
+      ([value, label]) => `
+      <button type="button" class="filter-sort-option" data-sort="${value}">
+        <span>${label}</span>
+        ${state.directoryFilters.sort === value ? `<i class="ti ti-check" aria-hidden="true"></i>` : ""}
+      </button>`,
+    )
+    .join("");
+  wrap.appendChild(popover);
+  popover.querySelectorAll("[data-sort]").forEach((button) => {
+    button.onclick = () => {
+      state.directoryFilters.sort = button.dataset.sort;
+      updateDirectoryFilterLabels();
+      loadDirectory();
+      popover.remove();
+    };
+  });
+  setTimeout(() => {
+    document.addEventListener(
+      "click",
+      function onAway(event) {
+        if (popover.contains(event.target) || event.target === anchor) return;
+        popover.remove();
+        document.removeEventListener("click", onAway);
+      },
+    );
+  }, 0);
+}
+
+function directorySortLabel(value) {
+  return (
+    {
+      name_asc: "Name A-Z",
+      name_desc: "Name Z-A",
+      connected_desc: "Most connected",
+      conflicts_desc: "Most conflicts",
+    }[value] || "Name A-Z"
+  );
+}
+
+function sortDirectoryRows(rows) {
+  return [...rows].sort((left, right) => {
+    if (state.directoryFilters.sort === "name_desc") {
+      return String(right.canonical_name || "").localeCompare(String(left.canonical_name || ""));
+    }
+    if (state.directoryFilters.sort === "connected_desc") {
+      return (right.connection_count || 0) - (left.connection_count || 0);
+    }
+    if (state.directoryFilters.sort === "conflicts_desc") {
+      return (right.conflict_count || 0) - (left.conflict_count || 0);
+    }
+    return String(left.canonical_name || "").localeCompare(String(right.canonical_name || ""));
+  });
+}
+
+function hasDirectoryFilters() {
+  return Boolean(
+    state.directoryFilters.q ||
+      state.directoryFilters.sources.length ||
+      state.directoryFilters.class_years.length ||
+      state.directoryFilters.orgs.length ||
+      state.directoryFilters.sort !== "name_asc",
+  );
+}
+
+function resetDirectoryFilters() {
+  state.directoryFilters = { q: "", sources: [], class_years: [], orgs: [], sort: "name_asc" };
+  state.directoryPage = 1;
+  const input = byId("dir-q");
+  if (input) input.value = "";
+  updateDirectoryFilterLabels();
+  loadDirectory();
+}
+
+function sourceCountsForRows(rows) {
+  const counts = {};
+  (rows || []).forEach((row) => {
+    Object.keys(row.source_mix || {}).forEach((identifier) => {
+      counts[identifier] = (counts[identifier] || 0) + 1;
+    });
+  });
+  return counts;
+}
+
+function valueCountsForRows(rows, attr) {
+  const counts = {};
+  (rows || []).forEach((row) => {
+    const value = row.primary_attributes?.[attr];
+    if (!value) return;
+    const key = String(value);
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  return counts;
+}
+
+function directoryTable(rows) {
+  return `
+    <table class="directory-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Title</th>
+          <th>Org</th>
+          <th>Class</th>
+          <th>Sources</th>
+          <th>Conflicts</th>
+        </tr>
+      </thead>
+      <tbody>${rows.map(directoryTableRow).join("")}</tbody>
+    </table>
+  `;
+}
+
+function directoryTableRow(row) {
+  const attrs = row.primary_attributes || {};
+  const initials = (row.canonical_name || "")
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((p) => p[0] || "")
+    .join("")
+    .toUpperCase();
+  const sourceMix = row.source_mix || {};
+  const sourceKeys = Object.keys(sourceMix);
+  const visibleSources = sourceKeys.slice(0, 3);
+  const overflow = sourceKeys.length - visibleSources.length;
+  const conflictCount = row.conflict_count || 0;
+  return `
+    <tr class="directory-table-row" data-entity-id="${escapeAttr(row.entity_id)}">
+      <td>
+        <div class="directory-name-cell">
+          <div class="avatar-circle compact">${escapeHtml(initials || "??")}</div>
+          <div>
+            <div class="directory-person-name">${escapeHtml(row.canonical_name || "Unknown")}</div>
+            <div class="directory-person-sub">${attrs.class_year ? `T'${escapeHtml(String(attrs.class_year).replace(/^T'?/, ""))}` : escapeHtml(capitalize(row.kind || "entity"))}</div>
+          </div>
+        </div>
+      </td>
+      <td>${escapeHtml(attrs.current_title || "")}</td>
+      <td>${escapeHtml(attrs.current_employer || "")}</td>
+      <td>${escapeHtml(attrs.class_year || "")}</td>
+      <td>
+        <div class="directory-source-cell">
+          ${
+            visibleSources.length
+              ? visibleSources
+                  .map((key) => `<span class="source-badge">${escapeHtml(sourceLabel(key))}</span>`)
+                  .join("")
+              : `<span class="muted small">—</span>`
+          }
+          ${overflow > 0 ? `<span class="source-badge muted-badge">+${overflow}</span>` : ""}
+        </div>
+      </td>
+      <td>${conflictCount ? `<span class="conflict-pill">${conflictCount}</span>` : ""}</td>
+    </tr>
+  `;
+}
+
+function sourceLabel(identifier) {
+  const source = (state.sourcesCache || []).find((item) => item.identifier === identifier);
+  return source?.display_name || source?.identifier || identifier;
 }
 
 function directoryRow(row) {
@@ -1631,3 +2006,4 @@ function timeAgo(iso) {
 
 window.closeModal = closeModal;
 window.closeModalOnBackdrop = closeModalOnBackdrop;
+window.resetDirectoryFilters = resetDirectoryFilters;

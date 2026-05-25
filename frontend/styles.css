@@ -281,7 +281,7 @@ a:hover {
 }
 
 .page-header {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 24px 32px 18px;
   display: flex;
@@ -381,7 +381,7 @@ a:hover {
   font-weight: 500;
 }
 .app {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 0 32px 32px;
 }
@@ -461,6 +461,13 @@ a:hover {
   border-color: var(--line-strong);
   font-weight: 400;
   padding: 6px 9px;
+}
+
+.btn-secondary.icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
 }
 
 .btn-ghost {
@@ -621,6 +628,311 @@ textarea {
 }
 
 /* ─── Directory ────────────────────────────────────────────────────── */
+
+.directory-page {
+  min-height: calc(100vh - 104px);
+  display: flex;
+  flex-direction: column;
+}
+
+.directory-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 0 14px;
+}
+
+.directory-search {
+  width: min(480px, 100%);
+  flex: 1 1 360px;
+}
+
+.directory-filter {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.directory-sort {
+  margin-left: auto;
+}
+
+.filter-button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border: 0.5px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: white;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease;
+}
+
+.filter-button:hover {
+  background: var(--surface);
+}
+
+.filter-button strong {
+  color: var(--text);
+  font-weight: 500;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 240px;
+  padding: 6px;
+  border: 0.5px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: white;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.1);
+  z-index: 30;
+}
+
+.directory-filter:nth-of-type(4) .filter-popover {
+  left: auto;
+  right: 0;
+}
+
+.filter-popover-search {
+  margin-bottom: 6px;
+  padding: 7px 9px;
+  font-size: var(--fs-sm);
+}
+
+.filter-options {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.filter-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.filter-option:hover {
+  background: var(--surface);
+}
+
+.filter-option input {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  accent-color: var(--green);
+}
+
+.filter-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.filter-option-label > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-count {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  background: var(--surface);
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+}
+
+.filter-popover-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 4px 2px;
+  border-top: 0.5px solid var(--line);
+  margin-top: 6px;
+}
+
+.filter-popover-footer button,
+.reset-filters,
+.filter-sort-option {
+  border: none;
+  background: transparent;
+  color: var(--green);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+
+.reset-filters {
+  color: var(--text-faint);
+}
+
+.reset-filters:hover,
+.filter-popover-footer button:hover {
+  color: var(--green-hover);
+  text-decoration: underline;
+}
+
+.reset-filters.inline {
+  margin-left: 8px;
+}
+
+.sort-popover {
+  width: 190px;
+}
+
+.filter-sort-option {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-align: left;
+}
+
+.filter-sort-option:hover {
+  background: var(--surface);
+}
+
+.directory-results {
+  flex: 1 1 auto;
+}
+
+.directory-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+  table-layout: fixed;
+}
+
+.directory-table th {
+  height: 34px;
+  padding: 0 10px;
+  border-bottom: 0.5px solid var(--line);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-align: left;
+}
+
+.directory-table td {
+  height: 48px;
+  padding: 0 10px;
+  border-bottom: 0.5px solid var(--line);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.directory-table-row {
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.directory-table-row:hover {
+  background: var(--surface);
+}
+
+.directory-name-cell,
+.directory-source-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.directory-person-name {
+  color: var(--text);
+  font-weight: 500;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-person-sub {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+  margin-top: 2px;
+}
+
+.avatar-circle.compact {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+}
+
+.muted-badge {
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.directory-inline-empty {
+  padding: 10px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.directory-empty-panel {
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.directory-empty-panel .ti {
+  font-size: 38px;
+  color: var(--text-faint);
+  margin-bottom: 12px;
+}
+
+.directory-empty-panel h2 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: var(--fs-xl);
+  font-weight: 500;
+}
+
+.directory-empty-panel p {
+  margin: 0 0 18px;
+  max-width: 360px;
+}
+
+.directory-pagination {
+  margin-top: auto;
+}
 
 .page-content {
   max-width: 1100px;
@@ -1621,6 +1933,30 @@ input[type="file"] {
   }
   .app {
     padding: 0 20px 24px;
+  }
+  .directory-filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .directory-search,
+  .directory-filter,
+  .filter-button {
+    width: 100%;
+  }
+  .directory-sort {
+    margin-left: 0;
+  }
+  .filter-button {
+    justify-content: space-between;
+  }
+  .filter-popover {
+    width: 100%;
+  }
+  .directory-table {
+    min-width: 760px;
+  }
+  .directory-results {
+    overflow-x: auto;
   }
   .topbar {
     flex-direction: column;
