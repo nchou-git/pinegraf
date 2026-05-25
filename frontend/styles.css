@@ -688,22 +688,6 @@
   font-size: var(--fs-sm);
 }
 
-.breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-sm);
-  color: var(--text-faint);
-  padding: var(--space-5) var(--space-6) 0;
-  margin-bottom: var(--space-4);
-}
-.breadcrumb a {
-  color: var(--green);
-}
-.breadcrumb .ti {
-  font-size: var(--fs-base);
-}
-
 .entity-hero {
   display: flex;
   align-items: flex-start;

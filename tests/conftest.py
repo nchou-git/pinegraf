@@ -50,7 +50,6 @@ class FakeAsyncClient:
 @pytest.fixture(autouse=True)
 def isolated_settings(monkeypatch) -> Iterator[None]:
     monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf")
-    monkeypatch.setenv("SITE_AUTH_PASSWORD", "")
     monkeypatch.setenv("USE_MOCK_EMBEDDINGS", "true")
     get_settings.cache_clear()
     yield

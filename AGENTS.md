@@ -24,8 +24,7 @@ from structured rows or raw-page RAG.
 - Persistence: `backend/db/store.py`
 - ORM schema: `backend/db/models.py`
 - FastAPI route definitions: `backend/main.py`
-- Auth helpers: `backend/admin_auth.py`, `backend/admin_session.py`,
-  `backend/site_auth.py`
+- Auth helpers: `backend/admin_auth.py`, `backend/admin_session.py`
 
 ## Conventions
 

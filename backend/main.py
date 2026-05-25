@@ -21,7 +21,6 @@ from backend.config import get_settings
 from backend.db.store import Store, source_to_dict
 from backend.ingestion.orchestrator import start_run
 from backend.pipeline.orchestrator import run_full_pipeline
-from backend.site_auth import SiteAuthMiddleware
 from backend.web_api import (
     ask_stream,
     delete_source,
@@ -89,7 +88,6 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
     app.state.store = app_store
-    app.add_middleware(SiteAuthMiddleware)
 
     @app.get("/health")
     async def health() -> dict[str, bool]:
@@ -141,9 +139,8 @@ def create_app(store: Store | None = None) -> FastAPI:
         if not next_url.startswith("/"):
             next_url = "/"
         settings = get_settings()
-        expected_user = settings.site_auth_user or "pinegraf"
         expected = settings.pinegraf_admin_password or ""
-        user_ok = not username or secrets.compare_digest(username, expected_user)
+        user_ok = secrets.compare_digest(username, "pinegraf")
         password_ok = bool(expected) and secrets.compare_digest(password, expected)
         if not (user_ok and password_ok):
             return HTMLResponse(
@@ -531,7 +528,7 @@ def _admin_login_html(error: str | None) -> str:
         <input type="hidden" name="next" value="/" />
         <button type="submit" class="btn-primary">Sign in</button>
       </form>
-      <div class="login-note">This is separate from the site-wide sign-in.</div>
+      <div class="login-note">Admin access controls source management.</div>
     </div>
   </main>
 </body>

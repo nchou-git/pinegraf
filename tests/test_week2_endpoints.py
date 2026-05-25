@@ -1,23 +1,12 @@
 from __future__ import annotations
 
-import base64
-
 from fastapi.testclient import TestClient
 
 from backend import main as main_module
-from backend.config import get_settings
 from backend.db.models import Entity, EntitySummary
 
 
-def _basic(username: str, password: str) -> dict[str, str]:
-    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    return {"Authorization": f"Basic {token}"}
-
-
-def test_user_api_requires_site_auth_and_lists_directory(store, monkeypatch) -> None:
-    monkeypatch.setenv("SITE_AUTH_USER", "site")
-    monkeypatch.setenv("SITE_AUTH_PASSWORD", "secret")
-    get_settings.cache_clear()
+def test_user_api_is_public_and_lists_directory(store) -> None:
     with store.session() as session:
         entity = Entity(kind="person", canonical_name="Errik Anderson")
         session.add(entity)
@@ -35,18 +24,12 @@ def test_user_api_requires_site_auth_and_lists_directory(store, monkeypatch) -> 
         session.commit()
 
     with TestClient(main_module.create_app(store)) as client:
-        assert client.get("/api/me").status_code == 401
-
-        headers = _basic("site", "secret")
-        me_response = client.get("/api/me", headers=headers)
+        me_response = client.get("/api/me")
         assert me_response.status_code == 200
         assert me_response.json()["workspace"]["slug"] == "tuck"
+        assert me_response.json()["is_admin"] is False
 
-        admin_me_response = client.get("/api/me", headers=_basic("admin", "pinegraf"))
-        assert admin_me_response.status_code == 200
-        assert admin_me_response.json()["is_admin"] is True
-
-        directory_response = client.get("/api/directory?q=Errik", headers=headers)
+        directory_response = client.get("/api/directory?q=Errik")
         assert directory_response.status_code == 200
         payload = directory_response.json()
         assert payload["total"] == 1
@@ -60,7 +43,7 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
 
     monkeypatch.setattr(main_module, "run_full_pipeline", fake_run_full_pipeline)
     source = store.upsert_source(kind="domain", identifier="example.com")
-    run = store.create_source_run(
+    store.create_source_run(
         source_id=source.id,
         kind="adhoc",
         spec={"urls": ["https://example.com/story"]},
