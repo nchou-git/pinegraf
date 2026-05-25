@@ -769,58 +769,12 @@ function sourceLabel(identifier) {
   return source?.display_name || source?.identifier || identifier;
 }
 
-function directoryRow(row) {
-  const initials = (row.canonical_name || "")
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((p) => p[0] || "")
-    .join("")
-    .toUpperCase();
-  const hasConflict = (row.conflict_count || 0) > 0;
-  const sourceMix = row.source_mix || {};
-  const sourceLabels = state.sourcesCache || [];
-  const labelFor = (identifier) => {
-    const found = sourceLabels.find((s) => s.identifier === identifier);
-    return found ? found.display_name || found.identifier : identifier;
-  };
-  const sourceCount = Object.keys(sourceMix).length;
-  const badges = Object.entries(sourceMix)
-    .map(
-      ([name, count]) =>
-        `<span class="source-badge">${escapeHtml(labelFor(name))}${count > 1 ? ` ×${count}` : ""}</span>`,
-    )
-    .join("");
-  const conflictPill = hasConflict
-    ? `<span class="conflict-pill"><i class="ti ti-alert-triangle" aria-hidden="true"></i>${row.conflict_count} conflict${row.conflict_count === 1 ? "" : "s"}</span>`
-    : "";
-  const isCrawlOnly = sourceCount === 0;
-  const crawlPill = isCrawlOnly
-    ? `<span class="mention-only-pill">Mentioned only</span>`
-    : "";
-  const classYear =
-    (row.primary_attributes && row.primary_attributes.class_year) || "";
-  return `
-    <article class="entity-row ${hasConflict ? "has-conflict" : ""} ${isCrawlOnly ? "crawl-only" : ""}" data-entity-id="${escapeAttr(row.entity_id)}">
-      <div class="avatar-circle">${escapeHtml(initials || "??")}</div>
-      <div>
-        <div class="row-name-line">
-          <span class="row-name">${escapeHtml(row.canonical_name || "Unknown")}</span>
-          ${classYear ? `<span class="row-meta">${escapeHtml(String(classYear))}</span>` : ""}
-          ${conflictPill}
-          ${crawlPill}
-        </div>
-        <div class="row-bio">${escapeHtml(rowBio(row))}</div>
-      </div>
-      <div class="row-source-badges">${badges}</div>
-    </article>`;
-}
-
 function rowBio(row) {
   const attrs = row.primary_attributes || {};
   const parts = [];
   if (attrs.current_title) parts.push(String(attrs.current_title));
   if (attrs.current_employer) parts.push(String(attrs.current_employer));
-  if (!parts.length && row.kind) parts.push(`${capitalize(row.kind)}`);
+  if (!parts.length && row.kind) parts.push(capitalize(row.kind));
   if (row.connection_count) {
     parts.push(`${row.connection_count} connection${row.connection_count === 1 ? "" : "s"}`);
   }
@@ -1426,7 +1380,7 @@ async function renderSources(parts) {
     return renderSourceDetail(parts[0], parts[1]);
   }
   const adminActions = state.me?.is_admin
-    ? `<div class="source-card-actions">
+    ? `<div class="source-actions">
          <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
          <button class="btn-primary" id="run-pipeline"><i class="ti ti-player-play"></i> Run pipeline</button>
        </div>`
@@ -1657,7 +1611,7 @@ function toggleMenu(container, sourceId) {
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
     <button class="menu-item danger" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
   `;
-  container.querySelector(".source-row-actions, .source-card-actions").appendChild(menu);
+  container.querySelector(".source-row-actions, .source-actions").appendChild(menu);
   menu.querySelectorAll("button").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
@@ -1795,7 +1749,7 @@ function renderSourceDetailHead(source) {
       </div>
       ${
         state.me?.is_admin
-          ? `<div class="source-card-actions">
+          ? `<div class="source-actions">
                <button class="btn-source" data-action="crawl"><i class="ti ti-download"></i> Crawl</button>
                <button class="btn-source" data-action="parse"><i class="ti ti-cpu"></i> Parse</button>
              </div>`
