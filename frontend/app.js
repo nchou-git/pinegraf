@@ -149,8 +149,10 @@ function setupShell() {
 
 function renderShell() {
   const shell = byId("shell");
+  const sidebar = byId("sidebar");
   shell.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
   shell.classList.toggle("sidebar-open", Boolean(state.mobileSidebarOpen));
+  sidebar.classList.toggle("collapsed", state.sidebarCollapsed);
 
   const workspaceLabel = byId("workspace-label");
   const workspaceName = state.me?.workspace?.display_name || "Workspace";
@@ -165,7 +167,7 @@ function renderShell() {
   nav.innerHTML = TAB_DEFS
     .map(
       (tab) =>
-        `<a class="sidebar-nav-item ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}">
+        `<a class="nav-item ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}">
            <i class="ti ${tab.icon}" aria-hidden="true"></i>
            <span>${escapeHtml(tab.label)}</span>
          </a>`,
