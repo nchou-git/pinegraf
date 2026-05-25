@@ -125,7 +125,7 @@ a:hover {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
-  border-left: var(--space-1) solid transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font-size: var(--fs-base);
@@ -145,7 +145,6 @@ a:hover {
 .nav-item.active {
   background-color: var(--green-tint);
   color: var(--green);
-  border-left-color: var(--green);
   font-weight: 500;
 }
 
@@ -253,7 +252,6 @@ a:hover {
 .sidebar.collapsed .nav-item {
   justify-content: center;
   padding-inline: 0;
-  border-left-width: 0;
 }
 
 .main-pane {
@@ -351,7 +349,6 @@ a:hover {
   .app-shell.sidebar-collapsed .nav-item {
     justify-content: flex-start;
     padding-inline: var(--space-3);
-    border-left-width: var(--space-1);
   }
 
   .mobile-sidebar-backdrop {
