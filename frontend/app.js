@@ -154,11 +154,8 @@ function renderShell() {
   shell.classList.toggle("sidebar-open", Boolean(state.mobileSidebarOpen));
   sidebar.classList.toggle("collapsed", state.sidebarCollapsed);
 
-  const workspaceLabel = byId("workspace-label");
   const workspaceName = state.me?.workspace?.display_name || "Workspace";
-  const entityCount = state.stats?.entities || 0;
-  const peopleLabel = entityCount === 1 ? "person" : "people";
-  workspaceLabel.textContent = `${workspaceName} · ${formatNumber(entityCount)} ${peopleLabel}`;
+  byId("workspace-label").textContent = workspaceName;
   byId("sidebar-tagline").textContent =
     state.me?.workspace?.tagline || "Where alumni stories connect.";
 
@@ -174,16 +171,10 @@ function renderShell() {
     )
     .join("");
 
-  const admin = byId("sidebar-admin");
-  if (state.me?.is_admin) {
-    admin.href = "#";
-    admin.textContent = "Sign out of admin";
-    admin.onclick = adminLogout;
-  } else {
-    admin.href = "/admin/login";
-    admin.textContent = "Admin sign-in";
-    admin.onclick = null;
-  }
+  byId("sidebar-org-avatar").textContent = workspaceInitials(workspaceName);
+  byId("sidebar-org-name").textContent = workspaceName;
+  byId("sidebar-org-role").textContent = state.me?.is_admin ? "Admin" : "Viewer";
+  byId("sidebar-org-row").onclick = toggleWorkspaceMenu;
 
   const collapse = byId("sidebar-collapse");
   collapse.setAttribute(
@@ -191,6 +182,59 @@ function renderShell() {
     state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
   );
   collapse.innerHTML = `<i class="ti ${state.sidebarCollapsed ? "ti-chevron-right" : "ti-chevron-left"}" aria-hidden="true"></i>`;
+}
+
+function workspaceInitials(name) {
+  return String(name || "Workspace")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0] || "")
+    .join("")
+    .toUpperCase();
+}
+
+function toggleWorkspaceMenu(event) {
+  event.stopPropagation();
+  const row = byId("sidebar-org-row");
+  const existing = row.querySelector(".menu");
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  document.querySelectorAll(".menu").forEach((menu) => menu.remove());
+  const workspaceName = state.me?.workspace?.display_name || "Workspace";
+  const menu = document.createElement("div");
+  menu.className = "menu sidebar-org-menu";
+  menu.innerHTML = `
+    <div class="menu-header">${escapeHtml(workspaceName)}</div>
+    ${
+      state.me?.is_admin
+        ? `<button class="menu-item" data-admin-action="logout"><i class="ti ti-logout" aria-hidden="true"></i> Sign out of admin</button>`
+        : `<button class="menu-item" data-admin-action="login"><i class="ti ti-login" aria-hidden="true"></i> Sign in as admin</button>`
+    }
+  `;
+  row.appendChild(menu);
+  const action = menu.querySelector("[data-admin-action]");
+  action.onclick = async (clickEvent) => {
+    clickEvent.stopPropagation();
+    menu.remove();
+    if (action.dataset.adminAction === "logout") {
+      await adminLogout(clickEvent);
+    } else {
+      location.href = state.me?.admin_login_url || "/admin/login";
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener(
+      "click",
+      function onAway() {
+        menu.remove();
+        document.removeEventListener("click", onAway);
+      },
+      { once: true },
+    );
+  }, 0);
 }
 
 function toggleSidebar() {
@@ -2179,7 +2223,7 @@ async function runFullPipeline() {
 /* ───── Admin auth ───── */
 
 async function adminLogout(event) {
-  event.preventDefault();
+  event?.preventDefault();
   const tab = currentTab();
   await fetch("/admin/logout", { method: "POST" });
   await Promise.all([loadMe(), loadStats()]);

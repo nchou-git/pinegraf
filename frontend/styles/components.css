@@ -360,6 +360,13 @@ input[type="file"] {
   color: var(--conflict);
 }
 
+.menu-header {
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
 /* Surfaces */
 
 .panel {

@@ -190,10 +190,62 @@ a:hover {
   background-color: var(--conflict);
 }
 
-.sidebar-admin {
-  padding: 0 var(--space-3);
+.sidebar-org-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: var(--row-h-nav);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background-color: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background-color var(--motion),
+    border-color var(--motion),
+    color var(--motion);
+}
+
+.sidebar-org-row:hover {
+  background-color: var(--bg);
+}
+
+.sidebar-org-row:focus-visible {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px var(--green-tint);
+}
+
+.sidebar-org-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.sidebar-org-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-org-role {
   color: var(--text-faint);
   font-size: var(--fs-xs);
+}
+
+.sidebar-org-menu {
+  bottom: calc(100% + var(--space-1));
+  top: auto;
+  left: 0;
+  right: auto;
+  width: 100%;
 }
 
 .sidebar-collapse {
@@ -239,13 +291,19 @@ a:hover {
 .app-shell.sidebar-collapsed .sidebar-tagline,
 .app-shell.sidebar-collapsed .nav-item span,
 .app-shell.sidebar-collapsed .system-status-copy,
-.app-shell.sidebar-collapsed .sidebar-admin,
+.app-shell.sidebar-collapsed .sidebar-org-copy,
 .sidebar.collapsed .sidebar-header-copy,
 .sidebar.collapsed .sidebar-tagline,
 .sidebar.collapsed .nav-item span,
 .sidebar.collapsed .system-status-copy,
-.sidebar.collapsed .sidebar-admin {
+.sidebar.collapsed .sidebar-org-copy {
   display: none;
+}
+
+.app-shell.sidebar-collapsed .sidebar-org-row,
+.sidebar.collapsed .sidebar-org-row {
+  justify-content: center;
+  padding-inline: 0;
 }
 
 .app-shell.sidebar-collapsed .nav-item,
@@ -338,7 +396,7 @@ a:hover {
   .app-shell.sidebar-collapsed .sidebar-tagline,
   .app-shell.sidebar-collapsed .nav-item span,
   .app-shell.sidebar-collapsed .system-status-copy,
-  .app-shell.sidebar-collapsed .sidebar-admin {
+  .app-shell.sidebar-collapsed .sidebar-org-copy {
     display: flex;
   }
 
