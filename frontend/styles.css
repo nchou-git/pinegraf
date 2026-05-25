@@ -324,42 +324,122 @@
 
 /* ─── Ask ──────────────────────────────────────────────────────────── */
 
-.ask-tool {
-  max-width: calc(var(--space-16) * 11 + var(--space-12) + var(--space-2));
-  margin: var(--space-16) auto 0;
+.ask-page {
+  min-height: calc(100vh - var(--space-16) - var(--space-12));
 }
 
-.ask-input-panel {
+.ask-page.is-empty {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: var(--space-16);
+}
+
+.ask-empty {
+  width: 100%;
+  max-width: calc(var(--space-16) * 11 + var(--space-4));
+  margin: 0 auto;
   text-align: center;
 }
 
-.ask-command {
-  width: min(calc(var(--space-16) * 9 + var(--space-6)), 100%);
+.ask-empty h2 {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: 500;
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+
+.ask-page.has-session {
+  display: flex;
+  flex-direction: column;
+}
+
+.ask-thread {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  padding: var(--space-6) 0 var(--space-12);
+}
+
+.ask-pair {
+  width: min(calc(var(--space-16) * 11 + var(--space-4)), 100%);
   margin: 0 auto;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ask-question-block {
+  max-width: calc(var(--space-16) * 11 + var(--space-4));
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background-color: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+}
+
+.ask-answer-block {
+  max-width: calc(var(--space-16) * 11 + var(--space-4));
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+}
+
+.ask-answer-block:empty::after {
+  content: "";
+  display: inline-block;
+  width: var(--space-2);
+  height: var(--space-4);
+  border-radius: var(--radius-pill);
+  background-color: var(--green);
+  opacity: 1;
+}
+
+.ask-composer {
+  width: min(calc(var(--space-16) * 11 + var(--space-4)), 100%);
+  margin: var(--space-6) auto 0;
+  display: flex;
+  align-items: flex-end;
   gap: var(--space-2);
   padding: var(--space-2);
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-lg);
   background-color: var(--bg);
   box-shadow: var(--shadow-md);
 }
 
-.ask-command input {
+.ask-composer.is-pinned {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-base);
+  margin-top: auto;
+  margin-bottom: var(--space-4);
+}
+
+.ask-input {
+  min-height: var(--input-h);
+  max-height: calc(var(--input-h) * 4);
   border: none;
+  resize: none;
+  overflow-y: auto;
   background-color: transparent;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--fs-md);
 }
 
-.ask-command input:focus {
+.ask-input:focus {
   border: none;
+  box-shadow: none;
 }
 
-.ask-command .btn-primary {
-  border-radius: var(--radius-pill);
+.ask-submit {
   flex: 0 0 auto;
+  width: var(--button-h-default);
+  height: var(--button-h-default);
 }
 
 .ask-examples {
@@ -367,59 +447,52 @@
   justify-content: center;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-4);
+  margin: var(--space-5) 0 0;
 }
 
-.ask-example,
-.recent-question {
+.ask-sources {
+  max-width: calc(var(--space-16) * 11 + var(--space-4));
+}
+
+.ask-source-details {
+  display: inline-block;
+}
+
+.ask-source-details[open] {
+  display: block;
+}
+
+.ask-source-pill {
+  display: inline-flex;
+  align-items: center;
+  height: var(--button-h-small);
+  padding: 0 var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
-  background-color: var(--bg);
+  background-color: var(--surface);
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  padding: var(--space-2) var(--space-3);
+  font-weight: 500;
   cursor: pointer;
   transition:
-    background var(--motion),
-    color var(--motion),
-    border-color var(--motion);
+    background-color var(--motion),
+    border-color var(--motion),
+    color var(--motion);
 }
 
-.ask-example:hover,
-.recent-question:hover {
-  background-color: var(--surface);
-  color: var(--text);
-  border-color: var(--line);
+.ask-source-pill:hover,
+.ask-source-pill:focus-visible {
+  border-color: var(--green);
+  color: var(--green);
 }
 
-.ask-live-result {
-  margin-top: var(--space-8);
+.ask-source-pill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--green-tint);
 }
 
-.ask-answer {
-  max-width: calc(var(--space-16) * 10 + var(--space-10));
-  margin: 0 auto var(--space-6);
-}
-
-.ask-answer-label,
-.ask-citations-label,
-.recent-questions-title {
-  font-size: var(--fs-xs);
-  color: var(--text-faint);
-  margin-bottom: var(--space-2);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.ask-answer-text {
-  font-size: var(--fs-lg);
-  color: var(--text);
-  line-height: var(--lh-normal);
-}
-
-.ask-citations {
-  max-width: calc(var(--space-16) * 10 + var(--space-10));
-  margin: 0 auto var(--space-6);
+.ask-source-list {
+  margin-top: var(--space-3);
 }
 
 .ask-citation-card {
@@ -435,7 +508,7 @@
   cursor: pointer;
   text-align: left;
   transition:
-    background var(--motion),
+    background-color var(--motion),
     border-color var(--motion);
 }
 
@@ -468,17 +541,6 @@
   color: var(--text-muted);
   font-size: var(--fs-sm);
   background-color: var(--surface);
-}
-
-.recent-questions {
-  max-width: calc(var(--space-16) * 10 + var(--space-10));
-  margin: var(--space-8) auto 0;
-}
-
-.recent-question-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
 }
 
 .side-drawer {
@@ -1034,14 +1096,15 @@
   .directory-results {
     overflow-x: auto;
   }
-  .ask-tool {
-    margin-top: var(--space-8);
+  .ask-page.is-empty {
+    justify-content: flex-start;
+    padding-top: var(--space-10);
   }
-  .ask-command {
-    border-radius: var(--radius-lg);
+  .ask-thread {
+    padding-top: var(--space-4);
   }
-  .ask-command .btn-primary {
-    padding-inline: var(--space-3);
+  .ask-composer.is-pinned {
+    margin-bottom: var(--space-2);
   }
   .graph-split {
     grid-template-columns: 1fr;

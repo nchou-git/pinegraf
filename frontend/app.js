@@ -1,5 +1,7 @@
 "use strict";
 
+const ASK_SESSION_KEY = "pinegraf_ask_session";
+
 const state = {
   me: null,
   stats: null,
@@ -8,7 +10,7 @@ const state = {
   directoryRows: [],
   directoryOptionRows: [],
   sourcesCache: null,
-  askHistory: JSON.parse(sessionStorage.getItem("pinegraf.askHistory") || "[]"),
+  askSession: JSON.parse(sessionStorage.getItem(ASK_SESSION_KEY) || "[]"),
   graphSearch: "",
   graphSearchResults: [],
   sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
@@ -852,70 +854,120 @@ function renderPagination(page, totalPages) {
 /* ───── Ask ───── */
 
 function renderAsk() {
+  const hasSession = state.askSession.length > 0;
   setPageHeader({
     title: "Ask",
-    subtitle: "Run focused questions against the extracted graph and source evidence.",
+    subtitle: "",
+    actions: hasSession
+      ? `<button class="btn-ghost" id="ask-new-question" type="button"><i class="ti ti-plus" aria-hidden="true"></i> New question</button>`
+      : "",
   });
   const app = document.getElementById("app");
+  const examples = [
+    "Tuck alums in healthcare",
+    "Who founded Gyrobike?",
+    "PE alumni class of 2010–2015",
+    "Connections to Adimab",
+  ];
   app.innerHTML = `
-    <div class="ask-tool">
-      <section class="ask-input-panel">
-        <div class="ask-command">
-          <input id="ask-input" placeholder="Ask about people, projects, or organizations" />
-          <button class="btn-primary" id="ask-submit"><i class="ti ti-send" aria-hidden="true"></i> Run</button>
-        </div>
-        <div class="ask-examples">
-          ${[
-            "Tuck alums in healthcare",
-            "Who founded Gyrobike?",
-            "Show me PE alums class of 2010-2015",
-          ]
-            .map((query) => `<button class="chip ask-example" type="button">${escapeHtml(query)}</button>`)
-            .join("")}
-        </div>
-      </section>
-      <section class="ask-live-result" id="ask-result" hidden></section>
-      <section class="recent-questions" id="recent-questions"></section>
+    <div class="ask-page ${hasSession ? "has-session" : "is-empty"}">
+      ${
+        hasSession
+          ? `<section class="ask-thread" id="ask-thread">${state.askSession.map(renderAskPair).join("")}</section>`
+          : `<section class="ask-empty">
+              <h2>What do you want to know?</h2>
+              <div class="ask-examples">
+                ${examples
+                  .map((query) => `<button class="chip ask-example" type="button">${escapeHtml(query)}</button>`)
+                  .join("")}
+              </div>
+            </section>`
+      }
+      ${renderAskComposer(hasSession)}
     </div>
     <aside class="side-drawer" id="ask-side-drawer" hidden></aside>
   `;
+  const newQuestion = byId("ask-new-question");
+  if (newQuestion) {
+    newQuestion.onclick = () => {
+      state.askSession = [];
+      sessionStorage.removeItem(ASK_SESSION_KEY);
+      renderAsk();
+    };
+  }
+  setupAskComposer();
+  attachAskCitationHandlers();
+  scrollAskThreadToBottom();
+}
+
+function renderAskComposer(isPinned) {
+  return `
+    <form class="ask-composer ${isPinned ? "is-pinned" : ""}" id="ask-form">
+      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations"></textarea>
+      <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Ask question" disabled>
+        <i class="ti ti-send" aria-hidden="true"></i>
+      </button>
+    </form>
+  `;
+}
+
+function setupAskComposer() {
   const input = byId("ask-input");
+  if (!input) return;
+  const submit = byId("ask-submit");
+  const form = byId("ask-form");
+  const syncComposer = () => {
+    resizeAskInput(input);
+    submit.disabled = !input.value.trim();
+  };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    ask();
+  };
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       ask();
     }
   });
-  byId("ask-submit").onclick = ask;
+  input.addEventListener("input", syncComposer);
   document.querySelectorAll(".ask-example").forEach((button) => {
     button.onclick = () => {
       input.value = button.textContent.trim();
       input.focus();
+      syncComposer();
     };
   });
-  renderRecentQuestions();
+  syncComposer();
   input.focus();
+}
+
+function resizeAskInput(input) {
+  const lines = input.value
+    .split("\n")
+    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / 72)), 0);
+  input.rows = Math.min(4, Math.max(1, lines));
 }
 
 async function ask() {
   const input = byId("ask-input");
   const question = input.value.trim();
   if (!question) return;
-  rememberQuestion(question);
-  const result = byId("ask-result");
-  result.hidden = false;
-  result.innerHTML = `
-    <div class="ask-answer">
-      <div class="ask-answer-label">Answer</div>
-      <div class="ask-answer-text" id="answer-text"><span class="muted">Thinking…</span></div>
-    </div>
-    <div class="ask-citations" id="ask-citations-wrap">
-      <div class="ask-citations-label">Sources</div>
-      <div id="ask-citations"></div>
-    </div>
-  `;
-  const answerText = byId("answer-text");
-  answerText.textContent = "";
+  input.value = "";
+  resizeAskInput(input);
+  byId("ask-submit").disabled = true;
+
+  const item = {
+    id: createAskId(),
+    question,
+    answer: "",
+    citations: [],
+    isStreaming: true,
+  };
+  state.askSession.push(item);
+  saveAskSession();
+  renderAsk();
+  const answerText = byId(`ask-answer-${item.id}`);
   try {
     const response = await fetch("/api/ask", {
       method: "POST",
@@ -942,76 +994,107 @@ async function ask() {
           return;
         }
         if (payload.kind === "token") {
-          answerText.textContent += payload.text;
+          item.answer += payload.text;
+          if (answerText) {
+            answerText.textContent = item.answer;
+          }
         } else if (payload.kind === "citations") {
-          renderCitations(payload.citations || []);
+          item.citations = payload.citations || [];
+          refreshAskSources(item.id);
         }
       });
     }
-    if (!answerText.textContent.trim()) {
-      answerText.innerHTML = `<span class="muted">No answer could be generated.</span>`;
+    if (!item.answer.trim()) {
+      item.answer = "No answer could be generated.";
+      if (answerText) {
+        answerText.textContent = item.answer;
+      }
     }
   } catch (e) {
-    answerText.innerHTML = `<span class="muted">Unable to get an answer: ${escapeHtml(e.message)}</span>`;
+    item.answer = `Unable to get an answer: ${e.message}`;
+    if (answerText) {
+      answerText.textContent = item.answer;
+    }
+  } finally {
+    item.isStreaming = false;
+    saveAskSession();
+    refreshAskSources(item.id);
   }
 }
 
-function rememberQuestion(question) {
-  const key = question.toLowerCase();
-  state.askHistory = [
+function createAskId() {
+  return `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function saveAskSession() {
+  const payload = state.askSession.map(({ id, question, answer, citations }) => ({
+    id,
     question,
-    ...state.askHistory.filter((item) => item.toLowerCase() !== key),
-  ].slice(0, 5);
-  sessionStorage.setItem("pinegraf.askHistory", JSON.stringify(state.askHistory));
-  renderRecentQuestions();
+    answer,
+    citations: citations || [],
+  }));
+  sessionStorage.setItem(ASK_SESSION_KEY, JSON.stringify(payload));
 }
 
-function renderRecentQuestions() {
-  const root = byId("recent-questions");
-  if (!root) return;
-  if (!state.askHistory.length) {
-    root.innerHTML = "";
-    return;
-  }
-  root.innerHTML = `
-    <div class="recent-questions-title">Recent questions</div>
-    <div class="recent-question-list">
-      ${state.askHistory
-        .map(
-          (question) => `
-          <button class="chip recent-question" type="button">${escapeHtml(question)}</button>`,
-        )
-        .join("")}
-    </div>
+function renderAskPair(item) {
+  return `
+    <article class="ask-pair" data-ask-id="${escapeAttr(item.id)}">
+      <div class="ask-question-block">${escapeHtml(item.question)}</div>
+      <div class="ask-answer-block ${item.isStreaming ? "is-streaming" : ""}" id="ask-answer-${escapeAttr(item.id)}">${escapeHtml(item.answer || "")}</div>
+      <div class="ask-sources" id="ask-sources-${escapeAttr(item.id)}">${renderAskSources(item)}</div>
+    </article>
   `;
-  root.querySelectorAll(".recent-question").forEach((button) => {
+}
+
+function renderAskSources(item) {
+  const citations = item.citations || [];
+  const count = citations.length;
+  return `
+    <details class="ask-source-details">
+      <summary class="ask-source-pill">Sources (${count} ${count === 1 ? "source" : "sources"})</summary>
+      <div class="ask-source-list">
+        ${
+          count
+            ? citations
+                .map(
+                  (c, i) => `
+                    <button class="btn-ghost ask-citation-card" type="button" data-ask-id="${escapeAttr(item.id)}" data-citation-index="${i}">
+                      <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
+                      <strong>${escapeHtml(c.title || c.source_title || `Source ${i + 1}`)}</strong>
+                      <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
+                    </button>`,
+                )
+                .join("")
+            : `<div class="ask-citations-empty">Answered from corpus-level patterns, no specific citations.</div>`
+        }
+      </div>
+    </details>
+  `;
+}
+
+function refreshAskSources(itemId) {
+  const item = state.askSession.find((candidate) => candidate.id === itemId);
+  const root = byId(`ask-sources-${itemId}`);
+  if (!item || !root) return;
+  root.innerHTML = renderAskSources(item);
+  attachAskCitationHandlers();
+}
+
+function attachAskCitationHandlers() {
+  document.querySelectorAll(".ask-citation-card").forEach((button) => {
     button.onclick = () => {
-      byId("ask-input").value = button.textContent.trim();
-      ask();
+      const item = state.askSession.find((candidate) => candidate.id === button.dataset.askId);
+      const citation = item?.citations?.[Number(button.dataset.citationIndex)] || {};
+      openCitationDrawer(citation);
     };
   });
 }
 
-function renderCitations(citations) {
-  const wrap = byId("ask-citations-wrap");
-  const list = byId("ask-citations");
-  if (!citations.length) {
-    list.innerHTML = `<div class="ask-citations-empty">Answered from corpus-level patterns, no specific citations.</div>`;
-    return;
+function scrollAskThreadToBottom() {
+  const thread = byId("ask-thread");
+  if (thread) {
+    thread.scrollTop = thread.scrollHeight;
   }
-  list.innerHTML = citations
-    .map(
-      (c, i) => `
-      <button class="btn-ghost ask-citation-card" type="button" data-citation-index="${i}">
-        <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
-        <strong>${escapeHtml(c.title || c.source_title || `Source ${i + 1}`)}</strong>
-        <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
-      </button>`,
-    )
-    .join("");
-  list.querySelectorAll("[data-citation-index]").forEach((button) => {
-    button.onclick = () => openCitationDrawer(citations[Number(button.dataset.citationIndex)] || {});
-  });
 }
 
 function openCitationDrawer(citation) {
