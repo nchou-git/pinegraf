@@ -448,14 +448,6 @@
   height: var(--button-h-default);
 }
 
-.ask-examples {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: var(--space-5) 0 0;
-}
-
 .ask-sources {
   max-width: calc(var(--space-16) * 11 + var(--space-4));
 }

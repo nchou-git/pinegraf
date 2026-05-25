@@ -831,12 +831,6 @@ function renderAsk() {
       : "",
   });
   const app = document.getElementById("app");
-  const examples = [
-    "Tuck alums in healthcare",
-    "Who founded Gyrobike?",
-    "PE alumni class of 2010–2015",
-    "Connections to Adimab",
-  ];
   app.innerHTML = `
     <div class="ask-page ${hasSession ? "has-session" : "is-empty"}">
       ${
@@ -844,11 +838,6 @@ function renderAsk() {
           ? `<section class="ask-thread" id="ask-thread">${state.askSession.map(renderAskPair).join("")}</section>`
           : `<section class="ask-empty">
               <h2>What do you want to know?</h2>
-              <div class="ask-examples">
-                ${examples
-                  .map((query) => `<button class="chip ask-example" type="button">${escapeHtml(query)}</button>`)
-                  .join("")}
-              </div>
             </section>`
       }
       ${renderAskComposer(hasSession)}
@@ -871,7 +860,7 @@ function renderAsk() {
 function renderAskComposer(isPinned) {
   return `
     <form class="ask-composer ${isPinned ? "is-pinned" : ""}" id="ask-form">
-      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations"></textarea>
+      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations. For example, who worked on Gyrobike?"></textarea>
       <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Ask question" disabled>
         <i class="ti ti-send" aria-hidden="true"></i>
       </button>
@@ -899,13 +888,6 @@ function setupAskComposer() {
     }
   });
   input.addEventListener("input", syncComposer);
-  document.querySelectorAll(".ask-example").forEach((button) => {
-    button.onclick = () => {
-      input.value = button.textContent.trim();
-      input.focus();
-      syncComposer();
-    };
-  });
   syncComposer();
   input.focus();
 }
