@@ -12,11 +12,11 @@
   cursor: pointer;
   font-family: inherit;
   transition:
-    background var(--ease),
-    border-color var(--ease),
-    color var(--ease),
-    transform var(--ease);
-  line-height: 1.2;
+    background var(--motion),
+    border-color var(--motion),
+    color var(--motion),
+    transform var(--motion);
+  line-height: var(--lh-tight);
   border: 0.5px solid transparent;
 }
 .btn-primary {
@@ -111,8 +111,8 @@ select {
   color: var(--text);
   outline: none;
   transition:
-    border-color var(--ease),
-    box-shadow var(--ease);
+    border-color var(--motion),
+    box-shadow var(--motion);
 }
 .input:focus,
 input:focus,
@@ -339,7 +339,7 @@ textarea {
   right: 12px;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  line-height: 1.4;
+  line-height: var(--lh-snug);
   padding: 10px 12px;
 }
 
@@ -484,7 +484,7 @@ textarea {
 .kind-card .description {
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: var(--lh-snug);
 }
 
 .field-row {
@@ -588,7 +588,7 @@ input[type="file"] {
   word-wrap: break-word;
   font-size: var(--fs-sm);
   line-height: 1.55;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   border: 0.5px solid var(--line);
   max-height: 360px;
   overflow-y: auto;

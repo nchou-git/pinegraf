@@ -46,8 +46,8 @@
   font-size: var(--fs-sm);
   cursor: pointer;
   transition:
-    background var(--ease),
-    border-color var(--ease);
+    background var(--motion),
+    border-color var(--motion);
 }
 
 .filter-button:hover {
@@ -230,7 +230,7 @@
 
 .directory-table-row {
   cursor: pointer;
-  transition: background var(--ease);
+  transition: background var(--motion);
 }
 
 .directory-table-row:hover {
@@ -248,7 +248,7 @@
 .directory-person-name {
   color: var(--text);
   font-weight: 500;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -257,7 +257,7 @@
 .directory-person-sub {
   color: var(--text-faint);
   font-size: var(--fs-xs);
-  line-height: 1.2;
+  line-height: var(--lh-tight);
   margin-top: 2px;
 }
 
@@ -402,9 +402,9 @@
   padding: 6px 10px;
   cursor: pointer;
   transition:
-    background var(--ease),
-    color var(--ease),
-    border-color var(--ease);
+    background var(--motion),
+    color var(--motion),
+    border-color var(--motion);
 }
 
 .ask-example:hover,
@@ -457,8 +457,8 @@
   cursor: pointer;
   text-align: left;
   transition:
-    background var(--ease),
-    border-color var(--ease);
+    background var(--motion),
+    border-color var(--motion);
 }
 
 .ask-citation-card + .ask-citation-card {
@@ -684,7 +684,7 @@
   font-weight: 500;
   color: var(--text);
   margin: 0 0 4px;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 .entity-hero .subtitle {
   font-size: var(--fs-base);
@@ -759,7 +759,7 @@
 .claim-statement {
   font-size: var(--fs-md);
   color: var(--text);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   margin-bottom: 12px;
 }
 .claim-statement .entity {
@@ -803,7 +803,7 @@
   padding: 8px 0;
   border-bottom: 0.5px solid var(--line);
   cursor: pointer;
-  transition: background var(--ease);
+  transition: background var(--motion);
 }
 .source-row:hover {
   background: var(--surface);
@@ -992,15 +992,15 @@
     position: fixed;
     left: 0;
     top: 0;
-    width: var(--sidebar-width);
+    width: var(--sidebar-width-expanded);
     transform: translateX(-100%);
-    transition: transform var(--ease);
+    transition: transform var(--motion);
   }
   .shell.sidebar-open .sidebar {
     transform: translateX(0);
   }
   .shell.sidebar-collapsed .sidebar {
-    width: var(--sidebar-width);
+    width: var(--sidebar-width-expanded);
   }
   .shell.sidebar-collapsed .sidebar-brand-copy,
   .shell.sidebar-collapsed .sidebar-tagline,

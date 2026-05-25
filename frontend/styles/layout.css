@@ -8,7 +8,7 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   font-size: var(--fs-md);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -46,12 +46,12 @@ a:hover {
 .shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width-expanded) minmax(0, 1fr);
   background: var(--bg);
 }
 
 .shell.sidebar-collapsed {
-  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-width-collapsed) minmax(0, 1fr);
 }
 
 .sidebar {
@@ -98,7 +98,7 @@ a:hover {
 .sidebar-tagline {
   color: var(--text-muted);
   font-size: var(--fs-xs);
-  line-height: 1.4;
+  line-height: var(--lh-snug);
   padding: 2px 9px 14px 47px;
 }
 
@@ -121,8 +121,8 @@ a:hover {
   font-size: var(--fs-base);
   text-decoration: none;
   transition:
-    background var(--ease),
-    color var(--ease);
+    background var(--motion),
+    color var(--motion);
 }
 
 .sidebar-nav-item:hover {
@@ -201,8 +201,8 @@ a:hover {
   color: var(--text-muted);
   cursor: pointer;
   transition:
-    background var(--ease),
-    color var(--ease);
+    background var(--motion),
+    color var(--motion);
 }
 
 .sidebar-collapse:hover {
@@ -259,7 +259,7 @@ a:hover {
   margin: 0;
   font-size: var(--fs-xl);
   font-weight: 500;
-  line-height: 1.2;
+  line-height: var(--lh-tight);
 }
 
 .page-eyebrow {
