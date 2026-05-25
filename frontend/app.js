@@ -9,6 +9,8 @@ const state = {
   directoryOptionRows: [],
   sourcesCache: null,
   askHistory: JSON.parse(sessionStorage.getItem("pinegraf.askHistory") || "[]"),
+  graphSearch: "",
+  graphSearchResults: [],
   sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
 };
 
@@ -1033,55 +1035,161 @@ async function renderGraph(entityId) {
   setPageHeader({
     title: "Graph",
     subtitle: entityId ? "Inspect one entity's relationships." : "Search for an entity to open its graph.",
+    actions: entityId
+      ? `<a class="btn-ghost" href="#graph"><i class="ti ti-arrow-left" aria-hidden="true"></i> Back to search</a>`
+      : "",
   });
   const app = document.getElementById("app");
   if (!entityId) {
     app.innerHTML = `
       <div class="graph-empty">
-        <h2>Open a graph view</h2>
-        <p class="muted">Find a person, organization, or project to see its connections.</p>
-        <div class="search-row">
-          <input id="graph-search" placeholder="Search for a person, organization, or project" />
-          <button class="btn-primary" id="graph-search-go"><i class="ti ti-search" aria-hidden="true"></i> Find</button>
+        <div class="graph-search-card">
+          <div class="search-row">
+            <input id="graph-search" placeholder="Search for a person, organization, or project" value="${escapeAttr(state.graphSearch)}" autocomplete="off" />
+            <button class="btn-primary" id="graph-search-go"><i class="ti ti-search" aria-hidden="true"></i> Find</button>
+          </div>
+          <div id="graph-results" class="graph-autocomplete"></div>
         </div>
-        <div id="graph-results"></div>
+        <svg id="placeholder-graph" class="placeholder-graph" aria-hidden="true"></svg>
+        <div class="graph-placeholder-caption">Search above to see real connections.</div>
       </div>
     `;
-    const go = async () => {
-      const q = byId("graph-search").value.trim();
-      if (!q) return;
-      const data = await getJSON(`/api/directory?q=${encodeURIComponent(q)}&page_size=20`);
-      const out = byId("graph-results");
-      if (!data.results.length) {
-        out.innerHTML = `<div class="empty-state"><i class="ti ti-search-off" aria-hidden="true"></i><div>No matches.</div></div>`;
-        return;
-      }
-      out.innerHTML = data.results.map(directoryRow).join("");
-      out.querySelectorAll(".entity-row").forEach((row) => {
-        row.onclick = () => (location.hash = `#graph/${row.dataset.entityId}`);
-      });
-    };
-    byId("graph-search-go").onclick = go;
-    byId("graph-search").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") go();
-    });
+    setupGraphSearch();
+    drawPlaceholderGraph();
     return;
   }
   app.innerHTML = `
-    <nav class="breadcrumb">
-      <a href="#directory">Directory</a>
-      <i class="ti ti-chevron-right" aria-hidden="true"></i>
-      <span id="bc-name">Loading…</span>
-    </nav>
     <div id="entity-panel"></div>
   `;
   try {
     const data = await getJSON(`/api/entity/${entityId}`);
-    byId("bc-name").textContent = data.identity.canonical_name;
+    setPageHeader({
+      title: "Graph",
+      subtitle: data.identity.canonical_name,
+      actions: `<a class="btn-ghost" href="#graph"><i class="ti ti-arrow-left" aria-hidden="true"></i> Back to search</a>`,
+    });
     renderEntityPanel(data);
   } catch (e) {
     byId("entity-panel").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+function setupGraphSearch() {
+  const input = byId("graph-search");
+  const go = () => {
+    const first = state.graphSearchResults[0];
+    if (first) {
+      location.hash = `#graph/${first.entity_id}`;
+      return;
+    }
+    runGraphSearch();
+  };
+  let timer = null;
+  input.addEventListener("input", () => {
+    state.graphSearch = input.value.trim();
+    clearTimeout(timer);
+    timer = setTimeout(runGraphSearch, 180);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      go();
+    }
+  });
+  byId("graph-search-go").onclick = go;
+  if (state.graphSearch) runGraphSearch();
+  input.focus();
+}
+
+async function runGraphSearch() {
+  const q = byId("graph-search")?.value.trim() || state.graphSearch;
+  const out = byId("graph-results");
+  state.graphSearch = q;
+  if (!q) {
+    state.graphSearchResults = [];
+    if (out) out.innerHTML = "";
+    return;
+  }
+  try {
+    const data = await getJSON(`/api/directory?q=${encodeURIComponent(q)}&page_size=8`);
+    state.graphSearchResults = data.results || [];
+    if (!out) return;
+    if (!state.graphSearchResults.length) {
+      out.innerHTML = `<div class="graph-result-empty">No matches.</div>`;
+      return;
+    }
+    out.innerHTML = state.graphSearchResults
+      .map(
+        (row) => `
+        <button class="graph-result" type="button" data-entity-id="${escapeAttr(row.entity_id)}">
+          <span>${escapeHtml(row.canonical_name || "Unknown")}</span>
+          <small>${escapeHtml(rowBio(row))}</small>
+        </button>`,
+      )
+      .join("");
+    out.querySelectorAll("[data-entity-id]").forEach((button) => {
+      button.onclick = () => (location.hash = `#graph/${button.dataset.entityId}`);
+    });
+  } catch (e) {
+    if (out) out.innerHTML = `<div class="graph-result-empty">Unable to search: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function drawPlaceholderGraph() {
+  const svgElement = byId("placeholder-graph");
+  if (!svgElement) return;
+  const width = svgElement.clientWidth || 640;
+  const height = svgElement.clientHeight || 260;
+  if (typeof d3 === "undefined") {
+    svgElement.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svgElement.innerHTML = Array.from({ length: 12 })
+      .map((_, index) => {
+        const x = 80 + (index % 4) * 150;
+        const y = 55 + Math.floor(index / 4) * 72;
+        return `<circle cx="${x}" cy="${y}" r="9" fill="#d8d8d8"></circle>`;
+      })
+      .join("");
+    return;
+  }
+  const svg = d3.select(svgElement);
+  svg.attr("viewBox", `0 0 ${width} ${height}`);
+  svg.selectAll("*").remove();
+  const nodes = Array.from({ length: 12 }, (_, id) => ({ id }));
+  const links = Array.from({ length: 18 }, (_, index) => ({
+    source: index % nodes.length,
+    target: (index * 5 + 3) % nodes.length,
+  }));
+  const link = svg
+    .append("g")
+    .selectAll("line")
+    .data(links)
+    .enter()
+    .append("line")
+    .attr("stroke", "#d4d4d4")
+    .attr("stroke-width", 1);
+  const node = svg
+    .append("g")
+    .selectAll("circle")
+    .data(nodes)
+    .enter()
+    .append("circle")
+    .attr("r", 8)
+    .attr("fill", "#cfcfcf");
+  const sim = d3
+    .forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id((item) => item.id).distance(64))
+    .force("charge", d3.forceManyBody().strength(-55))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .alpha(0.7);
+  sim.on("tick", () => {
+    link
+      .attr("x1", (item) => item.source.x)
+      .attr("y1", (item) => item.source.y)
+      .attr("x2", (item) => item.target.x)
+      .attr("y2", (item) => item.target.y);
+    node.attr("cx", (item) => item.x).attr("cy", (item) => item.y);
+  });
+  setTimeout(() => sim.stop(), 3000);
 }
 
 function renderEntityPanel(data) {
