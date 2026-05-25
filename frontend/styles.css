@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=logs-view";
-@import "./styles/components.css?v=logs-view";
-@import "./styles/layout.css?v=logs-view";
+@import "./styles/tokens.css?v=logs-fit";
+@import "./styles/components.css?v=logs-fit";
+@import "./styles/layout.css?v=logs-fit";
 
 /* page-specific rules below */
 
@@ -842,12 +842,15 @@
 /* ─── Logs ─────────────────────────────────────────────────────────── */
 
 .logs-view {
-  height: calc(100vh - var(--space-16) - var(--space-12));
-  min-height: calc(var(--space-16) * 6);
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
 }
 
 .logs-terminal {
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-4);
   border-radius: var(--radius-md);

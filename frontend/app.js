@@ -253,6 +253,7 @@ function currentTab() {
 function renderRoute() {
   const route = location.hash.replace(/^#/, "") || "directory";
   const [tab, ...rest] = route.split("/");
+  document.body.classList.toggle("route-logs", tab === "logs" && Boolean(state.me?.is_admin));
   if (tab !== "logs") stopLogsViewStream();
   if (tab === "admin") {
     history.replaceState(null, "", "#sources");
