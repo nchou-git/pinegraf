@@ -104,15 +104,6 @@ a:hover {
   line-height: var(--lh-tight);
 }
 
-.sidebar-tagline {
-  overflow: hidden;
-  color: var(--text-faint);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-snug);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .sidebar-nav {
   display: flex;
   flex-direction: column;
@@ -260,11 +251,9 @@ a:hover {
 }
 
 .app-shell.sidebar-collapsed .sidebar-header-copy,
-.app-shell.sidebar-collapsed .sidebar-tagline,
 .app-shell.sidebar-collapsed .nav-item span,
 .app-shell.sidebar-collapsed .sidebar-org-copy,
 .sidebar.collapsed .sidebar-header-copy,
-.sidebar.collapsed .sidebar-tagline,
 .sidebar.collapsed .nav-item span,
 .sidebar.collapsed .sidebar-org-copy {
   display: none;
@@ -363,14 +352,9 @@ a:hover {
   }
 
   .app-shell.sidebar-collapsed .sidebar-header-copy,
-  .app-shell.sidebar-collapsed .sidebar-tagline,
   .app-shell.sidebar-collapsed .nav-item span,
   .app-shell.sidebar-collapsed .sidebar-org-copy {
     display: flex;
-  }
-
-  .app-shell.sidebar-collapsed .sidebar-tagline {
-    display: block;
   }
 
   .app-shell.sidebar-collapsed .nav-item {
