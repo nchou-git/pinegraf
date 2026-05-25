@@ -20,13 +20,13 @@
   --bg: #FFFFFF;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", Arial, "Segoe UI", Roboto, sans-serif;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-base: 13px;
-  --fs-md: 14px;
-  --fs-lg: 16px;
-  --fs-xl: 20px;
-  --fs-2xl: 24px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-xl: 22px;
+  --fs-2xl: 26px;
   --lh-tight: 1.2;
   --lh-snug: 1.4;
   --lh-normal: 1.5;
@@ -59,7 +59,7 @@
   --z-modal: 200;
   --z-toast: 300;
 
-  --sidebar-width-expanded: 240px;
+  --sidebar-width-expanded: 260px;
   --sidebar-width-collapsed: 60px;
   --content-max-width: 1280px;
   --content-gutter: var(--space-8);
@@ -68,7 +68,7 @@
   --button-h-default: 36px;
   --button-h-small: 32px;
   --input-h: 36px;
-  --row-h-data: 48px;
+  --row-h-data: 52px;
   --row-h-header: 40px;
   --row-h-nav: 36px;
   --row-h-compact: 32px;

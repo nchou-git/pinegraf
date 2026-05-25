@@ -151,7 +151,7 @@ a:hover {
 
 .nav-item .ti {
   width: var(--space-5);
-  font-size: var(--fs-lg);
+  font-size: calc(var(--fs-lg) + 1px);
   text-align: center;
 }
 

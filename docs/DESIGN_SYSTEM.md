@@ -26,13 +26,13 @@
 | Token | Value | Rationale |
 | --- | --- | --- |
 | `--font-sans` | system sans stack | Keeps the app native-feeling and fast without a font dependency. |
-| `--fs-xs` | 11px | Smallest metadata and status text. |
-| `--fs-sm` | 12px | Compact labels, badges, and table metadata. |
-| `--fs-base` | 13px | Default dense application text. |
-| `--fs-md` | 14px | Readable controls and primary row content. |
-| `--fs-lg` | 16px | Larger labels and modest section headings. |
-| `--fs-xl` | 20px | Page-level secondary headings. |
-| `--fs-2xl` | 24px | Top-level focused headings such as Ask empty state. |
+| `--fs-xs` | 12px | Smallest metadata and status text. |
+| `--fs-sm` | 13px | Compact labels, badges, and table metadata. |
+| `--fs-base` | 14px | Default dense application text. |
+| `--fs-md` | 15px | Readable controls and primary row content. |
+| `--fs-lg` | 17px | Larger labels and modest section headings. |
+| `--fs-xl` | 22px | Page-level secondary headings. |
+| `--fs-2xl` | 26px | Top-level focused headings such as Ask empty state. |
 | `--lh-tight` | 1.2 | Short headings. |
 | `--lh-snug` | 1.4 | Dense metadata and compact paragraphs. |
 | `--lh-normal` | 1.5 | Prose and answer text. |
@@ -103,7 +103,7 @@ Use these tokens instead of magic numbers.
 
 | Token | Value | Rationale |
 | --- | --- | --- |
-| `--sidebar-width-expanded` | 240px | Standard sidebar width for labels and status. |
+| `--sidebar-width-expanded` | 260px | Standard sidebar width for labels and status. |
 | `--sidebar-width-collapsed` | 60px | Icon-only sidebar width. |
 | `--content-max-width` | 1280px | Keeps dense data pages readable on wide displays. |
 | `--content-gutter` | `var(--space-8)` | Standard horizontal page gutter. |
@@ -116,7 +116,7 @@ Use these tokens instead of magic numbers.
 | `--button-h-default` | 36px | Standard action height. |
 | `--button-h-small` | 32px | Compact row action height. |
 | `--input-h` | 36px | Input height aligned to default buttons. |
-| `--row-h-data` | 48px | Dense table row height. |
+| `--row-h-data` | 52px | Dense table row height. |
 | `--row-h-header` | 40px | Table and section header row height. |
 | `--row-h-nav` | 36px | Sidebar navigation row height. |
 | `--row-h-compact` | 32px | Compact list and menu row height. |
