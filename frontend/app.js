@@ -199,8 +199,8 @@ function toggleWorkspaceMenu(event) {
     <div class="menu-header">${escapeHtml(workspaceName)}</div>
     ${
       state.me?.is_admin
-        ? `<button class="menu-item" data-admin-action="logout"><i class="ti ti-logout" aria-hidden="true"></i> Sign out of admin</button>`
-        : `<button class="menu-item" data-admin-action="login"><i class="ti ti-login" aria-hidden="true"></i> Sign-in</button>`
+        ? `<button class="menu-item" data-admin-action="logout"><i class="ti ti-logout" aria-hidden="true"></i> Sign out</button>`
+        : `<button class="menu-item" data-admin-action="login"><i class="ti ti-login" aria-hidden="true"></i> Sign in</button>`
     }
   `;
   row.appendChild(menu);
