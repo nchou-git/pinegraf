@@ -1471,6 +1471,7 @@ async function renderSources(parts) {
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="stats-grid" id="sources-stats">${statCards(state.stats || {})}</div>
+    <div id="archived-cleanup-banner"></div>
     <div class="sources-list" id="sources-list">
       <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
     </div>
@@ -1551,6 +1552,7 @@ async function loadSourcesList() {
   try {
     const data = await getJSON("/api/sources");
     const sources = data.sources || [];
+    renderArchivedCleanupBanner(Number(data.archived_count || 0));
     state.sourcesCache = sources;
     const active = sources.filter((s) => s.status === "active");
     const paused = sources.filter((s) => s.status === "paused");
@@ -1601,6 +1603,63 @@ async function loadSourcesList() {
   } catch (e) {
     byId("sources-list").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load sources: ${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+function renderArchivedCleanupBanner(count) {
+  const banner = byId("archived-cleanup-banner");
+  if (!banner) return;
+  if (!state.me?.is_admin || count <= 0) {
+    banner.innerHTML = "";
+    return;
+  }
+  banner.innerHTML = `
+    <div class="panel panel-flush">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">${formatNumber(count)} archived ${count === 1 ? "source" : "sources"} from a previous version are still taking up space.</div>
+          <div class="muted small">Permanently remove archived sources and orphaned data.</div>
+        </div>
+        <button class="btn-secondary" id="nuke-archived" type="button">Clean up now</button>
+      </div>
+    </div>
+  `;
+  byId("nuke-archived").onclick = nukeArchivedSources;
+}
+
+async function nukeArchivedSources() {
+  if (
+    !confirm(
+      "This permanently removes all archived sources and orphaned data (documents, claims, entities) that no longer belong to any active source. Cannot be undone.",
+    )
+  )
+    return;
+  try {
+    const response = await fetch("/admin/nuke-archived", { method: "POST" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || response.statusText);
+    }
+    const summary = await response.json();
+    toast(nukeSummaryText(summary), "success");
+    await Promise.all([loadSourcesStats(), loadSourcesList(), loadAdminConflicts()]);
+  } catch (e) {
+    toast(`Cleanup failed: ${e.message}`, "error");
+  }
+}
+
+function nukeSummaryText(summary) {
+  const labels = [
+    ["archived_sources_removed", "archived sources"],
+    ["orphan_documents_removed", "documents"],
+    ["orphan_claims_removed", "claims"],
+    ["orphan_entities_removed", "entities"],
+    ["orphan_files_removed", "files"],
+  ];
+  const parts = labels
+    .map(([key, label]) => [Number(summary?.[key] || 0), label])
+    .filter(([count]) => count > 0)
+    .map(([count, label]) => `${formatNumber(count)} ${label}`);
+  return parts.length ? `Cleanup removed ${parts.join(", ")}.` : "Cleanup found nothing to remove.";
 }
 
 function sourceRow(source) {
