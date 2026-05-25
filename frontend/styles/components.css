@@ -399,7 +399,7 @@ input[type="file"] {
 .stat-card {
   position: relative;
   display: flex;
-  min-height: calc(var(--row-h-data) * 2);
+  min-height: calc(var(--space-12) * 2);
   flex-direction: column;
   justify-content: space-between;
   padding: var(--space-4);

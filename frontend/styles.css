@@ -837,6 +837,13 @@
 
 /* ─── Sources ──────────────────────────────────────────────────────── */
 
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+}
+
 .sources-list {
   display: flex;
   flex-direction: column;
