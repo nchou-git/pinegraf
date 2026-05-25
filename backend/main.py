@@ -542,6 +542,7 @@ def _admin_login_html(error: str | None) -> str:
               class="btn-icon-only password-toggle"
               type="button"
               aria-label="Show password"
+              aria-pressed="false"
               aria-controls="admin-password"
               onclick="togglePasswordVisibility(this)"
             >
@@ -557,21 +558,7 @@ def _admin_login_html(error: str | None) -> str:
               >
                 <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
                 <circle cx="12" cy="12" r="3" />
-              </svg>
-              <svg
-                class="password-eye-off"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-                hidden
-              >
-                <path d="M3 3l18 18" />
-                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
-                <circle cx="12" cy="12" r="3" />
+                <path class="password-eye-slash" d="M3 3l18 18" style="display:none" />
               </svg>
             </button>
           </span>
@@ -586,10 +573,11 @@ def _admin_login_html(error: str | None) -> str:
     function togglePasswordVisibility(button) {{
       const input = document.getElementById("admin-password");
       const show = input.type === "password";
+      const slash = button.querySelector(".password-eye-slash");
       input.type = show ? "text" : "password";
+      slash.style.display = show ? "" : "none";
       button.setAttribute("aria-label", show ? "Hide password" : "Show password");
-      button.querySelector(".password-eye").hidden = show;
-      button.querySelector(".password-eye-off").hidden = !show;
+      button.setAttribute("aria-pressed", show ? "true" : "false");
       input.focus();
     }}
   </script>
