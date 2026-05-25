@@ -11,6 +11,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 from sqlalchemy import delete, func, or_, select
 
+from backend.class_year import expand_class_year_synonyms
 from backend.config import get_settings
 from backend.db.models import (
     Chunk,
@@ -31,7 +32,7 @@ from backend.db.models import (
     SourceRun,
 )
 from backend.db.store import SCHEMA_TABLES, Store, utc_now
-from backend.resolution.embedder import embed_text
+from backend.resolution.embedder import embed_texts
 
 ASK_CACHE_SECONDS = 3600
 ASK_CACHE_MAX = 100
@@ -850,11 +851,12 @@ async def _answer_from_graph(
     max_results: int,
 ) -> tuple[str, list[dict[str, object]]]:
     settings = get_settings()
-    question_vector = await embed_text(question)
+    question_variants = expand_class_year_synonyms(question)
+    question_vectors = await embed_texts(question_variants)
     with store.session() as session:
         chunks = _rank_chunks(
             list(session.execute(select(Chunk).limit(200)).scalars()),
-            question_vector,
+            question_vectors,
         )[:8]
         claims = list(
             session.execute(
@@ -940,14 +942,16 @@ async def _llm_answer(
     return content.strip() or "No answer could be generated from the available evidence.", citations
 
 
-def _rank_chunks(chunks: list[Chunk], question_vector: list[float]) -> list[Chunk]:
+def _rank_chunks(chunks: list[Chunk], question_vectors: list[list[float]]) -> list[Chunk]:
     if not chunks:
         return []
-    if not any(question_vector):
+    if not question_vectors or not any(any(vector) for vector in question_vectors):
         return chunks
     return sorted(
         chunks,
-        key=lambda chunk: _cosine(question_vector, chunk.embedding or []),
+        key=lambda chunk: max(
+            _cosine(question_vector, chunk.embedding or []) for question_vector in question_vectors
+        ),
         reverse=True,
     )
 

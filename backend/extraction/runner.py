@@ -5,9 +5,10 @@ from decimal import Decimal
 
 from sqlalchemy import exists, select
 
+from backend.class_year import normalize_class_year
 from backend.db.models import Chunk, ClaimRaw, ExtractorRun
 from backend.db.store import Store, utc_now
-from backend.extraction.cascading_extractor import PROMPT_VERSION, extract_claims
+from backend.extraction.cascading_extractor import PROMPT_VERSION, ExtractedClaim, extract_claims
 
 
 async def extract_pending(
@@ -43,6 +44,7 @@ async def extract_pending(
             model_names.add(result.model)
             with store.session() as session:
                 for claim in result.claims:
+                    claim = normalize_extracted_claim(claim)
                     session.add(
                         ClaimRaw(
                             chunk_id=chunk_id,
@@ -82,6 +84,20 @@ async def extract_pending(
 
     run_ids.append(extractor_run.id)
     return run_ids
+
+
+def normalize_extracted_claim(claim: ExtractedClaim) -> ExtractedClaim:
+    if claim.predicate != "class_year":
+        return claim
+    year = normalize_class_year(claim.object_text) or normalize_class_year(claim.raw_quote)
+    if year is None:
+        return claim
+    return claim.model_copy(
+        update={
+            "object_text": str(year),
+            "object_type": "attribute_value",
+        }
+    )
 
 
 def _create_run(store: Store) -> ExtractorRun:

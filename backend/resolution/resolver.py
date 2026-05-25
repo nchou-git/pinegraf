@@ -7,7 +7,8 @@ from difflib import SequenceMatcher
 
 from sqlalchemy import select
 
-from backend.db.models import Entity, EntityAlias, EntityMention
+from backend.class_year import CLASS_YEAR_RE, normalize_class_year
+from backend.db.models import Entity, EntityAlias, EntityMention, EntitySummary
 from backend.db.store import Store, utc_now
 from backend.resolution.embedder import embed_text
 
@@ -28,16 +29,17 @@ async def resolve_mention(
     *,
     store: Store,
 ) -> Resolution | None:
+    mention_year = normalize_class_year(mention_text)
     normalized = normalize_name(mention_text)
     if not normalized:
         return None
-    exact = _exact_match(store, normalized, kind)
+    exact = _exact_match(store, normalized, kind, mention_year)
     if exact is not None:
         return exact
-    alias = _fuzzy_alias_match(store, normalized, kind)
+    alias = _fuzzy_alias_match(store, normalized, kind, mention_year)
     if alias is not None and alias.confidence >= 0.85:
         return alias
-    embedding = await _embedding_match(store, normalized, kind)
+    embedding = await _embedding_match(store, normalized, kind, mention_year)
     if embedding is not None and embedding.confidence >= 0.82:
         return embedding
     if looks_like_entity(mention_text):
@@ -76,7 +78,7 @@ def write_mention(
 
 
 def normalize_name(value: str | None) -> str:
-    text = re.sub(r"\bT['’]?\d{2}\b", "", value or "", flags=re.IGNORECASE)
+    text = CLASS_YEAR_RE.sub("", value or "")
     text = re.sub(r"\s+", " ", text).strip().casefold()
     return text
 
@@ -90,11 +92,18 @@ def looks_like_entity(value: str) -> bool:
     return any(word[:1].isupper() for word in words)
 
 
-def _exact_match(store: Store, normalized: str, kind: str) -> Resolution | None:
+def _exact_match(
+    store: Store,
+    normalized: str,
+    kind: str,
+    mention_year: int | None,
+) -> Resolution | None:
     with store.session() as session:
         entities = list(session.execute(select(Entity).where(Entity.kind == kind)).scalars())
         for entity in entities:
-            if normalize_name(entity.canonical_name) == normalized:
+            if normalize_name(entity.canonical_name) == normalized and _class_year_compatible(
+                mention_year, _entity_class_year(session, entity)
+            ):
                 return Resolution(entity.id, "exact_match", 1.0)
         aliases = list(
             session.execute(
@@ -103,13 +112,20 @@ def _exact_match(store: Store, normalized: str, kind: str) -> Resolution | None:
                 .where(Entity.kind == kind)
             ).all()
         )
-        for alias, _entity in aliases:
-            if normalize_name(alias.alias) == normalized:
+        for alias, entity in aliases:
+            if normalize_name(alias.alias) == normalized and _class_year_compatible(
+                mention_year, _entity_class_year(session, entity, alias.alias)
+            ):
                 return Resolution(alias.entity_id, "exact_match", 1.0)
     return None
 
 
-def _fuzzy_alias_match(store: Store, normalized: str, kind: str) -> Resolution | None:
+def _fuzzy_alias_match(
+    store: Store,
+    normalized: str,
+    kind: str,
+    mention_year: int | None,
+) -> Resolution | None:
     best: Resolution | None = None
     with store.session() as session:
         rows = list(
@@ -119,29 +135,69 @@ def _fuzzy_alias_match(store: Store, normalized: str, kind: str) -> Resolution |
                 .where(Entity.kind == kind)
             ).all()
         )
-    for alias, _entity in rows:
+        scored_rows = [
+            (alias, entity, _entity_class_year(session, entity, alias.alias))
+            for alias, entity in rows
+        ]
+    for alias, _entity, candidate_year in scored_rows:
+        if not _class_year_compatible(mention_year, candidate_year):
+            continue
         score = SequenceMatcher(None, normalized, normalize_name(alias.alias)).ratio()
+        if mention_year is not None and mention_year == candidate_year:
+            score = min(1.0, score + 0.05)
         if best is None or score > best.confidence:
             best = Resolution(alias.entity_id, "alias", score)
     return best
 
 
-async def _embedding_match(store: Store, normalized: str, kind: str) -> Resolution | None:
+def _class_year_compatible(mention_year: int | None, candidate_year: int | None) -> bool:
+    return mention_year is None or candidate_year is None or mention_year == candidate_year
+
+
+def _entity_class_year(
+    session,
+    entity: Entity,
+    alias_text: str | None = None,
+) -> int | None:
+    for value in (alias_text, entity.canonical_name):
+        year = normalize_class_year(value)
+        if year is not None:
+            return year
+    summary = session.get(EntitySummary, entity.id)
+    if summary is None:
+        return None
+    primary = summary.primary_attributes or {}
+    return normalize_class_year(str(primary.get("class_year", "")))
+
+
+async def _embedding_match(
+    store: Store,
+    normalized: str,
+    kind: str,
+    mention_year: int | None,
+) -> Resolution | None:
     mention_embedding = await embed_text(normalized)
     best: Resolution | None = None
     with store.session() as session:
         rows = list(
             session.execute(
-                select(Entity.id, Entity.embedding).where(
+                select(Entity).where(
                     Entity.kind == kind,
                     Entity.embedding.is_not(None),
                 )
             ).all()
         )
-    for entity_id, embedding in rows:
-        score = _cosine(mention_embedding, embedding or [])
+        scored_rows = [
+            (entity, _entity_class_year(session, entity))
+            for (entity,) in rows
+            if _class_year_compatible(mention_year, _entity_class_year(session, entity))
+        ]
+    for entity, candidate_year in scored_rows:
+        score = _cosine(mention_embedding, entity.embedding or [])
+        if mention_year is not None and mention_year == candidate_year:
+            score = min(1.0, score + 0.05)
         if best is None or score > best.confidence:
-            best = Resolution(entity_id, "embedding", score)
+            best = Resolution(entity.id, "embedding", score)
     return best
 
 
