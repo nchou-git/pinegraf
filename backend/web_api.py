@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -950,13 +950,23 @@ def _rank_chunks(chunks: list[Chunk], question_vectors: list[list[float]]) -> li
     return sorted(
         chunks,
         key=lambda chunk: max(
-            _cosine(question_vector, chunk.embedding or []) for question_vector in question_vectors
+            _cosine(question_vector, _vector_values(chunk.embedding))
+            for question_vector in question_vectors
         ),
         reverse=True,
     )
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
+def _vector_values(vector: object) -> Sequence[float]:
+    if vector is None:
+        return []
+    if hasattr(vector, "tolist"):
+        values = vector.tolist()
+        return values if isinstance(values, list) else list(values)
+    return vector if isinstance(vector, list) else list(vector)
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if not left or not right:
         return 0.0
     size = min(len(left), len(right))

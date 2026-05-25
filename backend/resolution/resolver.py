@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -193,7 +194,7 @@ async def _embedding_match(
             if _class_year_compatible(mention_year, _entity_class_year(session, entity))
         ]
     for entity, candidate_year in scored_rows:
-        score = _cosine(mention_embedding, entity.embedding or [])
+        score = _cosine(mention_embedding, _vector_values(entity.embedding))
         if mention_year is not None and mention_year == candidate_year:
             score = min(1.0, score + 0.05)
         if best is None or score > best.confidence:
@@ -224,7 +225,16 @@ async def _create_entity(store: Store, mention_text: str, kind: str) -> Resoluti
         return Resolution(entity.id, "new_entity", 0.75)
 
 
-def _cosine(left: list[float], right: list[float]) -> float:
+def _vector_values(vector: object) -> Sequence[float]:
+    if vector is None:
+        return []
+    if hasattr(vector, "tolist"):
+        values = vector.tolist()
+        return values if isinstance(values, list) else list(values)
+    return vector if isinstance(vector, list) else list(vector)
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if not left or not right:
         return 0.0
     size = min(len(left), len(right))
