@@ -332,7 +332,7 @@ async function renderDirectory() {
       <section class="directory-filter-bar">
         <label class="directory-search input-with-icon">
           <i class="ti ti-search icon" aria-hidden="true"></i>
-          <input id="dir-q" placeholder="Search people" value="${escapeAttr(state.directoryFilters.q)}" />
+          <input class="input" id="dir-q" placeholder="Search people" value="${escapeAttr(state.directoryFilters.q)}" />
         </label>
         <div class="directory-filter" id="source-filter-wrap">
           <button class="btn-secondary filter-button" id="filter-source" type="button">
@@ -521,13 +521,13 @@ function openDirectoryFilter(type, anchor) {
   const popover = document.createElement("div");
   popover.className = "filter-popover";
   popover.innerHTML = `
-    <input class="filter-popover-search" placeholder="${escapeAttr(directoryFilterSearchPlaceholder(type))}" />
+    <input class="input filter-popover-search" placeholder="${escapeAttr(directoryFilterSearchPlaceholder(type))}" />
     <div class="filter-options">
       ${options
         .map(
           (option) => `
           <label class="filter-option">
-            <input type="checkbox" data-value="${escapeAttr(option.value)}" ${option.active ? "checked" : ""} />
+            <input class="input checkbox-input" type="checkbox" data-value="${escapeAttr(option.value)}" ${option.active ? "checked" : ""} />
             <span class="filter-option-label">
               ${option.icon ? `<i class="ti ${escapeAttr(option.icon)}" aria-hidden="true"></i>` : ""}
               <span>${escapeHtml(option.label)}</span>
@@ -1147,7 +1147,7 @@ async function renderGraph(entityId) {
       <div class="graph-empty">
         <div class="graph-search-card">
           <div class="search-row">
-            <input id="graph-search" placeholder="Search for a person, organization, or project" value="${escapeAttr(state.graphSearch)}" autocomplete="off" />
+            <input class="input" id="graph-search" placeholder="Search for a person, organization, or project" value="${escapeAttr(state.graphSearch)}" autocomplete="off" />
             <button class="btn-primary" id="graph-search-go"><i class="ti ti-search" aria-hidden="true"></i> Find</button>
           </div>
           <div id="graph-results" class="graph-autocomplete"></div>
@@ -1897,7 +1897,7 @@ function renderSourceDetailHead(source) {
 function startSourceNameEdit(source) {
   const title = byId("source-name-title");
   const current = source.display_name || source.identifier;
-  title.innerHTML = `<input class="source-title-input" aria-label="Source name" value="${escapeAttr(current)}" />`;
+  title.innerHTML = `<input class="input source-title-input" aria-label="Source name" value="${escapeAttr(current)}" />`;
   const input = title.querySelector("input");
   let saving = false;
   input.focus();
@@ -2054,12 +2054,12 @@ function renderSourceConfig(detail) {
       <div class="modal-body">
         <label class="field">
           <span class="field-label">Display name</span>
-          <input id="cfg-name" value="${escapeAttr(detail.display_name || "")}" ${adminOnly ? "disabled" : ""} />
+          <input class="input" id="cfg-name" value="${escapeAttr(detail.display_name || "")}" ${adminOnly ? "disabled" : ""} />
         </label>
         <div class="field-row">
           <label class="field">
             <span class="field-label">Identifier</span>
-            <input value="${escapeAttr(detail.identifier)}" disabled />
+            <input class="input" value="${escapeAttr(detail.identifier)}" disabled />
             <span class="field-hint">Identifier cannot be changed after creation.</span>
           </label>
         </div>
@@ -2067,14 +2067,14 @@ function renderSourceConfig(detail) {
           detail.kind === "file"
             ? `<label class="field">
                  <span class="field-label">Format</span>
-                 <input value="${escapeAttr(formatLabel)}" disabled />
+                 <input class="input" value="${escapeAttr(formatLabel)}" disabled />
                  <span class="field-hint">This can't be changed after creation.</span>
                </label>`
             : ""
         }
         <label class="field">
           <span class="field-label">Notes</span>
-          <textarea id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripSourceMetaLines(detail.notes || ""))}</textarea>
+          <textarea class="input" id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripSourceMetaLines(detail.notes || ""))}</textarea>
         </label>
         ${
           !adminOnly
@@ -2150,7 +2150,7 @@ function renderAddSourceModal() {
       </div>
       <label class="field">
         <span class="field-label">Label</span>
-        <input id="new-name" placeholder="e.g. Dartmouth News" />
+        <input class="input" id="new-name" placeholder="e.g. Dartmouth News" />
         <span class="field-hint">Used everywhere this source appears.</span>
       </label>
       ${selected.fields
@@ -2158,13 +2158,13 @@ function renderAddSourceModal() {
           if (f.type === "file") {
             return `<label class="field">
                 <span class="field-label">${escapeHtml(f.label)}</span>
-                <input id="new-${f.name}" type="file" ${f.accept ? `accept="${escapeAttr(f.accept)}"` : ""} />
+                <input class="input" id="new-${f.name}" type="file" ${f.accept ? `accept="${escapeAttr(f.accept)}"` : ""} />
                 ${selected.hint ? `<span class="field-hint">${escapeHtml(selected.hint)}</span>` : ""}
               </label>`;
           }
           return `<label class="field">
               <span class="field-label">${escapeHtml(f.label)}</span>
-              <input id="new-${f.name}" placeholder="${escapeAttr(f.placeholder || "")}" />
+              <input class="input" id="new-${f.name}" placeholder="${escapeAttr(f.placeholder || "")}" />
             </label>`;
         })
         .join("")}

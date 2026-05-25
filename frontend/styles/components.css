@@ -171,8 +171,7 @@ select {
   outline: none;
   transition:
     border-color var(--motion),
-    color var(--motion),
-    box-shadow var(--motion);
+    color var(--motion);
 }
 
 .input:focus,
@@ -198,6 +197,14 @@ select {
 input[type="file"] {
   padding: var(--space-2);
   font-size: var(--fs-sm);
+}
+
+.checkbox-input {
+  width: var(--space-4);
+  min-height: var(--space-4);
+  padding: 0;
+  border-radius: var(--radius-sm);
+  flex: 0 0 auto;
 }
 
 .field {

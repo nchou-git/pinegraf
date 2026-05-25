@@ -46,7 +46,7 @@
   font-size: var(--fs-sm);
   cursor: pointer;
   transition:
-    background var(--motion),
+    background-color var(--motion),
     border-color var(--motion);
 }
 
