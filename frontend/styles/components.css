@@ -657,44 +657,24 @@ input[type="file"] {
 }
 
 .kind-card {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  width: 100%;
+  justify-content: flex-start;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background-color: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
 .kind-card.selected {
-  border: 2px solid var(--green);
+  border-color: var(--green);
   background-color: var(--green-tint);
-}
-
-.kind-card .icon {
-  margin-top: var(--space-1);
-  color: var(--text-muted);
-  font-size: var(--fs-lg);
-}
-
-.kind-card.selected .icon,
-.kind-card.selected .label {
   color: var(--green);
 }
 
-.kind-card .label {
-  font-size: var(--fs-base);
-  font-weight: 500;
+.kind-card .icon {
+  font-size: var(--fs-lg);
 }
 
-.kind-card .description {
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  line-height: var(--lh-snug);
+.kind-card .label {
+  font-size: inherit;
+  font-weight: 500;
 }
 
 .field-row {

@@ -38,7 +38,6 @@ const SOURCE_KINDS = [
     kind: "domain",
     label: "Sitemap",
     icon: "ti-world",
-    description: "Crawl a public website via sitemap.xml.",
     fields: [
       {
         name: "identifier",
@@ -53,7 +52,6 @@ const SOURCE_KINDS = [
     kind: "file",
     label: "Upload a file",
     icon: "ti-file",
-    description: "Upload a file for ingestion.",
     fields: [
       {
         name: "file",
@@ -2373,7 +2371,6 @@ function renderAddSourceModal() {
     <div class="modal-header">
       <div>
         <div class="modal-title">Add source</div>
-        <div class="modal-subtitle">Add a crawlable sitemap or upload a file.</div>
       </div>
       <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
     </div>
@@ -2385,10 +2382,7 @@ function renderAddSourceModal() {
             (k) => `
             <button type="button" class="btn-secondary kind-card ${k.id === modalKind ? "selected" : ""}" data-kind="${k.id}">
               <i class="ti ${k.icon} icon"></i>
-              <div>
-                <div class="label">${escapeHtml(k.label)}</div>
-                <div class="description">${escapeHtml(k.description)}</div>
-              </div>
+              <span class="label">${escapeHtml(k.label)}</span>
             </button>`,
           ).join("")}
         </div>
@@ -2396,7 +2390,6 @@ function renderAddSourceModal() {
       <label class="field">
         <span class="field-label">Label</span>
         <input class="input" id="new-name" placeholder="e.g. Dartmouth News" />
-        <span class="field-hint">Used everywhere this source appears.</span>
       </label>
       ${selected.fields
         .map((f) => {
@@ -2415,7 +2408,7 @@ function renderAddSourceModal() {
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn-primary" id="new-submit"><i class="ti ti-plus"></i> Add source</button>
+      <button class="btn-primary" id="new-submit">Add source</button>
     </div>
   `);
   document.querySelectorAll(".kind-card").forEach((card) => {
