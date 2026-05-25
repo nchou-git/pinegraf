@@ -209,13 +209,15 @@
 }
 
 .directory-table th {
-  height: var(--input-h);
+  height: var(--row-h-header);
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--line);
   color: var(--text-faint);
   font-size: var(--fs-xs);
   font-weight: 500;
+  letter-spacing: 0.04em;
   text-align: left;
+  text-transform: uppercase;
 }
 
 .directory-table td {
@@ -312,14 +314,18 @@
 }
 
 .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
   text-align: center;
   padding: var(--space-12) var(--space-4);
   color: var(--text-muted);
 }
 .empty-state .ti {
-  font-size: var(--fs-2xl);
+  font-size: var(--space-8);
   color: var(--text-faint);
-  margin-bottom: var(--space-3);
 }
 
 /* ─── Ask ──────────────────────────────────────────────────────────── */
@@ -1045,11 +1051,14 @@
 .docs-table th,
 .files-table th,
 .runs-table th {
+  height: var(--row-h-header);
   text-align: left;
-  padding: var(--space-3);
+  padding: 0 var(--space-3);
   font-weight: 500;
   color: var(--text-faint);
   font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   border-bottom: 1px solid var(--line);
 }
 .docs-table td,
