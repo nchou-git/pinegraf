@@ -12,6 +12,10 @@ DB_USER="${DB_USER:-pinegraf_app}"
 CONNECTION_NAME="${PROJECT_ID}:${REGION}:${INSTANCE_NAME}"
 SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 DEV_IP="$(curl -fsS https://api.ipify.org || true)"
+AUTHORIZED_NETWORKS="0.0.0.0/0"
+if [[ -n "${DEV_IP}" ]]; then
+  AUTHORIZED_NETWORKS="${DEV_IP}/32,${AUTHORIZED_NETWORKS}"
+fi
 
 gcloud config set project "${PROJECT_ID}"
 
@@ -26,7 +30,7 @@ gcloud sql instances create "${INSTANCE_NAME}" \
   --backup-start-time=07:00 \
   --backup \
   --enable-point-in-time-recovery \
-  ${DEV_IP:+--authorized-networks="${DEV_IP}/32"} \
+  --authorized-networks="${AUTHORIZED_NETWORKS}" \
   --database-flags=cloudsql.iam_authentication=on
 
 gcloud sql instances describe "${INSTANCE_NAME}" --format="value(state)"

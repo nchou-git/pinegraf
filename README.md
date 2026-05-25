@@ -36,6 +36,10 @@ gcloud sql instances patch pinegraf-db \
   --authorized-networks="$(curl -sS https://api.ipify.org)/32"
 ```
 
+Cloud Run also uses the direct public database URL. Without a fixed Cloud Run
+egress IP, the instance must allow managed egress to reach Postgres, or the
+service must be moved behind controlled egress and that IP authorized.
+
 ## Test
 
 Tests run against the live Cloud SQL database and truncate Pinegraf tables before
