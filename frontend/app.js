@@ -7,6 +7,7 @@ const ASK_EXAMPLES = [
   "Who founded Gyrobike?",
   "Which Tuck alumni from T'17 live in Silicon Valley?",
 ];
+const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
 const ARCHIVE_SOURCE_CONFIRM =
   "Archive this source? Derived data is preserved and the source can be restored later.";
 const DELETE_SOURCE_CONFIRM =
@@ -1491,9 +1492,9 @@ async function renderSources(parts) {
   setPageHeader({ title: "Sources", subtitle: "Loading…", actions: adminActions });
   const app = document.getElementById("app");
   app.innerHTML = `
-    <div class="stats-grid" id="sources-stats">${statCards(state.stats || {})}</div>
+    <div class="stats-grid" id="sources-stats">${statCards(ZERO_STATS)}</div>
     <div class="sources-list" id="sources-list">
-      <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
+      ${sourceSkeletonRow()}
     </div>
     ${
       state.me?.is_admin
@@ -1524,11 +1525,13 @@ async function loadSourcesStats() {
   try {
     const stats = await getJSON("/api/stats");
     state.stats = stats;
+    if (byId("sources-list")?.querySelector(".sources-error")) return;
     statsGrid.innerHTML = statCards(stats);
     setupStatInfoButtons();
     renderShell();
   } catch (e) {
-    statsGrid.innerHTML = `<div class="muted small">Unable to load stats: ${escapeHtml(e.message)}</div>`;
+    statsGrid.innerHTML = statCards(ZERO_STATS);
+    setupStatInfoButtons();
   }
 }
 
@@ -1569,6 +1572,10 @@ function closeStatTooltips() {
 }
 
 async function loadSourcesList() {
+  const list = byId("sources-list");
+  if (list) {
+    list.innerHTML = sourceSkeletonRow();
+  }
   try {
     const data = await getJSON("/api/sources");
     const sources = data.sources || [];
@@ -1580,20 +1587,8 @@ async function loadSourcesList() {
     if (pageSubtitle) {
       pageSubtitle.innerHTML = `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused · <a href="#sources/archive">${formatNumber(archivedCount)} archived</a>`;
     }
-    const list = byId("sources-list");
     if (!sources.length) {
-      list.innerHTML = state.me?.is_admin
-        ? `<div class="empty-state sources-empty">
-             <i class="ti ti-database-plus" aria-hidden="true"></i>
-             <h2>No sources yet</h2>
-             <p>Add your first source to start building your graph.</p>
-             <button class="btn-primary" id="empty-add-source"><i class="ti ti-plus" aria-hidden="true"></i> Add source</button>
-           </div>`
-        : `<div class="empty-state sources-empty">
-             <i class="ti ti-database-off" aria-hidden="true"></i>
-             <h2>No sources yet</h2>
-             <p>Add your first source to start building your graph.</p>
-           </div>`;
+      list.innerHTML = sourceEmptyState();
       const emptyAddSource = byId("empty-add-source");
       if (emptyAddSource) emptyAddSource.onclick = openAddSourceModal;
       return;
@@ -1621,7 +1616,86 @@ async function loadSourcesList() {
       };
     });
   } catch (e) {
-    byId("sources-list").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load sources: ${escapeHtml(e.message)}</div></div>`;
+    state.sourcesCache = [];
+    const pageSubtitle = byId("page-subtitle");
+    if (pageSubtitle) pageSubtitle.textContent = "Unable to load";
+    const statsGrid = byId("sources-stats");
+    if (statsGrid) {
+      statsGrid.innerHTML = statCards(ZERO_STATS);
+      setupStatInfoButtons();
+    }
+    if (list) {
+      list.innerHTML = sourceErrorState(e);
+      const retry = byId("sources-retry");
+      if (retry) retry.onclick = loadSourcesList;
+    }
+  }
+}
+
+function sourceSkeletonRow() {
+  return `
+    <div class="source-row source-skeleton" aria-label="Loading sources">
+      <div class="source-row-main">
+        <span class="skeleton-box source-row-icon" aria-hidden="true"></span>
+        <div class="source-row-copy">
+          <span class="skeleton-line skeleton-title" aria-hidden="true"></span>
+          <span class="skeleton-line skeleton-subtitle" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="source-row-stats">
+        <span class="skeleton-line skeleton-stat" aria-hidden="true"></span>
+        <span class="skeleton-line skeleton-stat" aria-hidden="true"></span>
+      </div>
+    </div>
+  `;
+}
+
+function sourceEmptyState() {
+  const body = state.me?.is_admin
+    ? "Add a source to start ingesting documents and building your graph."
+    : "Sign in as admin to add sources.";
+  return `
+    <div class="empty-state sources-empty">
+      <i class="ti ti-database-off" aria-hidden="true"></i>
+      <h2>No sources yet</h2>
+      <p>${escapeHtml(body)}</p>
+      ${
+        state.me?.is_admin
+          ? `<button class="btn-primary" id="empty-add-source" type="button"><i class="ti ti-plus" aria-hidden="true"></i> Add source</button>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function sourceErrorState(error) {
+  const message = normalizeErrorMessage(error);
+  const isStack = message.includes("\n") || message.includes("Traceback");
+  return `
+    <div class="empty-state sources-error">
+      <i class="ti ti-alert-circle" aria-hidden="true"></i>
+      <h2>Couldn't load sources</h2>
+      <p class="sources-error-message ${isStack ? "is-stack" : ""}">${escapeHtml(message)}</p>
+      <button class="btn-secondary" id="sources-retry" type="button"><i class="ti ti-refresh" aria-hidden="true"></i> Retry</button>
+      ${
+        state.me?.is_admin
+          ? `<div class="sources-log-note">
+               <div class="muted small">Check Cloud Run logs:</div>
+               <code>gcloud run services logs read pinegraf --region=us-east4 --limit=50</code>
+             </div>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function normalizeErrorMessage(error) {
+  const raw = String(error?.message || error || "Unknown error");
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed.detail || parsed.message || raw;
+  } catch (_) {
+    return raw;
   }
 }
 
