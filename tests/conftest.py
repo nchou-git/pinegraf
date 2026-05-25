@@ -49,7 +49,7 @@ class FakeAsyncClient:
 
 @pytest.fixture(autouse=True)
 def isolated_settings(monkeypatch) -> Iterator[None]:
-    monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf")
+    monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$")
     monkeypatch.setenv("USE_MOCK_EMBEDDINGS", "true")
     get_settings.cache_clear()
     yield
@@ -65,7 +65,7 @@ def store(tmp_path) -> Iterator[Store]:
 
 @pytest.fixture
 def admin_headers() -> dict[str, str]:
-    token = base64.b64encode(b"admin:pinegraf").decode("ascii")
+    token = base64.b64encode(b"pinegraf:Pinegrafposen$").decode("ascii")
     return {"Authorization": f"Basic {token}"}
 
 

@@ -16,7 +16,7 @@ class Settings(BaseModel):
     database_url: str = Field(default="sqlite:///./pinegraf.db")
     openai_api_key: str = Field(default="")
 
-    pinegraf_admin_password: str = Field(default="pinegraf")
+    pinegraf_admin_password: str = Field(default="Pinegrafposen$")
 
     admin_session_secret: str = Field(default="")
     admin_session_max_age_seconds: int = Field(default=28800, ge=60)
@@ -53,7 +53,7 @@ def get_settings() -> Settings:
         return Settings(
             database_url=os.getenv("DATABASE_URL", "sqlite:///./pinegraf.db"),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "pinegraf"),
+            pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$"),
             admin_session_secret=admin_secret,
             admin_session_max_age_seconds=int(os.getenv("ADMIN_SESSION_MAX_AGE_SECONDS", "28800")),
             secure_cookies=os.getenv("SECURE_COOKIES", "true"),

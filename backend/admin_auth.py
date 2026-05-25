@@ -10,6 +10,7 @@ from backend.admin_session import COOKIE_NAME, verify
 from backend.config import get_settings
 
 WWW_AUTHENTICATE = 'Basic realm="Pinegraf Admin"'
+ADMIN_USERNAME = "pinegraf"
 
 
 def require_admin(request: Request) -> None:
@@ -25,11 +26,17 @@ def is_admin_request(request: Request) -> bool:
     credentials = basic_credentials(request.headers.get("authorization"))
     if credentials is None:
         return False
-    _username, password = credentials
+    username, password = credentials
+    return valid_admin_credentials(username, password)
+
+
+def valid_admin_credentials(username: str, password: str) -> bool:
     expected = get_settings().pinegraf_admin_password
     if not expected:
         return False
-    return secrets.compare_digest(password, expected)
+    return secrets.compare_digest(username, ADMIN_USERNAME) and secrets.compare_digest(
+        password, expected
+    )
 
 
 def basic_credentials(header_value: str | None) -> tuple[str, str] | None:

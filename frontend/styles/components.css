@@ -679,11 +679,6 @@ input[type="file"] {
   color: var(--green);
 }
 
-.login-subtitle {
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-}
-
 .login-form {
   display: flex;
   flex-direction: column;
@@ -693,6 +688,33 @@ input[type="file"] {
 
 .login-form .btn-primary {
   width: 100%;
+}
+
+.password-field {
+  position: relative;
+  display: block;
+}
+
+.password-input {
+  padding-right: calc(var(--button-h-small) + var(--space-3));
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  transform: translateY(-50%);
+  color: var(--text-faint);
+}
+
+.password-toggle:hover,
+.password-toggle:focus-visible {
+  color: var(--text);
+}
+
+.password-toggle svg {
+  width: var(--space-5);
+  height: var(--space-5);
 }
 
 .login-note {

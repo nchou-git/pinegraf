@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import os
 import re
-import secrets
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -15,7 +14,12 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.admin_auth import is_admin_request, require_admin
+from backend.admin_auth import (
+    ADMIN_USERNAME,
+    is_admin_request,
+    require_admin,
+    valid_admin_credentials,
+)
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
 from backend.db.store import Store, source_to_dict
@@ -138,16 +142,13 @@ def create_app(store: Store | None = None) -> FastAPI:
             next_url = str(form.get("next", "/"))
         if not next_url.startswith("/"):
             next_url = "/"
-        settings = get_settings()
-        expected = settings.pinegraf_admin_password or ""
-        user_ok = secrets.compare_digest(username, "pinegraf")
-        password_ok = bool(expected) and secrets.compare_digest(password, expected)
-        if not (user_ok and password_ok):
+        if not valid_admin_credentials(username, password):
             return HTMLResponse(
                 _admin_login_html(error="Wrong username or password."),
                 status_code=401,
             )
-        token = issue(user="admin")
+        settings = get_settings()
+        token = issue(user=ADMIN_USERNAME)
         response: RedirectResponse | HTMLResponse
         if "application/json" in content_type:
             response = HTMLResponse('{"ok":true}', media_type="application/json")
@@ -477,7 +478,7 @@ def _admin_login_html(error: str | None) -> str:
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Admin sign-in — Pinegraf</title>
+<title>Pinegraf</title>
 <link rel="icon" href="/favicon.svg" />
 <link rel="stylesheet" href="/styles.css" />
 </head>
@@ -499,7 +500,6 @@ def _admin_login_html(error: str | None) -> str:
         </svg>
         <div>
           <div class="wordmark">Pinegraf</div>
-          <div class="login-subtitle">Admin sign-in</div>
         </div>
       </div>
       {error_block}
@@ -517,13 +517,52 @@ def _admin_login_html(error: str | None) -> str:
         </label>
         <label class="field">
           <span class="field-label">Password</span>
-          <input
-            class="input"
-            name="password"
-            type="password"
-            autocomplete="current-password"
-            required
-          />
+          <span class="password-field">
+            <input
+              class="input password-input"
+              id="admin-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+            <button
+              class="btn-icon-only password-toggle"
+              type="button"
+              aria-label="Show password"
+              aria-controls="admin-password"
+              onclick="togglePasswordVisibility(this)"
+            >
+              <svg
+                class="password-eye"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              <svg
+                class="password-eye-off"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+                hidden
+              >
+                <path d="M3 3l18 18" />
+                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </button>
+          </span>
         </label>
         <input type="hidden" name="next" value="/" />
         <button type="submit" class="btn-primary">Sign in</button>
@@ -531,6 +570,17 @@ def _admin_login_html(error: str | None) -> str:
       <div class="login-note">Admin access controls source management.</div>
     </div>
   </main>
+  <script>
+    function togglePasswordVisibility(button) {{
+      const input = document.getElementById("admin-password");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      button.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      button.querySelector(".password-eye").hidden = show;
+      button.querySelector(".password-eye-off").hidden = !show;
+      input.focus();
+    }}
+  </script>
 </body>
 </html>
 """

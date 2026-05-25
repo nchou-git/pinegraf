@@ -15,7 +15,7 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.admin_session_secret, salt=SALT)
 
 
-def issue(user: str = "admin") -> str:
+def issue(user: str = "pinegraf") -> str:
     payload = {"u": user, "iat": int(time.time())}
     return _serializer().dumps(payload)
 
