@@ -70,7 +70,7 @@ a:hover {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2);
+  padding: var(--space-4);
   border-radius: var(--radius-md);
   color: var(--text);
   text-decoration: none;
@@ -84,6 +84,13 @@ a:hover {
   text-decoration: none;
 }
 
+.sidebar-header svg {
+  width: var(--space-6);
+  height: var(--space-6);
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
 .sidebar-header-copy {
   display: flex;
   min-width: 0;
@@ -92,7 +99,7 @@ a:hover {
 
 .wordmark {
   color: var(--green);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-md);
   font-weight: 500;
   line-height: var(--lh-tight);
 }
@@ -106,7 +113,7 @@ a:hover {
 }
 
 .sidebar-tagline {
-  padding: 0 var(--space-2) var(--space-4) var(--space-12);
+  padding: 0 var(--space-4) var(--space-4) var(--space-16);
   color: var(--text-faint);
   font-size: var(--fs-xs);
   line-height: var(--lh-snug);
