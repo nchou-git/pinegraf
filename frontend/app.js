@@ -1527,12 +1527,17 @@ async function loadSourcesList() {
     const list = byId("sources-list");
     if (!sources.length) {
       list.innerHTML = state.me?.is_admin
-        ? `<div class="empty-state">
-             <i class="ti ti-database-off" aria-hidden="true"></i>
-             <div>No sources yet. Click 'Add source' to add one.</div>
+        ? `<div class="empty-state sources-empty">
+             <i class="ti ti-database-plus" aria-hidden="true"></i>
+             <h2>No sources yet</h2>
+             <p>Add your first source to start building your graph.</p>
              <button class="btn-primary" id="empty-add-source"><i class="ti ti-plus" aria-hidden="true"></i> Add source</button>
            </div>`
-        : `<div class="empty-state"><i class="ti ti-database-off" aria-hidden="true"></i><div>No sources yet.</div></div>`;
+        : `<div class="empty-state sources-empty">
+             <i class="ti ti-database-off" aria-hidden="true"></i>
+             <h2>No sources yet</h2>
+             <p>Add your first source to start building your graph.</p>
+           </div>`;
       const emptyAddSource = byId("empty-add-source");
       if (emptyAddSource) emptyAddSource.onclick = openAddSourceModal;
       return;

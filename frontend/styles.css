@@ -1621,6 +1621,19 @@ textarea {
   gap: 6px;
   position: relative;
 }
+.sources-empty {
+  min-height: 320px;
+}
+.sources-empty h2 {
+  font-size: var(--fs-xl);
+  font-weight: 500;
+  color: var(--text);
+  margin: 8px 0 4px;
+}
+.sources-empty p {
+  margin: 0 0 16px;
+  color: var(--text-muted);
+}
 .source-card {
   border: 0.5px solid var(--line);
   border-radius: var(--radius-lg);
