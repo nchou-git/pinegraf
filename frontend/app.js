@@ -160,7 +160,6 @@ function renderShell() {
   sidebar.classList.toggle("collapsed", state.sidebarCollapsed);
 
   const workspaceName = state.me?.workspace?.display_name || "Workspace";
-  byId("workspace-label").textContent = workspaceName;
   byId("sidebar-tagline").textContent =
     state.me?.workspace?.tagline || "Where alumni stories connect.";
 

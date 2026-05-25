@@ -104,19 +104,13 @@ a:hover {
   line-height: var(--lh-tight);
 }
 
-.workspace-label {
+.sidebar-tagline {
   overflow: hidden;
   color: var(--text-faint);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.sidebar-tagline {
-  padding: 0 var(--space-4) var(--space-4) var(--space-16);
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-  line-height: var(--lh-snug);
 }
 
 .sidebar-nav {
