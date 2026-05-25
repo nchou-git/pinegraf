@@ -3,10 +3,7 @@
 const ASK_SESSION_KEY = "pinegraf_ask_session";
 const ASK_EXAMPLES = ["Tuck alums in tech"];
 const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
-const ARCHIVE_SOURCE_CONFIRM =
-  "Archive this source? Derived data is preserved and the source can be restored later.";
-const DELETE_SOURCE_CONFIRM =
-  "Permanently delete this source? This removes the source and all derived data (documents, claims, entities) that came only from this source. Cannot be undone.";
+const ARCHIVE_SOURCE_CONFIRM = "Derived data is preserved and the source can be restored later.";
 
 const state = {
   me: null,
@@ -24,6 +21,9 @@ const state = {
 
 let modalRestoreFocus = null;
 let modalKeydownHandler = null;
+let confirmToastEl = null;
+let confirmToastKeydownHandler = null;
+let confirmToastOutsideHandler = null;
 
 const TAB_DEFS = [
   { id: "directory", label: "Directory", icon: "ti-list-search" },
@@ -1714,7 +1714,8 @@ async function loadArchivedSourcesList() {
         restore.onclick = () => restoreArchivedSource(id);
       }
       if (destroy) {
-        destroy.onclick = () => deleteArchivedSource(id);
+        const source = sources.find((item) => item.id === id);
+        destroy.onclick = () => deleteArchivedSource(source);
       }
     });
   } catch (e) {
@@ -1757,19 +1758,27 @@ async function restoreArchivedSource(sourceId) {
   loadArchivedSourcesList();
 }
 
-async function deleteArchivedSource(sourceId) {
-  if (!confirm(DELETE_SOURCE_CONFIRM)) return;
-  try {
-    const response = await fetch(`/admin/sources/${sourceId}`, { method: "DELETE" });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || response.statusText);
-    }
-    toast("Source permanently deleted.", "success");
-    loadArchivedSourcesList();
-  } catch (e) {
-    toast(`Delete failed: ${e.message}`, "error");
-  }
+async function deleteArchivedSource(source) {
+  if (!source) return;
+  showConfirmToast({
+    title: "Delete this source?",
+    body: `${sourceDisplayName(source)} and all of its derived data (documents, claims, entities tied only to it) will be permanently removed. This can't be undone.`,
+    confirmLabel: "Delete permanently",
+    confirmClass: "btn-danger",
+    onConfirm: async () => {
+      try {
+        const response = await fetch(`/admin/sources/${source.id}`, { method: "DELETE" });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.detail || response.statusText);
+        }
+        toast("Source permanently deleted.", "success");
+        loadArchivedSourcesList();
+      } catch (e) {
+        toast(`Delete failed: ${e.message}`, "error");
+      }
+    },
+  });
 }
 
 function sourceRow(source) {
@@ -1808,6 +1817,10 @@ function sourceRow(source) {
 
 function sourceMetaLine(source) {
   return `${sourceKindLabel(source)} · ${source.identifier}`;
+}
+
+function sourceDisplayName(source) {
+  return source?.display_name || source?.identifier || "This source";
 }
 
 function sourceKindLabel(source) {
@@ -1873,10 +1886,15 @@ async function handleMenuAction(action, sourceId) {
     toast("Source paused.", "success");
     loadSourcesList();
   } else if (action === "archive") {
-    if (!confirm(ARCHIVE_SOURCE_CONFIRM)) return;
-    await patchSource(sourceId, { status: "archived" });
-    toast("Source archived.", "success");
-    loadSourcesList();
+    showArchiveConfirm(source, async () => {
+      try {
+        await patchSource(sourceId, { status: "archived" });
+        toast("Source archived.", "success");
+        loadSourcesList();
+      } catch (e) {
+        toast(`Archive failed: ${e.message}`, "error");
+      }
+    });
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
   }
@@ -2180,7 +2198,7 @@ function renderSourceFiles(detail) {
   setupSourceFileUpload(detail);
   const archive = byId("file-archive");
   if (archive) {
-    archive.onclick = () => archiveSourceFromDetail(detail.id);
+    archive.onclick = () => archiveSourceFromDetail(detail);
   }
 }
 
@@ -2231,15 +2249,16 @@ async function replaceSourceFile(sourceId, file) {
   }
 }
 
-async function archiveSourceFromDetail(sourceId) {
-  if (!confirm(ARCHIVE_SOURCE_CONFIRM)) return;
-  try {
-    await patchSource(sourceId, { status: "archived" });
-    toast("Source archived.", "success");
-    location.hash = "#sources";
-  } catch (e) {
-    toast(`Archive failed: ${e.message}`, "error");
-  }
+function archiveSourceFromDetail(source) {
+  showArchiveConfirm(source, async () => {
+    try {
+      await patchSource(source.id, { status: "archived" });
+      toast("Source archived.", "success");
+      location.hash = "#sources";
+    } catch (e) {
+      toast(`Archive failed: ${e.message}`, "error");
+    }
+  });
 }
 
 function renderSourceRuns(detail) {
@@ -2589,6 +2608,72 @@ function modalFocusableElements(modal) {
       'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
     ),
   ).filter((element) => !element.hidden);
+}
+
+function showArchiveConfirm(source, onConfirm) {
+  showConfirmToast({
+    title: "Archive this source?",
+    body: `${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`,
+    confirmLabel: "Archive",
+    confirmClass: "btn-danger",
+    onConfirm,
+  });
+}
+
+function showConfirmToast({ title, body, confirmLabel, confirmClass, onConfirm }) {
+  dismissConfirmToast();
+  const el = document.createElement("div");
+  el.className = "confirm-toast";
+  el.setAttribute("role", "dialog");
+  el.setAttribute("aria-live", "assertive");
+  el.innerHTML = `
+    <div class="confirm-toast-title">${escapeHtml(title)}</div>
+    <div class="confirm-toast-body">${escapeHtml(body)}</div>
+    <div class="confirm-toast-actions">
+      <button class="btn-secondary" data-action="cancel" type="button">Cancel</button>
+      <button class="${escapeAttr(confirmClass || "btn-danger")}" data-action="confirm" type="button">${escapeHtml(confirmLabel)}</button>
+    </div>
+  `;
+  document.body.appendChild(el);
+  confirmToastEl = el;
+  const cancel = el.querySelector("[data-action=cancel]");
+  const confirmButton = el.querySelector("[data-action=confirm]");
+  cancel.onclick = (event) => {
+    event.stopPropagation();
+    dismissConfirmToast();
+  };
+  confirmButton.onclick = async (event) => {
+    event.stopPropagation();
+    confirmButton.disabled = true;
+    await onConfirm();
+    dismissConfirmToast();
+  };
+  confirmToastKeydownHandler = (event) => {
+    if (event.key === "Escape") dismissConfirmToast();
+  };
+  confirmToastOutsideHandler = (event) => {
+    if (confirmToastEl && !confirmToastEl.contains(event.target)) dismissConfirmToast();
+  };
+  document.addEventListener("keydown", confirmToastKeydownHandler);
+  setTimeout(() => document.addEventListener("pointerdown", confirmToastOutsideHandler), 0);
+  requestAnimationFrame(() => el.classList.add("is-visible"));
+  confirmButton.focus();
+}
+
+function dismissConfirmToast() {
+  if (confirmToastKeydownHandler) {
+    document.removeEventListener("keydown", confirmToastKeydownHandler);
+    confirmToastKeydownHandler = null;
+  }
+  if (confirmToastOutsideHandler) {
+    document.removeEventListener("pointerdown", confirmToastOutsideHandler);
+    confirmToastOutsideHandler = null;
+  }
+  const el = confirmToastEl;
+  confirmToastEl = null;
+  if (!el) return;
+  el.classList.remove("is-visible");
+  setTimeout(() => el.remove(), 80);
 }
 
 function toast(message, level) {
