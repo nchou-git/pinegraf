@@ -309,7 +309,6 @@ input[type="file"] {
   color: var(--text-muted);
 }
 
-.status-pill.archived,
 .status-pill.running,
 .conflict-pill {
   background-color: var(--conflict-bg);

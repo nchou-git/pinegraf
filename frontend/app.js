@@ -1,6 +1,8 @@
 "use strict";
 
 const ASK_SESSION_KEY = "pinegraf_ask_session";
+const REMOVE_SOURCE_CONFIRM =
+  "Permanently remove this source? This deletes the source and all derived data (documents, claims, etc.) that came only from this source. Cannot be undone.";
 
 const state = {
   me: null,
@@ -394,7 +396,7 @@ async function loadDirectory() {
   try {
     const data = await getJSON(`/api/directory?${params.toString()}`);
     const total = data.total || 0;
-    const sourceTotal = (state.sourcesCache || []).filter((s) => s.status !== "archived").length;
+    const sourceTotal = (state.sourcesCache || []).length;
     const totalPages = Math.max(1, Math.ceil(total / (data.page_size || 50)));
     state.directoryRows = sortDirectoryRows(data.results || []);
     setPageHeader({
@@ -553,7 +555,7 @@ function openDirectoryFilter(type, anchor) {
 
 function directoryFilterOptions(type) {
   if (type === "source") {
-    const sources = (state.sourcesCache || []).filter((s) => s.status !== "archived");
+    const sources = state.sourcesCache || [];
     const counts = sourceCountsForRows(state.directoryRows);
     return sources.map((source) => ({
         value: source.identifier,
@@ -1552,11 +1554,9 @@ async function loadSourcesList() {
     state.sourcesCache = sources;
     const active = sources.filter((s) => s.status === "active");
     const paused = sources.filter((s) => s.status === "paused");
-    const archived = sources.filter((s) => s.status === "archived");
     const pageSubtitle = byId("page-subtitle");
     if (pageSubtitle) {
-      pageSubtitle.textContent =
-        `${active.length} active · ${paused.length} paused · ${archived.length} archived`;
+      pageSubtitle.textContent = `${active.length} active · ${paused.length} paused`;
     }
     const list = byId("sources-list");
     if (!sources.length) {
@@ -1576,10 +1576,7 @@ async function loadSourcesList() {
       if (emptyAddSource) emptyAddSource.onclick = openAddSourceModal;
       return;
     }
-    list.innerHTML = sources
-      .filter((s) => s.status !== "archived")
-      .map((s) => sourceRow(s))
-      .join("");
+    list.innerHTML = sources.map((s) => sourceRow(s)).join("");
     list.querySelectorAll(".source-row").forEach((row) => {
       const id = row.dataset.sourceId;
       row.onclick = (e) => {
@@ -1689,7 +1686,7 @@ function toggleMenu(container, sourceId) {
     <button class="menu-item" data-act="rename"><i class="ti ti-pencil"></i> Rename</button>
     ${source && source.kind === "file" ? `<button class="menu-item" data-act="download"><i class="ti ti-download"></i> Download original</button>` : ""}
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
-    <button class="menu-item danger" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
+    <button class="menu-item danger" data-act="remove"><i class="ti ti-trash"></i> Remove</button>
   `;
   container.querySelector(".source-row-actions, .source-actions").appendChild(menu);
   menu.querySelectorAll("button").forEach((b) => {
@@ -1724,10 +1721,10 @@ async function handleMenuAction(action, sourceId) {
     await patchSource(sourceId, { status: "paused" });
     toast("Source paused.", "success");
     loadSourcesList();
-  } else if (action === "archive") {
-    if (!confirm("Archive this source? Data is preserved; no new ingestion will run.")) return;
+  } else if (action === "remove") {
+    if (!confirm(REMOVE_SOURCE_CONFIRM)) return;
     await fetch(`/admin/sources/${sourceId}`, { method: "DELETE" });
-    toast("Source archived.", "success");
+    toast("Source removed.", "success");
     loadSourcesList();
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
@@ -2012,7 +2009,7 @@ function renderSourceFiles(detail) {
                        <a class="btn-secondary" href="/api/sources/${escapeAttr(detail.id)}/download"><i class="ti ti-download" aria-hidden="true"></i> Download</a>
                        ${
                          isAdmin
-                           ? `<button class="btn-danger" id="file-remove" type="button" title="Delete the uploaded file and archive this source"><i class="ti ti-trash" aria-hidden="true"></i> Remove</button>`
+                           ? `<button class="btn-danger" id="file-remove" type="button" title="Delete the uploaded file and remove this source"><i class="ti ti-trash" aria-hidden="true"></i> Remove</button>`
                            : ""
                        }
                      </div>
@@ -2086,7 +2083,7 @@ async function replaceSourceFile(sourceId, file) {
 async function removeSourceFile(sourceId) {
   if (
     !confirm(
-      "Remove this source? The uploaded file will be deleted and all derived data will be archived.",
+      REMOVE_SOURCE_CONFIRM,
     )
   )
     return;
@@ -2096,7 +2093,7 @@ async function removeSourceFile(sourceId) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || response.statusText);
     }
-    toast("Source archived.", "success");
+    toast("Source removed.", "success");
     location.hash = "#sources";
   } catch (e) {
     toast(`Remove failed: ${e.message}`, "error");
