@@ -1,6 +1,6 @@
 <svg role="img" aria-label="Pinegraf logo" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
-  <polygon points="24 4 12 20 36 20" fill="currentColor" />
-  <polygon points="24 14 8 32 40 32" fill="currentColor" />
-  <polygon points="24 25 6 42 42 42" fill="currentColor" />
-  <rect x="21" y="39" width="6" height="7" rx="1" fill="currentColor" />
+  <polygon points="24 4 12 20 36 20" fill="#00693E" />
+  <polygon points="24 14 8 32 40 32" fill="#00693E" />
+  <polygon points="24 25 6 42 42 42" fill="#00693E" />
+  <rect x="21" y="39" width="6" height="7" rx="1" fill="#00693E" />
 </svg>
