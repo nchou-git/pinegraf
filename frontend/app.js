@@ -1,12 +1,7 @@
 "use strict";
 
 const ASK_SESSION_KEY = "pinegraf_ask_session";
-const ASK_EXAMPLES = [
-  "Who is the most cited professor in alumni stories?",
-  "Which Tuck alumni have worked for the CIA?",
-  "Who founded Gyrobike?",
-  "Which Tuck alumni from T'17 live in Silicon Valley?",
-];
+const ASK_EXAMPLES = ["Tuck alums in tech"];
 const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
 const ARCHIVE_SOURCE_CONFIRM =
   "Archive this source? Derived data is preserved and the source can be restored later.";
@@ -874,7 +869,7 @@ function renderAsk() {
 function renderAskComposer(isPinned) {
   return `
     <form class="ask-composer ${isPinned ? "is-pinned" : ""}" id="ask-form">
-      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations. For example, who worked on Gyrobike?"></textarea>
+      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations"></textarea>
       <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Ask question" disabled>
         <i class="ti ti-send" aria-hidden="true"></i>
       </button>
