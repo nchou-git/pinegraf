@@ -171,9 +171,10 @@ function renderShell() {
     )
     .join("");
 
-  byId("sidebar-org-avatar").textContent = workspaceInitials(workspaceName);
-  byId("sidebar-org-name").textContent = workspaceName;
-  byId("sidebar-org-role").textContent = state.me?.is_admin ? "Admin" : "Viewer";
+  const orgRole = state.me?.is_admin ? "Admin" : "Viewer";
+  byId("sidebar-org-avatar").textContent = state.me?.is_admin ? "AD" : workspaceInitials(workspaceName);
+  byId("sidebar-org-name").textContent = orgRole;
+  byId("sidebar-org-role").textContent = workspaceName;
   byId("sidebar-org-row").onclick = toggleWorkspaceMenu;
 
   const collapse = byId("sidebar-collapse");
