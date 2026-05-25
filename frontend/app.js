@@ -1775,11 +1775,16 @@ async function renderSourceDetail(sourceId, tab) {
 
 function renderSourceDetailHead(source) {
   const head = byId("source-detail-head");
+  const title = source.display_name || source.identifier;
   head.innerHTML = `
     <div class="entity-hero">
-      <i class="ti ${source.icon_hint || "ti-database"}" style="font-size:32px;color:var(--green);width:52px;height:52px;display:flex;align-items:center;justify-content:center;background:var(--green-tint);border-radius:50%"></i>
+      <i class="ti ${sourceKindIcon(source)}" style="font-size:32px;color:var(--green);width:52px;height:52px;display:flex;align-items:center;justify-content:center;background:var(--green-tint);border-radius:50%"></i>
       <div style="flex:1">
-        <h1>${escapeHtml(source.display_name || source.identifier)}</h1>
+        <h1 id="source-name-title">${
+          state.me?.is_admin
+            ? `<button class="source-title-edit" type="button" data-action="edit-source-name">${escapeHtml(title)}</button>`
+            : escapeHtml(title)
+        }</h1>
         <div class="subtitle">${escapeHtml(sourceMetaLine(source))}</div>
         <div class="meta">
           <span><strong>${source.coverage.documents}</strong> documents</span>
@@ -1801,7 +1806,44 @@ function renderSourceDetailHead(source) {
   if (state.me?.is_admin) {
     head.querySelector("[data-action=crawl]").onclick = () => runSourceAction(source.id, "crawl");
     head.querySelector("[data-action=parse]").onclick = () => runSourceAction(source.id, "parse");
+    head.querySelector("[data-action=edit-source-name]").onclick = () => startSourceNameEdit(source);
   }
+}
+
+function startSourceNameEdit(source) {
+  const title = byId("source-name-title");
+  const current = source.display_name || source.identifier;
+  title.innerHTML = `<input class="source-title-input" aria-label="Source name" value="${escapeAttr(current)}" />`;
+  const input = title.querySelector("input");
+  let saving = false;
+  input.focus();
+  input.select();
+  input.onblur = () => {
+    if (!saving) renderSourceDetailHead(source);
+  };
+  input.onkeydown = async (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      renderSourceDetailHead(source);
+      return;
+    }
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const next = input.value.trim();
+    if (!next || next === current) {
+      renderSourceDetailHead(source);
+      return;
+    }
+    saving = true;
+    await patchSource(source.id, { display_name: next });
+    toast("Renamed.", "success");
+    renderSourceDetail(source.id, currentSourceDetailTab());
+  };
+}
+
+function currentSourceDetailTab() {
+  const [, , tab] = (location.hash.replace(/^#/, "") || "").split("/");
+  return tab || "documents";
 }
 
 async function renderSourceDocuments(sourceId) {
@@ -1922,6 +1964,7 @@ function renderSourceRuns(detail) {
 function renderSourceConfig(detail) {
   const wrap = byId("source-tab-content");
   const adminOnly = !state.me?.is_admin;
+  const formatLabel = sourceKindLabel(detail);
   wrap.innerHTML = `
     <div class="panel" style="margin-top:0">
       <div class="modal-body">
@@ -1936,9 +1979,18 @@ function renderSourceConfig(detail) {
             <span class="field-hint">Identifier cannot be changed after creation.</span>
           </label>
         </div>
+        ${
+          detail.kind === "file"
+            ? `<label class="field">
+                 <span class="field-label">Format</span>
+                 <input value="${escapeAttr(formatLabel)}" disabled />
+                 <span class="field-hint">This can't be changed after creation.</span>
+               </label>`
+            : ""
+        }
         <label class="field">
           <span class="field-label">Notes</span>
-          <textarea id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripStatusLine(detail.notes || ""))}</textarea>
+          <textarea id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripSourceMetaLines(detail.notes || ""))}</textarea>
         </label>
         ${
           !adminOnly
@@ -1952,7 +2004,7 @@ function renderSourceConfig(detail) {
     byId("cfg-save").onclick = async () => {
       const body = {
         display_name: byId("cfg-name").value.trim() || null,
-        notes: byId("cfg-notes").value.trim() || null,
+        notes: buildSourceNotes(detail, byId("cfg-notes").value.trim()),
       };
       await patchSource(detail.id, body);
       toast("Saved.", "success");
@@ -1961,12 +2013,20 @@ function renderSourceConfig(detail) {
   }
 }
 
-function stripStatusLine(notes) {
-  if (notes.startsWith("status:")) {
-    const idx = notes.indexOf("\n");
-    return idx >= 0 ? notes.slice(idx + 1) : "";
-  }
-  return notes;
+function stripSourceMetaLines(notes) {
+  return String(notes || "")
+    .split("\n")
+    .filter((line) => !line.startsWith("status:") && !line.startsWith("format:"))
+    .join("\n")
+    .trim();
+}
+
+function buildSourceNotes(source, userNotes) {
+  const lines = [];
+  const format = sourceFormat(source);
+  if (format) lines.push(`format:${format}`);
+  if (userNotes) lines.push(userNotes);
+  return lines.join("\n") || null;
 }
 
 /* ───── Add source modal ───── */
