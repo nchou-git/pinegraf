@@ -8,6 +8,7 @@ from backend.db.store import Store
 from backend.ingestion.runners.adhoc import run_adhoc
 from backend.ingestion.runners.seed import run_seed
 from backend.ingestion.runners.sitemap import run_sitemap
+from backend.progress import ProgressEvent, emit_progress
 
 
 async def start_run(
@@ -52,4 +53,8 @@ async def _dispatch(
             stats={"errors": 1},
             error_message=f"{type(exc).__name__}: {exc}",
             finished=True,
+        )
+        await emit_progress(
+            run_id,
+            ProgressEvent("crawl", "failed", f"{type(exc).__name__}: {exc}", 100.0),
         )

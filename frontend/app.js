@@ -13,6 +13,8 @@ const state = {
   directoryRows: [],
   directoryOptionRows: [],
   sourcesCache: null,
+  runProgress: {},
+  runStreams: {},
   askSession: JSON.parse(sessionStorage.getItem(ASK_SESSION_KEY) || "[]"),
   graphSearch: "",
   graphSearchResults: [],
@@ -21,9 +23,7 @@ const state = {
 
 let modalRestoreFocus = null;
 let modalKeydownHandler = null;
-let confirmToastEl = null;
-let confirmToastKeydownHandler = null;
-let confirmToastOutsideHandler = null;
+let logStream = null;
 
 const TAB_DEFS = [
   { id: "directory", label: "Directory", icon: "ti-list-search" },
@@ -99,6 +99,7 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   await Promise.all([loadMe(), loadStats()]);
   setupShell();
+  setupLogs();
   renderShell();
   window.addEventListener("hashchange", renderRoute);
   renderRoute();
@@ -354,7 +355,7 @@ async function loadDirectorySources() {
     updateDirectoryFilterLabels();
   } catch (e) {
     state.sourcesCache = [];
-    toast(`Unable to load sources: ${e.message}`, "error");
+    logLine("error", `Unable to load sources: ${e.message}`);
   }
 }
 
@@ -1578,6 +1579,7 @@ async function loadSourcesList() {
     list.innerHTML = sources.map((s) => sourceRow(s)).join("");
     list.querySelectorAll(".source-row").forEach((row) => {
       const id = row.dataset.sourceId;
+      const source = sources.find((item) => item.id === id);
       row.onclick = (e) => {
         if (e.target.closest("button")) return;
         location.hash = `#sources/${id}`;
@@ -1596,6 +1598,10 @@ async function loadSourcesList() {
         e.stopPropagation();
         toggleMenu(row, id);
       };
+      if (source?.active_run_id && state.me?.is_admin) {
+        trackRun(source.id, sourceDisplayName(source), "run", source.active_run_id);
+      }
+      if (state.runProgress[id]) updateRunProgressDom(id);
     });
   } catch (e) {
     state.sourcesCache = [];
@@ -1758,37 +1764,32 @@ function sourceArchiveRow(source) {
 
 async function restoreArchivedSource(sourceId) {
   await patchSource(sourceId, { status: "active" });
-  toast("Source restored.", "success");
+  logLine("info", "Source restored.");
   loadArchivedSourcesList();
 }
 
 async function deleteArchivedSource(source) {
   if (!source) return;
-  showConfirmToast({
-    title: "Delete this source?",
-    body: `${sourceDisplayName(source)} and all of its derived data (documents, claims, entities tied only to it) will be permanently removed. This can't be undone.`,
-    confirmLabel: "Delete permanently",
-    confirmClass: "btn-danger",
-    onConfirm: async () => {
-      try {
-        const response = await fetch(`/admin/sources/${source.id}`, { method: "DELETE" });
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(data.detail || response.statusText);
-        }
-        toast("Source permanently deleted.", "success");
-        loadArchivedSourcesList();
-      } catch (e) {
-        toast(`Delete failed: ${e.message}`, "error");
-      }
-    },
-  });
+  const message = `${sourceDisplayName(source)} and all of its derived data (documents, claims, entities tied only to it) will be permanently removed. This can't be undone.`;
+  if (!confirm(message)) return;
+  try {
+    const response = await fetch(`/admin/sources/${source.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || response.statusText);
+    }
+    logLine("info", "Source permanently deleted.");
+    loadArchivedSourcesList();
+  } catch (e) {
+    logLine("error", `Delete failed: ${e.message}`);
+  }
 }
 
 function sourceRow(source) {
   const paused = source.status === "paused";
   const kindLabel = sourceKindLabel(source);
   const kindIcon = sourceKindIcon(source);
+  const progress = state.runProgress[source.id];
   const actions = paused
     ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
     : `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
@@ -1814,8 +1815,20 @@ function sourceRow(source) {
         <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
         <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
       </div>
-      ${state.me?.is_admin ? `<div class="source-row-actions">${actions}${menuButton}</div>` : ""}
+      ${state.me?.is_admin ? `<div class="source-row-actions">${progress ? runProgressMarkup(progress) : `${actions}${menuButton}`}</div>` : ""}
     </article>
+  `;
+}
+
+function runProgressMarkup(progress) {
+  const percent = Number(progress.percent || 0).toFixed(1);
+  return `
+    <div class="run-progress" data-run-id="${escapeAttr(progress.runId)}">
+      <div class="run-progress-track">
+        <div class="run-progress-fill"></div>
+      </div>
+      <span class="run-progress-percent">${escapeHtml(percent)}%</span>
+    </div>
   `;
 }
 
@@ -1883,22 +1896,21 @@ async function handleMenuAction(action, sourceId) {
     const name = prompt("New display name", source.display_name || source.identifier);
     if (!name) return;
     await patchSource(sourceId, { display_name: name });
-    toast("Renamed.", "success");
+    logLine("info", "Renamed.");
     loadSourcesList();
   } else if (action === "pause") {
     await patchSource(sourceId, { status: "paused" });
-    toast("Source paused.", "success");
+    logLine("info", "Source paused.");
     loadSourcesList();
   } else if (action === "archive") {
-    showArchiveConfirm(source, async () => {
-      try {
-        await patchSource(sourceId, { status: "archived" });
-        toast("Source archived.", "success");
-        loadSourcesList();
-      } catch (e) {
-        toast(`Archive failed: ${e.message}`, "error");
-      }
-    });
+    if (!confirm(`${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`)) return;
+    try {
+      await patchSource(sourceId, { status: "archived" });
+      logLine("info", "Source archived.");
+      loadSourcesList();
+    } catch (e) {
+      logLine("error", `Archive failed: ${e.message}`);
+    }
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
   }
@@ -1914,25 +1926,81 @@ async function patchSource(id, body) {
 
 async function updateSourceStatus(id, status) {
   await patchSource(id, { status });
-  toast(status === "active" ? "Source resumed." : `Source ${status}.`, "success");
+  logLine("info", status === "active" ? "Source resumed." : `Source ${status}.`);
   loadSourcesList();
 }
 
 async function runSourceAction(sourceId, action) {
+  const source = (state.sourcesCache || []).find((item) => item.id === sourceId);
   try {
     const res = await fetch(`/admin/sources/${sourceId}/${action}`, { method: "POST" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || res.statusText);
     }
-    toast(
-      action === "crawl" ? "Crawl started." : "Parse started in background.",
-      "success",
-    );
-    loadStats();
+    const data = await res.json();
+    logLine("info", `${capitalize(action)} started for ${sourceDisplayName(source)}.`);
+    trackRun(sourceId, sourceDisplayName(source), action, data.run_id);
   } catch (e) {
-    toast(`${action} failed: ${e.message}`, "error");
+    logLine("error", `${action} failed: ${e.message}`);
   }
+}
+
+function trackRun(sourceId, sourceName, action, runId) {
+  if (!runId || state.runStreams[runId]) return;
+  state.runProgress[sourceId] = {
+    runId,
+    sourceId,
+    sourceName,
+    action,
+    percent: state.runProgress[sourceId]?.percent || 0,
+  };
+  updateRunProgressDom(sourceId);
+  const stream = new EventSource(`/admin/runs/${runId}/stream`);
+  state.runStreams[runId] = stream;
+  stream.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    const progress = state.runProgress[sourceId] || { runId, sourceId, sourceName, action };
+    progress.percent = Number(data.percent || 0);
+    progress.status = data.status;
+    state.runProgress[sourceId] = progress;
+    updateRunProgressDom(sourceId);
+    if (data.status === "complete" || data.status === "failed") {
+      stream.close();
+      delete state.runStreams[runId];
+      delete state.runProgress[sourceId];
+      logLine(
+        data.status === "failed" ? "error" : "info",
+        `${capitalize(action)} ${data.status} for ${sourceName}.`,
+      );
+      loadStats();
+      loadSourcesList();
+    }
+  };
+  stream.onerror = () => {
+    stream.close();
+    delete state.runStreams[runId];
+    delete state.runProgress[sourceId];
+    updateRunProgressDom(sourceId);
+    logLine("error", `Progress stream closed for ${sourceName}.`);
+    loadSourcesList();
+  };
+}
+
+function updateRunProgressDom(sourceId) {
+  const progress = state.runProgress[sourceId];
+  const row = document.querySelector(`[data-source-id="${CSS.escape(sourceId)}"]`);
+  const actions = row?.querySelector(".source-row-actions");
+  if (!actions) return;
+  if (!progress) return;
+  if (!actions.querySelector(".run-progress")) {
+    actions.innerHTML = runProgressMarkup(progress);
+  }
+  const percent = Number(progress.percent || 0).toFixed(1);
+  const fill = actions.querySelector(".run-progress-fill");
+  const label = actions.querySelector(".run-progress-percent");
+  if (fill) fill.style.width = `${percent}%`;
+  if (label) label.textContent = `${percent}%`;
 }
 
 /* ───── Source detail ───── */
@@ -2053,7 +2121,7 @@ function startSourceNameEdit(source) {
     }
     saving = true;
     await patchSource(source.id, { display_name: next });
-    toast("Renamed.", "success");
+    logLine("info", "Renamed.");
     renderSourceDetail(source.id, currentSourceDetailTab());
   };
 }
@@ -2246,23 +2314,21 @@ async function replaceSourceFile(sourceId, file) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || response.statusText);
     }
-    toast("File replaced.", "success");
+    logLine("info", "File replaced.");
     renderSourceDetail(sourceId, "files");
   } catch (e) {
-    toast(`Upload failed: ${e.message}`, "error");
+    logLine("error", `Upload failed: ${e.message}`);
   }
 }
 
 function archiveSourceFromDetail(source) {
-  showArchiveConfirm(source, async () => {
-    try {
-      await patchSource(source.id, { status: "archived" });
-      toast("Source archived.", "success");
+  if (!confirm(`${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`)) return;
+  patchSource(source.id, { status: "archived" })
+    .then(() => {
+      logLine("info", "Source archived.");
       location.hash = "#sources";
-    } catch (e) {
-      toast(`Archive failed: ${e.message}`, "error");
-    }
-  });
+    })
+    .catch((e) => logLine("error", `Archive failed: ${e.message}`));
 }
 
 function renderSourceRuns(detail) {
@@ -2338,7 +2404,7 @@ function renderSourceConfig(detail) {
         notes: buildSourceNotes(detail, byId("cfg-notes").value.trim()),
       };
       await patchSource(detail.id, body);
-      toast("Saved.", "success");
+      logLine("info", "Saved.");
       renderSourceDetail(detail.id, "config");
     };
   }
@@ -2425,14 +2491,14 @@ async function submitAddSource() {
   const kind = selected.kind;
   const display_name = byId("new-name").value.trim();
   if (!display_name) {
-    toast("Label is required.", "error");
+    logLine("error", "Label is required.");
     return;
   }
   try {
     if (kind === "file") {
       const input = byId("new-file");
       if (!input.files || !input.files[0]) {
-        toast("Pick a file to upload.", "error");
+        logLine("error", "Pick a file to upload.");
         return;
       }
       const form = new FormData();
@@ -2443,7 +2509,7 @@ async function submitAddSource() {
     } else {
       const identifier = byId("new-identifier").value.trim();
       if (!identifier) {
-        toast("Identifier is required.", "error");
+        logLine("error", "Identifier is required.");
         return;
       }
       const body = {
@@ -2462,10 +2528,10 @@ async function submitAddSource() {
       }
     }
     closeModal();
-    toast("Source added.", "success");
+    logLine("info", "Source added.");
     await Promise.all([loadSourcesStats(), loadSourcesList()]);
   } catch (e) {
-    toast(`Add failed: ${e.message}`, "error");
+    logLine("error", `Add failed: ${e.message}`);
   }
 }
 
@@ -2509,7 +2575,7 @@ async function loadAdminConflicts() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ resolution }),
           });
-          toast("Resolved.", "success");
+          logLine("info", "Resolved.");
           loadAdminConflicts();
         };
       });
@@ -2534,7 +2600,7 @@ async function adminLogout(event) {
   return false;
 }
 
-/* ───── Modal + toast ───── */
+/* ───── Modal + logs ───── */
 
 function openModal(html) {
   const root = document.getElementById("modal-root");
@@ -2609,79 +2675,31 @@ function modalFocusableElements(modal) {
   ).filter((element) => !element.hidden);
 }
 
-function showArchiveConfirm(source, onConfirm) {
-  showConfirmToast({
-    title: "Archive this source?",
-    body: `${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`,
-    confirmLabel: "Archive",
-    confirmClass: "btn-danger",
-    onConfirm,
+function setupLogs() {
+  logLine("info", "Log stream connecting.");
+  logStream = new EventSource("/api/logs/stream");
+  logStream.onmessage = (event) => appendLog(JSON.parse(event.data));
+  logStream.onerror = () => logLine("error", "Log stream disconnected.");
+}
+
+function logLine(level, message) {
+  appendLog({
+    timestamp: new Date().toISOString(),
+    level: level.toUpperCase(),
+    message,
   });
 }
 
-function showConfirmToast({ title, body, confirmLabel, confirmClass, onConfirm }) {
-  dismissConfirmToast();
-  const el = document.createElement("div");
-  el.className = "confirm-toast";
-  el.setAttribute("role", "dialog");
-  el.setAttribute("aria-live", "assertive");
-  el.innerHTML = `
-    <div class="confirm-toast-title">${escapeHtml(title)}</div>
-    <div class="confirm-toast-body">${escapeHtml(body)}</div>
-    <div class="confirm-toast-actions">
-      <button class="btn-secondary" data-action="cancel" type="button">Cancel</button>
-      <button class="${escapeAttr(confirmClass || "btn-danger")}" data-action="confirm" type="button">${escapeHtml(confirmLabel)}</button>
-    </div>
-  `;
-  document.body.appendChild(el);
-  confirmToastEl = el;
-  const cancel = el.querySelector("[data-action=cancel]");
-  const confirmButton = el.querySelector("[data-action=confirm]");
-  cancel.onclick = (event) => {
-    event.stopPropagation();
-    dismissConfirmToast();
-  };
-  confirmButton.onclick = async (event) => {
-    event.stopPropagation();
-    confirmButton.disabled = true;
-    await onConfirm();
-    dismissConfirmToast();
-  };
-  confirmToastKeydownHandler = (event) => {
-    if (event.key === "Escape") dismissConfirmToast();
-  };
-  confirmToastOutsideHandler = (event) => {
-    if (confirmToastEl && !confirmToastEl.contains(event.target)) dismissConfirmToast();
-  };
-  document.addEventListener("keydown", confirmToastKeydownHandler);
-  setTimeout(() => document.addEventListener("pointerdown", confirmToastOutsideHandler), 0);
-  requestAnimationFrame(() => el.classList.add("is-visible"));
-  confirmButton.focus();
-}
-
-function dismissConfirmToast() {
-  if (confirmToastKeydownHandler) {
-    document.removeEventListener("keydown", confirmToastKeydownHandler);
-    confirmToastKeydownHandler = null;
-  }
-  if (confirmToastOutsideHandler) {
-    document.removeEventListener("pointerdown", confirmToastOutsideHandler);
-    confirmToastOutsideHandler = null;
-  }
-  const el = confirmToastEl;
-  confirmToastEl = null;
-  if (!el) return;
-  el.classList.remove("is-visible");
-  setTimeout(() => el.remove(), 80);
-}
-
-function toast(message, level) {
-  const root = document.getElementById("toast-root");
-  const el = document.createElement("div");
-  el.className = `toast ${level || ""}`;
-  el.textContent = message;
-  root.appendChild(el);
-  setTimeout(() => el.remove(), 3500);
+function appendLog(line) {
+  const root = byId("log-lines");
+  if (!root) return;
+  const entry = document.createElement("div");
+  entry.className = `log-line ${String(line.level || "").toLowerCase()}`;
+  const timestamp = new Date(line.timestamp || Date.now()).toLocaleTimeString();
+  entry.textContent = `[${timestamp}] ${line.level || "INFO"} ${line.message || ""}`;
+  root.appendChild(entry);
+  while (root.children.length > 1000) root.firstElementChild?.remove();
+  root.scrollTop = root.scrollHeight;
 }
 
 /* ───── Utilities ───── */

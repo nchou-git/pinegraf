@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=add-source-cleanup";
-@import "./styles/components.css?v=add-source-cleanup";
-@import "./styles/layout.css?v=add-source-cleanup";
+@import "./styles/tokens.css?v=logs-progress";
+@import "./styles/components.css?v=logs-progress";
+@import "./styles/layout.css?v=logs-progress";
 
 /* page-specific rules below */
 
@@ -950,6 +950,32 @@
 .source-row-actions .btn-icon-only {
   height: var(--button-h-small);
 }
+.run-progress {
+  display: flex;
+  width: calc(var(--space-16) * 3);
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.run-progress-track {
+  flex: 1;
+  height: var(--space-1);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background-color: var(--line);
+}
+.run-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background-color: var(--green);
+}
+.run-progress-percent {
+  min-width: var(--space-10);
+  text-align: right;
+}
 .source-actions {
   display: flex;
   gap: var(--space-2);
@@ -1092,7 +1118,6 @@ details.conflicts[open] summary .chevron {
   display: flex;
   gap: var(--space-6);
   margin: 0 var(--space-6);
-  border-bottom: 1px solid var(--line);
 }
 .panel-flush {
   margin-top: 0;
@@ -1125,17 +1150,13 @@ details.conflicts[open] summary .chevron {
   font-size: var(--fs-base);
   color: var(--text-muted);
   cursor: pointer;
-  border-bottom: 2px solid transparent;
   margin-bottom: 0;
   background-color: transparent;
-  border-left: none;
-  border-right: none;
-  border-top: none;
+  border: none;
   font-family: inherit;
 }
 .tab-sub.active {
   color: var(--green);
-  border-bottom-color: var(--green);
   font-weight: 500;
 }
 .tab-content {

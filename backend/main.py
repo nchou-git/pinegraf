@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import uuid
@@ -24,7 +25,9 @@ from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
 from backend.db.store import Store, source_to_dict
 from backend.ingestion.orchestrator import start_run
+from backend.live_logs import append_log, install_log_handler, subscribe_logs
 from backend.pipeline.orchestrator import run_full_pipeline
+from backend.progress import subscribe as subscribe_progress
 from backend.web_api import (
     archived_source_count,
     ask_stream,
@@ -84,11 +87,13 @@ def _slugify(value: str) -> str:
 
 def create_app(store: Store | None = None) -> FastAPI:
     app_store = store or Store()
+    install_log_handler()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.store.ensure_initial_sources()
         os.makedirs(get_settings().uploads_dir, exist_ok=True)
+        append_log("info", "Pinegraf started")
         yield
 
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
@@ -116,6 +121,14 @@ def create_app(store: Store | None = None) -> FastAPI:
         if path.parent != FRONTEND_DIR / "styles" or not path.is_file():
             raise HTTPException(status_code=404, detail="style not found")
         return FileResponse(path)
+
+    @app.get("/api/logs/stream")
+    async def api_logs_stream() -> StreamingResponse:
+        async def events() -> AsyncIterator[str]:
+            async for line in subscribe_logs():
+                yield f"data: {json.dumps(line)}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/favicon.svg")
     async def favicon() -> FileResponse:
@@ -428,6 +441,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail=f"crawl not supported for kind={source.kind}"
             )
+        append_log("info", f"Crawl started for {source.display_name or source.identifier}")
         return {"run_id": str(run_id), "status": "started"}
 
     @app.post("/admin/sources/{source_id}/parse")
@@ -450,7 +464,30 @@ def create_app(store: Store | None = None) -> FastAPI:
         if latest is None:
             raise HTTPException(status_code=400, detail="no source run to parse — crawl first")
         asyncio.create_task(run_full_pipeline(latest.id, store=_store(request)))
+        append_log("info", f"Parse started for {source.display_name or source.identifier}")
         return {"run_id": str(latest.id), "status": "parsing"}
+
+    @app.get("/admin/runs/{run_id}/stream")
+    async def admin_run_stream(request: Request, run_id: uuid.UUID) -> StreamingResponse:
+        require_admin(request)
+
+        async def events() -> AsyncIterator[str]:
+            async for event in subscribe_progress(run_id):
+                payload = {
+                    "stage": event.stage,
+                    "status": event.status,
+                    "message": event.message,
+                    "percent": event.percent,
+                    "data": event.data,
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                if event.status in {"complete", "failed"}:
+                    append_log(
+                        "error" if event.status == "failed" else "info",
+                        f"Run {run_id} {event.status}",
+                    )
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.get("/admin/conflicts")
     async def admin_conflicts(

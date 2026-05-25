@@ -32,6 +32,7 @@ from backend.db.models import (
     SourceRun,
 )
 from backend.db.store import SCHEMA_TABLES, Store, utc_now
+from backend.progress import has_progress
 from backend.resolution.embedder import embed_texts
 
 ASK_CACHE_SECONDS = 3600
@@ -257,6 +258,10 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                 ).scalars()
             )
             last_run = runs[0] if runs else None
+            active_run = next(
+                (run for run in runs if run.status == "running" and has_progress(run.id)),
+                None,
+            )
             output.append(
                 {
                     "id": str(source.id),
@@ -269,6 +274,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
                     "last_run_at": last_run.started_at.isoformat() if last_run else None,
                     "last_status": last_run.status if last_run else None,
+                    "active_run_id": str(active_run.id) if active_run else None,
                     "runs": [
                         {
                             "id": str(run.id),

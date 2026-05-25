@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy import exists, select
 
@@ -13,6 +14,7 @@ async def resolve_pending(
     limit: int | None = None,
     *,
     store: Store,
+    progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[uuid.UUID]:
     with store.session() as session:
         query = (
@@ -25,7 +27,8 @@ async def resolve_pending(
         rows = list(session.execute(query).scalars())
 
     touched: list[uuid.UUID] = []
-    for row in rows:
+    total = len(rows)
+    for index, row in enumerate(rows, start=1):
         subject = await resolve_mention(
             row.subject_text,
             "person",
@@ -55,4 +58,6 @@ async def resolve_pending(
                     resolution=object_resolution,
                 )
                 touched.append(object_resolution.entity_id)
+        if progress is not None:
+            await progress(index, total)
     return touched

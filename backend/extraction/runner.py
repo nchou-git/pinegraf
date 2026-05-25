@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 
 from sqlalchemy import exists, select
@@ -15,6 +16,7 @@ async def extract_pending(
     limit: int | None = None,
     *,
     store: Store,
+    progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[uuid.UUID]:
     with store.session() as session:
         query = (
@@ -37,6 +39,7 @@ async def extract_pending(
     model_names: set[str] = set()
 
     try:
+        total = len(chunks)
         for chunk_id, text in chunks:
             result = await extract_claims(text)
             chunks_processed += 1
@@ -62,6 +65,8 @@ async def extract_pending(
                     )
                     claims_emitted += 1
                 session.commit()
+            if progress is not None:
+                await progress(chunks_processed, total)
         _finish_run(
             store,
             extractor_run.id,

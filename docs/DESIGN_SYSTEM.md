@@ -95,7 +95,6 @@ Transitions are limited to `background-color`, `border-color`, `color`, `opacity
 | `--z-sticky` | 50 | Sidebar and sticky layout chrome. |
 | `--z-dropdown` | 100 | Menus and popovers. |
 | `--z-modal` | 200 | Modals and drawers. |
-| `--z-toast` | 300 | Toasts above all other UI. |
 
 Use these tokens instead of magic numbers.
 

@@ -6,6 +6,7 @@ from xml.etree import ElementTree
 from backend.config import get_settings
 from backend.db.store import Store
 from backend.ingestion.fetcher import fetch_url
+from backend.progress import ProgressEvent, emit_progress
 
 
 async def run_sitemap(
@@ -16,6 +17,7 @@ async def run_sitemap(
 ) -> dict[str, int]:
     run_id = uuid.UUID(str(source_run_id))
     stats = {"sitemaps": 0, "discovered": 0, "fetched": 0, "errors": 0}
+    await emit_progress(run_id, ProgressEvent("crawl", "running", "Reading sitemap", 0.0))
     try:
         urls = await _collect_urls(sitemap_url, stats=stats, seen=set())
     except Exception as exc:  # noqa: BLE001 - failures are stored on the source run.
@@ -27,10 +29,16 @@ async def run_sitemap(
             error_message=f"{type(exc).__name__}: {exc}",
             finished=True,
         )
+        await emit_progress(
+            run_id,
+            ProgressEvent("crawl", "failed", f"{type(exc).__name__}: {exc}", 100.0),
+        )
         return stats
 
     max_pages = get_settings().max_pages
-    for url in urls[:max_pages]:
+    selected = urls[:max_pages]
+    total = len(selected)
+    for index, url in enumerate(selected, start=1):
         try:
             body = await fetch_url(url)
         except Exception as exc:  # noqa: BLE001 - failures are recorded per URL.
@@ -41,14 +49,28 @@ async def run_sitemap(
                 body_bytes=None,
                 error_message=f"{type(exc).__name__}: {exc}",
             )
+            await emit_progress(
+                run_id,
+                ProgressEvent(
+                    "crawl", "running", "Crawling sitemap URLs", index / max(total, 1) * 100
+                ),
+            )
             continue
         stats["fetched"] += 1
         store.add_fetch(source_run_id=run_id, url=url, body_bytes=body, http_status=200)
+        await emit_progress(
+            run_id,
+            ProgressEvent("crawl", "running", "Crawling sitemap URLs", index / max(total, 1) * 100),
+        )
 
     status = "complete" if stats["errors"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["errors"] > 0:
         status = "failed"
     store.update_source_run(run_id, status=status, stats=stats, finished=True)
+    await emit_progress(
+        run_id,
+        ProgressEvent("crawl", "failed" if status == "failed" else "complete", status, 100.0),
+    )
     return stats
 
 

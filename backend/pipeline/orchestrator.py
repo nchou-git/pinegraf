@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
-from collections import defaultdict
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 
 from backend.corroboration.runner import corroborate_pending
 from backend.db.store import Store
 from backend.extraction.runner import extract_pending
 from backend.normalization.runner import normalize_pending
+from backend.progress import ProgressEvent, emit_progress
 from backend.projections.runner import rebuild_projections
 from backend.resolution.runner import resolve_pending
-
-
-@dataclass
-class PipelineEvent:
-    stage: str
-    status: str
-    message: str
-    percent: int
-    data: dict[str, object] = field(default_factory=dict)
-
-
-_SUBSCRIBERS: dict[uuid.UUID, list[asyncio.Queue[PipelineEvent]]] = defaultdict(list)
 
 
 async def run_full_pipeline(
@@ -35,54 +20,75 @@ async def run_full_pipeline(
     touched: set[uuid.UUID] = set()
     stats = dict(store.get_source_run(run_id).stats or {}) if store.get_source_run(run_id) else {}
     try:
-        await _emit(run_id, PipelineEvent("normalization", "running", "Normalizing fetches", 10))
-        documents = await normalize_pending(store=store, source_run_id=run_id)
+        await _emit(run_id, ProgressEvent("normalization", "running", "Normalizing fetches", 0.0))
+        documents = await normalize_pending(
+            store=store,
+            source_run_id=run_id,
+            progress=lambda done, total: _item_progress(
+                run_id, "normalization", "Normalizing fetches", done, total, 0.0, 20.0
+            ),
+        )
         stats["normalized_documents"] = len(documents)
         store.update_source_run(run_id, stats=stats)
 
-        await _emit(run_id, PipelineEvent("extraction", "running", "Extracting claims", 35))
-        extractor_runs = await extract_pending(store=store)
+        await _emit(run_id, ProgressEvent("extraction", "running", "Extracting claims", 20.0))
+        extractor_runs = await extract_pending(
+            store=store,
+            progress=lambda done, total: _item_progress(
+                run_id, "extraction", "Extracting claims", done, total, 20.0, 55.0
+            ),
+        )
         stats["extractor_runs"] = [str(value) for value in extractor_runs]
         store.update_source_run(run_id, stats=stats)
 
-        await _emit(run_id, PipelineEvent("resolution", "running", "Resolving mentions", 60))
-        touched.update(await resolve_pending(store=store))
+        await _emit(run_id, ProgressEvent("resolution", "running", "Resolving mentions", 55.0))
+        touched.update(
+            await resolve_pending(
+                store=store,
+                progress=lambda done, total: _item_progress(
+                    run_id, "resolution", "Resolving mentions", done, total, 55.0, 75.0
+                ),
+            )
+        )
         stats["resolved_entities"] = len(touched)
         store.update_source_run(run_id, stats=stats)
 
-        await _emit(run_id, PipelineEvent("corroboration", "running", "Promoting claims", 80))
+        await _emit(run_id, ProgressEvent("corroboration", "running", "Promoting claims", 75.0))
         touched_claims = await corroborate_pending(store=store)
         stats["touched_claims"] = len(touched_claims)
         store.update_source_run(run_id, stats=stats)
 
-        await _emit(run_id, PipelineEvent("projection", "running", "Rebuilding projections", 92))
+        await _emit(run_id, ProgressEvent("projection", "running", "Rebuilding projections", 90.0))
         rebuilt = await rebuild_projections(touched or None, store=store)
         stats["projected_entities"] = len(rebuilt)
         store.update_source_run(run_id, stats=stats)
 
-        await _emit(run_id, PipelineEvent("complete", "complete", "Pipeline complete", 100, stats))
+        await _emit(
+            run_id, ProgressEvent("complete", "complete", "Pipeline complete", 100.0, stats)
+        )
         return rebuilt
     except Exception as exc:
         stats["pipeline_error"] = f"{type(exc).__name__}: {exc}"
         store.update_source_run(run_id, stats=stats, error_message=stats["pipeline_error"])
-        await _emit(run_id, PipelineEvent("failed", "failed", stats["pipeline_error"], 100))
+        await _emit(run_id, ProgressEvent("failed", "failed", stats["pipeline_error"], 100.0))
         raise
 
 
-async def subscribe(run_id: uuid.UUID | str) -> AsyncIterator[PipelineEvent]:
-    run_uuid = uuid.UUID(str(run_id))
-    queue: asyncio.Queue[PipelineEvent] = asyncio.Queue()
-    _SUBSCRIBERS[run_uuid].append(queue)
-    try:
-        while True:
-            event = await queue.get()
-            yield event
-            if event.status in {"complete", "failed"}:
-                break
-    finally:
-        _SUBSCRIBERS[run_uuid].remove(queue)
+async def _item_progress(
+    run_id: uuid.UUID,
+    stage: str,
+    message: str,
+    done: int,
+    total: int,
+    start: float,
+    end: float,
+) -> None:
+    if total <= 0:
+        percent = end
+    else:
+        percent = start + ((end - start) * done / total)
+    await _emit(run_id, ProgressEvent(stage, "running", message, percent))
 
 
-async def _emit(run_id: uuid.UUID, event: PipelineEvent) -> None:
-    for queue in list(_SUBSCRIBERS.get(run_id, [])):
-        await queue.put(event)
+async def _emit(run_id: uuid.UUID, event: ProgressEvent) -> None:
+    await emit_progress(run_id, event)
