@@ -1481,7 +1481,7 @@ async function renderSources(parts) {
   const adminActions = state.me?.is_admin
     ? `<div class="source-actions">
          <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
-         <button class="btn-primary" id="run-pipeline"><i class="ti ti-player-play"></i> Run pipeline</button>
+         <button class="btn-primary" id="run-pipeline" title="Crawl all active sources"><i class="ti ti-player-play"></i> Run pipeline</button>
        </div>`
     : "";
   setPageHeader({ title: "Sources", subtitle: "Loading…", actions: adminActions });
@@ -1631,8 +1631,8 @@ function sourceRow(source) {
   const kindIcon = sourceKindIcon(source);
   const actions = paused
     ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
-    : `<button class="btn-source" data-action="crawl"><i class="ti ti-download"></i> Crawl</button>
-       <button class="btn-source" data-action="parse"><i class="ti ti-cpu"></i> Parse</button>`;
+    : `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
+       <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>`;
   const menuButton = state.me?.is_admin
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
@@ -1862,8 +1862,8 @@ function renderSourceDetailHead(source) {
       ${
         state.me?.is_admin
           ? `<div class="source-actions">
-               <button class="btn-source" data-action="crawl"><i class="ti ti-download"></i> Crawl</button>
-               <button class="btn-source" data-action="parse"><i class="ti ti-cpu"></i> Parse</button>
+               <button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
+               <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>
              </div>`
           : ""
       }
@@ -2400,7 +2400,7 @@ async function loadAdminConflicts() {
 async function runFullPipeline() {
   if (
     !confirm(
-      "Run the full pipeline against all sources? This may take several minutes and incurs API costs.",
+      "Crawl all active sources? This may take several minutes and incurs API costs.",
     )
   )
     return;
