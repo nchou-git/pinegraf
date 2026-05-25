@@ -456,6 +456,17 @@ input[type="file"] {
   line-height: var(--lh-snug);
 }
 
+.stat-tooltip-definition {
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.stat-tooltip-example {
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
 .avatar-circle {
   display: flex;
   width: var(--button-h-small);

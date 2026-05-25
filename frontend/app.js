@@ -70,26 +70,29 @@ const STAT_CARDS = [
     key: "documents",
     label: "Documents",
     ariaLabel: "What is a document?",
-    definition: "Example: one news article on tuck.dartmouth.edu or one row in alum_data.xlsx.",
+    definition: "The number of discrete records fed into Pinegraf.",
+    example: "Example: one row of alumni data from the database. One webpage from tuck.dartmouth.edu.",
   },
   {
     key: "claims",
     label: "Claims",
     ariaLabel: "What is a claim?",
-    definition: 'Example: "Errik Anderson founded Adimab in 2007."',
+    definition: "The number of inferred associations made by Pinegraf.",
+    example: "Example: Errik Anderson founded Adimab in 2007.",
   },
   {
     key: "entities",
     label: "Entities",
     ariaLabel: "What is an entity?",
-    definition:
-      "Example: \"Daniella Reichstetter\" and \"Daniella Reichstetter T'07\" resolve to one entity.",
+    definition: "The number of people after resolving conflicts.",
+    example: "Example: 'Daniella Reichstetter' and 'Daniella Reichstetter T'07' are one entity.",
   },
   {
     key: "sources",
     label: "Sources",
     ariaLabel: "What is a source?",
-    definition: "Example: tuck.dartmouth.edu, alum_data.xlsx, a SerpAPI feed.",
+    definition: "The number of data feeds.",
+    example: "Example: tuck.dartmouth.edu, SerpAPI, and alum_data.xlsx are three unique sources.",
   },
 ];
 
@@ -1534,11 +1537,14 @@ function setupStatInfoButtons() {
       const existing = card?.querySelector(".stat-tooltip");
       closeStatTooltips();
       if (!card || existing) return;
-      const def = STAT_CARDS.find((item) => item.key === button.dataset.term)?.definition;
-      if (!def) return;
+      const stat = STAT_CARDS.find((item) => item.key === button.dataset.term);
+      if (!stat) return;
       const tooltip = document.createElement("div");
       tooltip.className = "menu stat-tooltip";
-      tooltip.textContent = def;
+      tooltip.innerHTML = `
+        <div class="stat-tooltip-definition">${escapeHtml(stat.definition)}</div>
+        <div class="stat-tooltip-example">${escapeHtml(stat.example)}</div>
+      `;
       card.appendChild(tooltip);
       setTimeout(() => document.addEventListener("click", closeStatTooltips, { once: true }), 0);
     };
