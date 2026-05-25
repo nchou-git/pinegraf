@@ -1,6 +1,12 @@
 "use strict";
 
 const ASK_SESSION_KEY = "pinegraf_ask_session";
+const ASK_EXAMPLES = [
+  "Who is the most cited professor in alumni stories?",
+  "Which Tuck alumni have worked for the CIA?",
+  "Who founded Gyrobike?",
+  "Which Tuck alumni from T'17 live in Silicon Valley?",
+];
 const ARCHIVE_SOURCE_CONFIRM =
   "Archive this source? Derived data is preserved and the source can be restored later.";
 const DELETE_SOURCE_CONFIRM =
@@ -842,6 +848,9 @@ function renderAsk() {
           ? `<section class="ask-thread" id="ask-thread">${state.askSession.map(renderAskPair).join("")}</section>`
           : `<section class="ask-empty">
               <h2>What do you want to know?</h2>
+              <div class="ask-examples">
+                ${ASK_EXAMPLES.map((example) => `<button class="chip ask-example" type="button">${escapeHtml(example)}</button>`).join("")}
+              </div>
             </section>`
       }
       ${renderAskComposer(hasSession)}
@@ -892,6 +901,13 @@ function setupAskComposer() {
     }
   });
   input.addEventListener("input", syncComposer);
+  document.querySelectorAll(".ask-example").forEach((button) => {
+    button.onclick = () => {
+      input.value = button.textContent.trim();
+      syncComposer();
+      input.focus();
+    };
+  });
   syncComposer();
   input.focus();
 }
