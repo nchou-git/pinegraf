@@ -386,7 +386,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         require_admin(request)
         if not delete_source(_store(request), source_id):
             raise HTTPException(status_code=404, detail="source not found")
-        return {"status": "archived"}
+        return {"status": "deleted"}
 
     @app.post("/admin/sources/{source_id}/crawl")
     async def admin_source_crawl(request: Request, source_id: uuid.UUID) -> dict[str, str]:

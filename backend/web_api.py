@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from openai import AsyncOpenAI
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 
 from backend.config import get_settings
 from backend.db.models import (
@@ -22,6 +22,7 @@ from backend.db.models import (
     DocumentFetch,
     Entity,
     EntityAlias,
+    EntityMention,
     EntityNeighborhood,
     EntitySummary,
     Fetch,
@@ -35,6 +36,8 @@ from backend.resolution.embedder import embed_text
 ASK_CACHE_SECONDS = 3600
 ASK_CACHE_MAX = 100
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
+ARCHIVED_STATUS_PREFIX = "status:archived"
+PAUSED_STATUS_PREFIX = "status:paused"
 
 
 def stats(store: Store) -> dict[str, int]:
@@ -209,11 +212,24 @@ _KIND_ICONS = {
 
 def _source_status(source: Source) -> str:
     notes = source.notes or ""
-    if notes.startswith("status:archived"):
-        return "archived"
-    if notes.startswith("status:paused"):
+    if notes.startswith(PAUSED_STATUS_PREFIX):
         return "paused"
     return "active"
+
+
+def _source_is_archived(source: Source) -> bool:
+    return bool(source.notes and source.notes.startswith(ARCHIVED_STATUS_PREFIX))
+
+
+def archived_source_count(store: Store) -> int:
+    with store.session() as session:
+        return int(
+            session.execute(
+                select(func.count())
+                .select_from(Source)
+                .where(Source.notes.startswith(ARCHIVED_STATUS_PREFIX))
+            ).scalar_one()
+        )
 
 
 def list_sources(store: Store) -> list[dict[str, object]]:
@@ -227,6 +243,8 @@ def list_sources(store: Store) -> list[dict[str, object]]:
         )
         output = []
         for source in sources:
+            if _source_is_archived(source):
+                continue
             runs = list(
                 session.execute(
                     select(SourceRun)
@@ -271,7 +289,7 @@ def list_sources(store: Store) -> list[dict[str, object]]:
 def source_detail(store: Store, source_id: uuid.UUID) -> dict[str, object] | None:
     with store.session() as session:
         source = session.get(Source, source_id)
-        if source is None:
+        if source is None or _source_is_archived(source):
             return None
         file_size_bytes = None
         if source.kind == "file":
@@ -444,6 +462,9 @@ def update_source(
     status: str | None = None,
     notes: str | None = None,
 ) -> dict[str, object] | None:
+    if status == "archived":
+        # Backward compatibility for older clients: archived now means hard delete.
+        return {"deleted": True, "id": str(source_id)} if delete_source(store, source_id) else None
     with store.session() as session:
         source = session.get(Source, source_id)
         if source is None:
@@ -475,7 +496,213 @@ def update_source(
 
 
 def delete_source(store: Store, source_id: uuid.UUID) -> bool:
-    return update_source(store, source_id, status="archived") is not None
+    """Hard-delete a source and all derived data. Returns True if deleted."""
+    uploaded_filename = None
+    with store.session() as session:
+        source = session.get(Source, source_id)
+        if source is None:
+            return False
+        uploaded_filename = source.identifier if source.kind == "file" else None
+
+        fetch_ids = list(
+            session.execute(
+                select(Fetch.id)
+                .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+                .where(SourceRun.source_id == source_id)
+            ).scalars()
+        )
+        orphan_document_ids = _orphan_document_ids_for_fetches(session, fetch_ids)
+        _repoint_shared_documents(session, fetch_ids, orphan_document_ids)
+        orphan_chunk_ids = _chunk_ids_for_documents(session, orphan_document_ids)
+        orphan_claim_raw_ids = _claim_raw_ids_for_chunks(session, orphan_chunk_ids)
+
+        if orphan_claim_raw_ids:
+            _delete_rows(
+                session,
+                delete(EntityMention).where(EntityMention.claim_raw_id.in_(orphan_claim_raw_ids)),
+            )
+            _delete_rows(
+                session,
+                delete(ClaimEvidence).where(ClaimEvidence.claim_raw_id.in_(orphan_claim_raw_ids)),
+            )
+        _delete_rows(session, delete(ClaimEvidence).where(ClaimEvidence.source_id == source_id))
+
+        if orphan_claim_raw_ids:
+            _delete_rows(
+                session,
+                delete(ClaimRaw).where(ClaimRaw.id.in_(orphan_claim_raw_ids)),
+            )
+
+        _delete_claims_without_evidence(session)
+        _delete_entities_without_refs(session, require_no_aliases=False)
+
+        if orphan_chunk_ids:
+            _delete_rows(session, delete(Chunk).where(Chunk.id.in_(orphan_chunk_ids)))
+        if orphan_document_ids:
+            _delete_rows(
+                session,
+                delete(DocumentFetch).where(DocumentFetch.document_id.in_(orphan_document_ids)),
+            )
+            _delete_rows(
+                session,
+                delete(Document).where(Document.id.in_(orphan_document_ids)),
+            )
+        if fetch_ids:
+            _delete_rows(
+                session, delete(DocumentFetch).where(DocumentFetch.fetch_id.in_(fetch_ids))
+            )
+            _delete_rows(session, delete(Fetch).where(Fetch.id.in_(fetch_ids)))
+        _delete_rows(session, delete(SourceRun).where(SourceRun.source_id == source_id))
+        session.delete(source)
+        session.commit()
+
+    if uploaded_filename:
+        _delete_uploaded_file(uploaded_filename)
+    return True
+
+
+def _orphan_document_ids_for_fetches(session, fetch_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    if not fetch_ids:
+        return []
+    candidate_doc_ids = list(
+        session.execute(
+            select(Document.id).where(Document.first_seen_fetch_id.in_(fetch_ids))
+        ).scalars()
+    )
+    orphan_document_ids = []
+    for document_id in candidate_doc_ids:
+        other_refs = session.execute(
+            select(func.count())
+            .select_from(DocumentFetch)
+            .where(DocumentFetch.document_id == document_id)
+            .where(~DocumentFetch.fetch_id.in_(fetch_ids))
+        ).scalar_one()
+        if other_refs == 0:
+            orphan_document_ids.append(document_id)
+    return orphan_document_ids
+
+
+def _chunk_ids_for_documents(session, document_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    if not document_ids:
+        return []
+    return list(
+        session.execute(select(Chunk.id).where(Chunk.document_id.in_(document_ids))).scalars()
+    )
+
+
+def _repoint_shared_documents(
+    session,
+    fetch_ids: list[uuid.UUID],
+    orphan_document_ids: list[uuid.UUID],
+) -> None:
+    if not fetch_ids:
+        return
+    orphan_set = set(orphan_document_ids)
+    shared_document_ids = list(
+        session.execute(
+            select(Document.id).where(Document.first_seen_fetch_id.in_(fetch_ids))
+        ).scalars()
+    )
+    for document_id in shared_document_ids:
+        if document_id in orphan_set:
+            continue
+        replacement_fetch_id = session.execute(
+            select(DocumentFetch.fetch_id)
+            .where(DocumentFetch.document_id == document_id)
+            .where(~DocumentFetch.fetch_id.in_(fetch_ids))
+            .limit(1)
+        ).scalar_one_or_none()
+        if replacement_fetch_id is not None:
+            document = session.get(Document, document_id)
+            if document is not None:
+                document.first_seen_fetch_id = replacement_fetch_id
+
+
+def _claim_raw_ids_for_chunks(session, chunk_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    if not chunk_ids:
+        return []
+    return list(
+        session.execute(select(ClaimRaw.id).where(ClaimRaw.chunk_id.in_(chunk_ids))).scalars()
+    )
+
+
+def _delete_claims_without_evidence(session) -> int:
+    orphan_claim_ids = list(
+        session.execute(
+            select(Claim.id).where(
+                ~select(ClaimEvidence.claim_id).where(ClaimEvidence.claim_id == Claim.id).exists()
+            )
+        ).scalars()
+    )
+    if not orphan_claim_ids:
+        return 0
+    _delete_rows(
+        session,
+        delete(ClaimConflict).where(
+            or_(
+                ClaimConflict.claim_a_id.in_(orphan_claim_ids),
+                ClaimConflict.claim_b_id.in_(orphan_claim_ids),
+            )
+        ),
+    )
+    _delete_rows(session, delete(Claim).where(Claim.id.in_(orphan_claim_ids)))
+    return len(orphan_claim_ids)
+
+
+def _delete_entities_without_refs(session, *, require_no_aliases: bool) -> int:
+    query = (
+        select(Entity.id)
+        .where(
+            ~select(EntityMention.entity_id).where(EntityMention.entity_id == Entity.id).exists()
+        )
+        .where(
+            ~select(Claim.subject_entity_id).where(Claim.subject_entity_id == Entity.id).exists()
+        )
+        .where(~select(Claim.object_entity_id).where(Claim.object_entity_id == Entity.id).exists())
+    )
+    if require_no_aliases:
+        query = query.where(
+            ~select(EntityAlias.entity_id).where(EntityAlias.entity_id == Entity.id).exists()
+        )
+    orphan_entity_ids = list(session.execute(query).scalars())
+    if not orphan_entity_ids:
+        return 0
+    _delete_rows(
+        session,
+        delete(EntityNeighborhood).where(
+            or_(
+                EntityNeighborhood.entity_id.in_(orphan_entity_ids),
+                EntityNeighborhood.neighbor_id.in_(orphan_entity_ids),
+            )
+        ),
+    )
+    _delete_rows(
+        session,
+        delete(EntitySummary).where(EntitySummary.entity_id.in_(orphan_entity_ids)),
+    )
+    if not require_no_aliases:
+        _delete_rows(
+            session,
+            delete(EntityAlias).where(EntityAlias.entity_id.in_(orphan_entity_ids)),
+        )
+    _delete_rows(session, delete(Entity).where(Entity.id.in_(orphan_entity_ids)))
+    return len(orphan_entity_ids)
+
+
+def _delete_uploaded_file(filename: str) -> bool:
+    file_path = Path(get_settings().uploads_dir) / filename
+    if not file_path.exists():
+        return False
+    try:
+        file_path.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def _delete_rows(session, statement) -> int:
+    result = session.execute(statement.execution_options(synchronize_session=False))
+    return int(result.rowcount or 0)
 
 
 def list_conflicts(store: Store, page: int = 1, page_size: int = 25) -> dict[str, object]:
