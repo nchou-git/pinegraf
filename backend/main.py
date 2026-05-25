@@ -445,11 +445,11 @@ def _admin_login_html(error: str | None) -> str:
       {error_block}
       <form method="post" action="/admin/login" class="login-form">
         <label class="field">
-          <span>Admin username</span>
-          <input name="username" autocomplete="username" autofocus required />
+          <span>Login ID</span>
+          <input name="username" autocomplete="username" value="pinegraf" autofocus required />
         </label>
         <label class="field">
-          <span>Admin password</span>
+          <span>Password</span>
           <input name="password" type="password" autocomplete="current-password" required />
         </label>
         <input type="hidden" name="next" value="/" />
