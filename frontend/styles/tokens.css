@@ -1,0 +1,41 @@
+:root {
+  --green: #00693e;
+  --green-tint: #eaf3ec;
+  --green-hover: #005a35;
+  --conflict: #b8541f;
+  --conflict-bg: #fceee6;
+  --text: #1a1a1a;
+  --text-muted: #555555;
+  --text-faint: #888888;
+  --line: #e8e8e8;
+  --surface: #f8f9f8;
+  --bg: #ffffff;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+  --sidebar-width: 240px;
+  --sidebar-collapsed-width: 60px;
+  --ease: 80ms ease;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Inter", "Helvetica Neue", Arial,
+    "Segoe UI", Roboto, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}

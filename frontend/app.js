@@ -130,6 +130,7 @@ async function loadMe() {
       admin_logout_url: "/admin/logout",
     };
   }
+  document.body.dataset.workspace = state.me?.workspace?.slug || "tuck";
 }
 
 async function loadStats() {

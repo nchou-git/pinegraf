@@ -106,6 +106,13 @@ def create_app(store: Store | None = None) -> FastAPI:
     async def styles_css() -> FileResponse:
         return FileResponse(FRONTEND_DIR / "styles.css")
 
+    @app.get("/styles/{filename}")
+    async def nested_style(filename: str) -> FileResponse:
+        path = FRONTEND_DIR / "styles" / filename
+        if path.parent != FRONTEND_DIR / "styles" or not path.is_file():
+            raise HTTPException(status_code=404, detail="style not found")
+        return FileResponse(path)
+
     @app.get("/favicon.svg")
     async def favicon() -> FileResponse:
         return FileResponse(FRONTEND_DIR / "favicon.svg")
