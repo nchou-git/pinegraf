@@ -16,7 +16,3 @@ async def normalize_pending(
     for fetch_id in store.pending_fetch_ids(source_run_id=run_uuid):
         document_ids.append(await normalize_fetch(fetch_id, store=store))
     return document_ids
-
-
-async def normalize_run(source_run_id: uuid.UUID | str, *, store: Store) -> list[uuid.UUID]:
-    return await normalize_pending(store=store, source_run_id=source_run_id)
