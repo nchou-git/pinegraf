@@ -16,6 +16,9 @@ const state = {
   sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
 };
 
+let modalRestoreFocus = null;
+let modalKeydownHandler = null;
+
 const TAB_DEFS = [
   { id: "directory", label: "Directory", icon: "ti-list-search" },
   { id: "ask", label: "Ask", icon: "ti-message-question" },
@@ -2323,15 +2326,75 @@ async function adminLogout(event) {
 
 function openModal(html) {
   const root = document.getElementById("modal-root");
-  root.innerHTML = `<div class="modal-overlay" onclick="closeModalOnBackdrop(event)"><div class="modal" onclick="event.stopPropagation()">${html}</div></div>`;
+  modalRestoreFocus = document.activeElement;
+  if (modalKeydownHandler) {
+    document.removeEventListener("keydown", modalKeydownHandler);
+  }
+  root.innerHTML = `<div class="modal-overlay" onclick="closeModalOnBackdrop(event)"><div class="modal" role="dialog" aria-modal="true" tabindex="-1" onclick="event.stopPropagation()">${html}</div></div>`;
+  const modal = root.querySelector(".modal");
+  modalKeydownHandler = (event) => trapModalFocus(event, modal);
+  document.addEventListener("keydown", modalKeydownHandler);
+  setTimeout(() => focusFirstModalControl(modal), 0);
 }
 
 function closeModal() {
+  if (modalKeydownHandler) {
+    document.removeEventListener("keydown", modalKeydownHandler);
+    modalKeydownHandler = null;
+  }
   document.getElementById("modal-root").innerHTML = "";
+  const restoreTarget = modalRestoreFocus;
+  modalRestoreFocus = null;
+  if (restoreTarget && document.contains(restoreTarget) && typeof restoreTarget.focus === "function") {
+    restoreTarget.focus();
+  }
 }
 
 function closeModalOnBackdrop(event) {
   if (event.target.classList.contains("modal-overlay")) closeModal();
+}
+
+function trapModalFocus(event, modal) {
+  if (!modal) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = modalFocusableElements(modal);
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function focusFirstModalControl(modal) {
+  if (!modal) return;
+  const [first] = modalFocusableElements(modal);
+  if (first) {
+    first.focus();
+  } else {
+    modal.focus();
+  }
+}
+
+function modalFocusableElements(modal) {
+  return Array.from(
+    modal.querySelectorAll(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hidden);
 }
 
 function toast(message, level) {
