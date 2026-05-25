@@ -2389,7 +2389,7 @@ function renderAddSourceModal() {
       </div>
       <label class="field">
         <span class="field-label">Label</span>
-        <input class="input" id="new-name" placeholder="e.g. Dartmouth News" />
+        <input class="input" id="new-name" placeholder="e.g. Tuck Dartmouth News" />
       </label>
       ${selected.fields
         .map((f) => {

@@ -195,8 +195,15 @@ select {
 }
 
 input[type="file"] {
-  padding: var(--space-2);
-  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+input[type="file"]::-webkit-file-upload-button {
+  display: none;
+}
+
+input[type="file"]::file-selector-button {
+  display: none;
 }
 
 .checkbox-input {
