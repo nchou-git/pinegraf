@@ -821,14 +821,17 @@ function renderAsk() {
       ${
         hasSession
           ? `<section class="ask-thread" id="ask-thread">${state.askSession.map(renderAskPair).join("")}</section>`
-          : `<section class="ask-empty">
-              <h2>What do you want to know?</h2>
-              <div class="ask-examples">
-                ${ASK_EXAMPLES.map((example) => `<button class="chip ask-example" type="button">${escapeHtml(example)}</button>`).join("")}
-              </div>
-            </section>`
+          : `<div class="ask-empty-shell">
+              <section class="ask-empty">
+                <h2>What do you want to know?</h2>
+                <div class="ask-examples">
+                  ${ASK_EXAMPLES.map((example) => `<button class="chip ask-example" type="button">${escapeHtml(example)}</button>`).join("")}
+                </div>
+              </section>
+              ${renderAskComposer(false)}
+            </div>`
       }
-      ${renderAskComposer(hasSession)}
+      ${hasSession ? renderAskComposer(true) : ""}
     </div>
     <aside class="side-drawer" id="ask-side-drawer" hidden></aside>
   `;

@@ -337,15 +337,24 @@
 .ask-page.is-empty {
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: center;
   padding-bottom: var(--space-16);
 }
 
-.ask-empty {
+.ask-empty-shell {
   width: 100%;
   max-width: calc(var(--space-16) * 11 + var(--space-4));
   margin: 0 auto;
   text-align: center;
+}
+
+.ask-empty {
+  width: 100%;
+}
+
+.ask-empty-shell .ask-composer {
+  width: 100%;
 }
 
 .ask-empty h2 {
