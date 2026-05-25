@@ -121,6 +121,9 @@ class Fetch(Base):
     content_type: Mapped[str | None] = mapped_column(Text)
     bytes_size: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)
+    original_url: Mapped[str | None] = mapped_column(Text)
+    redirect_chain: Mapped[list[str] | None] = mapped_column(JSONDict)
+    discovery_method: Mapped[str | None] = mapped_column(Text)
 
 
 class Document(Base):

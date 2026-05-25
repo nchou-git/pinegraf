@@ -435,7 +435,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                 "sitemap",
                 {
                     "source_id": str(source.id),
-                    "sitemap_url": f"https://{source.identifier}/sitemap.xml",
+                    "source_input": source.identifier,
                 },
                 "admin",
                 store=_store(request),

@@ -1,7 +1,7 @@
 "use strict";
 
 const ASK_SESSION_KEY = "pinegraf_ask_session";
-const ASK_EXAMPLES = ["Tuck alums in tech"];
+const ASK_EXAMPLES = ["Tuck alums in tech", "Who worked on Gyrobike?"];
 const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
 const ARCHIVE_SOURCE_CONFIRM = "Derived data is preserved and the source can be restored later.";
 
@@ -868,7 +868,7 @@ function renderAsk() {
 function renderAskComposer(isPinned) {
   return `
     <form class="ask-composer ${isPinned ? "is-pinned" : ""}" id="ask-form">
-      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations. For example, who worked on Gyrobike?"></textarea>
+      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations"></textarea>
       <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Ask question" disabled>
         <i class="ti ti-send" aria-hidden="true"></i>
       </button>
@@ -2442,7 +2442,7 @@ function renderAddSourceModal() {
       </div>
       <label class="field">
         <span class="field-label">Label</span>
-        <input class="input" id="new-name" placeholder="e.g. Tuck Dartmouth News" />
+        <input class="input" id="new-name" placeholder="e.g. Tuck News" />
       </label>
       ${selected.fields
         .map((f) => {

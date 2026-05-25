@@ -42,8 +42,96 @@ async def test_sitemap_runner_fetches_urls_and_writes_rows(store, fake_httpx) ->
 
     stats = await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
-    assert stats == {"sitemaps": 1, "discovered": 2, "fetched": 2, "errors": 0}
+    assert stats["sitemaps"] == 1
+    assert stats["discovered"] == 2
+    assert stats["fetched"] == 2
+    assert stats["errors"] == 0
+    assert stats["from_sitemap"] == 2
     with store.session() as session:
         urls = list(session.execute(select(Fetch.url).order_by(Fetch.url)).scalars())
     assert urls == ["https://example.com/a", "https://example.com/b"]
     assert store.get_source_run(run.id).status == "complete"
+
+
+@pytest.mark.asyncio
+async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx) -> None:
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": "https://example.com/sitemap.xml"},
+        triggered_by="test",
+    )
+    fake_httpx.responses = {
+        "https://example.com/robots.txt": fake_httpx.Response(
+            "https://example.com/robots.txt", 200, b"User-agent: *\nAllow: /\n",
+        ),
+        "https://example.com/sitemap.xml": fake_httpx.Response(
+            "https://example.com/sitemap.xml", 200,
+            b"""<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+              <url><loc>https://example.com/seed</loc></url>
+            </urlset>""",
+        ),
+        "https://example.com/seed": fake_httpx.Response(
+            "https://example.com/seed", 200,
+            b"""<html><body>
+                <a href="/discovered">in-scope</a>
+                <a href="https://other.com/out">out-of-scope</a>
+                <a href="mailto:x@y.com">non-http</a>
+                <a href="/file.pdf">binary</a>
+                <a href="/discovered?utm_source=foo">duplicate</a>
+            </body></html>""",
+        ),
+        "https://example.com/discovered": fake_httpx.Response(
+            "https://example.com/discovered", 200, b"<html>leaf</html>",
+        ),
+    }
+
+    stats = await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
+
+    assert stats["fetched"] == 2
+    assert stats["from_sitemap"] == 1
+    assert stats["from_link_follow"] == 1
+    assert stats["dropped_scope"] >= 1
+    assert stats["dropped_filter"] >= 1
+    with store.session() as session:
+        urls = sorted(session.execute(select(Fetch.url)).scalars())
+    assert urls == [
+        "https://example.com/discovered",
+        "https://example.com/seed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None:
+    source = store.upsert_source(kind="domain", identifier="tuck.dartmouth.edu")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": "tuck.dartmouth.edu"},
+        triggered_by="test",
+    )
+    fake_httpx.responses = {
+        "https://tuck.dartmouth.edu/robots.txt": fake_httpx.Response(
+            "https://tuck.dartmouth.edu/robots.txt", 200, b"User-agent: *\nAllow: /\n",
+        ),
+        "https://mba.tuck.dartmouth.edu/robots.txt": fake_httpx.Response(
+            "https://mba.tuck.dartmouth.edu/robots.txt", 200, b"User-agent: *\nAllow: /\n",
+        ),
+        "https://tuck.dartmouth.edu/": fake_httpx.Response(
+            "https://tuck.dartmouth.edu/", 200,
+            b'<html><a href="https://mba.tuck.dartmouth.edu/page">mba</a></html>',
+        ),
+        "https://mba.tuck.dartmouth.edu/page": fake_httpx.Response(
+            "https://mba.tuck.dartmouth.edu/page", 200, b"<html>mba</html>",
+        ),
+    }
+
+    stats = await run_sitemap(run.id, "tuck.dartmouth.edu", store=store)
+
+    assert stats["fetched"] == 2
+    assert stats["from_seed" if "from_seed" in stats else "from_link_follow"] >= 1
+    with store.session() as session:
+        urls = sorted(session.execute(select(Fetch.url)).scalars())
+    assert "https://mba.tuck.dartmouth.edu/page" in urls
+

@@ -168,6 +168,9 @@ class Store:
         http_status: int | None = None,
         content_type: str | None = None,
         error_message: str | None = None,
+        original_url: str | None = None,
+        redirect_chain: list[str] | None = None,
+        discovery_method: str | None = None,
     ) -> Fetch:
         digest = content_digest(body_bytes) if body_bytes is not None else None
         with self.session() as session:
@@ -180,6 +183,9 @@ class Store:
                 content_type=content_type,
                 bytes_size=len(body_bytes) if body_bytes is not None else None,
                 error_message=error_message,
+                original_url=original_url,
+                redirect_chain=redirect_chain,
+                discovery_method=discovery_method,
             )
             session.add(fetch)
             session.commit()

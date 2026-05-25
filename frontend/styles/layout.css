@@ -68,9 +68,10 @@ a:hover {
 
 .sidebar-header {
   display: flex;
+  min-height: var(--row-h-nav);
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-4);
+  padding: var(--space-3);
   border-radius: var(--radius-md);
   color: var(--text);
   text-decoration: none;
@@ -85,8 +86,8 @@ a:hover {
 }
 
 .sidebar-header svg {
-  width: var(--space-6);
-  height: var(--space-6);
+  width: var(--button-h-default);
+  height: var(--button-h-default);
   flex: 0 0 auto;
   color: var(--green);
 }
@@ -355,8 +356,7 @@ a:hover {
 }
 
 .route-logs .page-header-strip {
-  flex: 0 0 auto;
-  width: 100%;
+  display: none;
 }
 
 .route-logs .content-container {

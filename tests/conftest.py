@@ -13,10 +13,14 @@ from backend.ingestion import fetcher
 
 
 class FakeResponse:
-    def __init__(self, url: str, status_code: int, body: bytes) -> None:
+    def __init__(self, url: str, status_code: int, body: bytes,
+                 headers: dict[str, str] | None = None,
+                 history: list["FakeResponse"] | None = None) -> None:
         self.url = url
         self.status_code = status_code
         self.content = body
+        self.headers = headers or {"content-type": "text/html; charset=utf-8"}
+        self.history = history or []
 
     @property
     def text(self) -> str:
@@ -79,7 +83,10 @@ def admin_headers() -> dict[str, str]:
 
 @pytest.fixture
 def fake_httpx(monkeypatch) -> type[FakeAsyncClient]:
+    from backend.ingestion.runners import sitemap as sitemap_runner
+
     FakeAsyncClient.responses = {}
     fetcher._ROBOTS_CACHE.clear()
     monkeypatch.setattr(fetcher.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(sitemap_runner.httpx, "AsyncClient", FakeAsyncClient)
     return FakeAsyncClient

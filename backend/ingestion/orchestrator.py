@@ -38,7 +38,7 @@ async def _dispatch(
 ) -> None:
     try:
         if kind == "sitemap":
-            await run_sitemap(run_id, str(spec["sitemap_url"]), store=store)
+            await run_sitemap(run_id, str(spec.get("source_input") or spec["sitemap_url"]), store=store)
         elif kind == "seed":
             await run_seed(run_id, str(spec["seed_file_path"]), store=store)
         elif kind == "adhoc":
