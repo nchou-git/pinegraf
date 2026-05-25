@@ -125,17 +125,12 @@ function renderTopbar() {
   const tabs = TAB_DEFS;
   const nav = document.getElementById("nav-pills");
   const activeTab = currentTab();
-  nav.innerHTML =
-    tabs
-      .map(
-        (tab) =>
-          `<a class="nav-pill ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}"><i class="ti ${tab.icon}" aria-hidden="true"></i>${escapeHtml(tab.label)}</a>`,
-      )
-      .join("") +
-    `<span class="user-menu-anchor">
-       <button class="avatar" id="user-avatar" type="button" aria-label="Open user menu" title="${escapeAttr(state.me?.is_admin ? "admin" : "user")}">${state.me?.is_admin ? "AD" : "NC"}</button>
-     </span>`;
-  byId("user-avatar").onclick = toggleUserMenu;
+  nav.innerHTML = tabs
+    .map(
+      (tab) =>
+        `<a class="nav-pill ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}"><i class="ti ${tab.icon}" aria-hidden="true"></i>${escapeHtml(tab.label)}</a>`,
+    )
+    .join("");
 }
 
 function ensureBrandHomeLink() {
