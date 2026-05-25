@@ -572,6 +572,7 @@
 
 .graph-result,
 .graph-result-empty {
+  display: block;
   width: 100%;
   border: none;
   border-radius: var(--radius-sm);

@@ -289,31 +289,31 @@ async function renderDirectory() {
           <input id="dir-q" placeholder="Search people" value="${escapeAttr(state.directoryFilters.q)}" />
         </label>
         <div class="directory-filter" id="source-filter-wrap">
-          <button class="filter-button" id="filter-source" type="button">
+          <button class="btn-secondary filter-button" id="filter-source" type="button">
             <strong id="filter-source-label">All sources</strong>
             <i class="ti ti-chevron-down" aria-hidden="true"></i>
           </button>
         </div>
         <div class="directory-filter" id="class-filter-wrap">
-          <button class="filter-button" id="filter-class" type="button">
+          <button class="btn-secondary filter-button" id="filter-class" type="button">
             <strong id="filter-class-label">All classes</strong>
             <i class="ti ti-chevron-down" aria-hidden="true"></i>
           </button>
         </div>
         <div class="directory-filter" id="org-filter-wrap">
-          <button class="filter-button" id="filter-org" type="button">
+          <button class="btn-secondary filter-button" id="filter-org" type="button">
             <strong id="filter-org-label">All organizations</strong>
             <i class="ti ti-chevron-down" aria-hidden="true"></i>
           </button>
         </div>
         <div class="directory-filter directory-sort" id="sort-filter-wrap">
-          <button class="filter-button" id="filter-sort" type="button">
+          <button class="btn-secondary filter-button" id="filter-sort" type="button">
             <span>Sort</span>
             <strong id="filter-sort-label">Name A-Z</strong>
             <i class="ti ti-chevron-down" aria-hidden="true"></i>
           </button>
         </div>
-        <button class="reset-filters" id="reset-filters" type="button" hidden>Reset filters</button>
+        <button class="btn-ghost reset-filters" id="reset-filters" type="button" hidden>Reset filters</button>
       </section>
       <section class="directory-results" id="results">
         <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
@@ -341,7 +341,7 @@ async function renderDirectory() {
 
 function directoryHeaderActions() {
   return `
-    <button class="btn-secondary icon-only" type="button" disabled title="Coming soon" aria-label="Add person coming soon">
+    <button class="btn-icon-only" type="button" disabled title="Coming soon" aria-label="Add person coming soon">
       <i class="ti ti-plus" aria-hidden="true"></i>
     </button>
   `;
@@ -417,7 +417,7 @@ async function loadDirectory() {
       results.innerHTML = `
         <div class="directory-inline-empty">
           <span>No people matched those filters.</span>
-          <button class="reset-filters inline" type="button" onclick="resetDirectoryFilters()">Reset filters</button>
+          <button class="btn-ghost reset-filters inline" type="button" onclick="resetDirectoryFilters()">Reset filters</button>
         </div>
         ${directoryTable([])}
       `;
@@ -492,8 +492,8 @@ function openDirectoryFilter(type, anchor) {
         .join("")}
     </div>
     <div class="filter-popover-footer">
-      <button type="button" data-filter-action="all">Select all</button>
-      <button type="button" data-filter-action="clear">Clear</button>
+      <button class="btn-ghost" type="button" data-filter-action="all">Select all</button>
+      <button class="btn-ghost" type="button" data-filter-action="clear">Clear</button>
     </div>
   `;
   wrap.appendChild(popover);
@@ -612,7 +612,7 @@ function openDirectorySort(anchor) {
   popover.innerHTML = options
     .map(
       ([value, label]) => `
-      <button type="button" class="filter-sort-option" data-sort="${value}">
+      <button type="button" class="btn-ghost filter-sort-option" data-sort="${value}">
         <span>${label}</span>
         ${state.directoryFilters.sort === value ? `<i class="ti ti-check" aria-hidden="true"></i>` : ""}
       </button>`,
@@ -826,7 +826,7 @@ function renderAsk() {
             "Who founded Gyrobike?",
             "Show me PE alums class of 2010-2015",
           ]
-            .map((query) => `<button class="ask-example" type="button">${escapeHtml(query)}</button>`)
+            .map((query) => `<button class="chip ask-example" type="button">${escapeHtml(query)}</button>`)
             .join("")}
         </div>
       </section>
@@ -935,7 +935,7 @@ function renderRecentQuestions() {
       ${state.askHistory
         .map(
           (question) => `
-          <button class="recent-question" type="button">${escapeHtml(question)}</button>`,
+          <button class="chip recent-question" type="button">${escapeHtml(question)}</button>`,
         )
         .join("")}
     </div>
@@ -958,7 +958,7 @@ function renderCitations(citations) {
   list.innerHTML = citations
     .map(
       (c, i) => `
-      <button class="ask-citation-card" type="button" data-citation-index="${i}">
+      <button class="btn-ghost ask-citation-card" type="button" data-citation-index="${i}">
         <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
         <strong>${escapeHtml(c.title || c.source_title || `Source ${i + 1}`)}</strong>
         <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
@@ -979,7 +979,7 @@ function openCitationDrawer(citation) {
         <div class="side-drawer-title">${escapeHtml(citation.title || citation.source_title || "Source")}</div>
         <div class="side-drawer-subtitle">${escapeHtml(citation.source_id || citation.claim_id || "Citation")}</div>
       </div>
-      <button class="modal-close" type="button" onclick="closeSideDrawer()" aria-label="Close">×</button>
+      <button class="btn-icon-only modal-close" type="button" onclick="closeSideDrawer()" aria-label="Close">×</button>
     </div>
     <div class="side-drawer-body">
       <div class="field-label">Snippet</div>
@@ -1096,7 +1096,7 @@ async function runGraphSearch() {
     out.innerHTML = state.graphSearchResults
       .map(
         (row) => `
-        <button class="graph-result" type="button" data-entity-id="${escapeAttr(row.entity_id)}">
+        <button class="btn-ghost graph-result" type="button" data-entity-id="${escapeAttr(row.entity_id)}">
           <span>${escapeHtml(row.canonical_name || "Unknown")}</span>
           <small>${escapeHtml(rowBio(row))}</small>
         </button>`,
@@ -1438,7 +1438,7 @@ function statCards(stats) {
       <div class="stat-card">
         <div class="stat-card-head">
           <div class="label">${escapeHtml(card.label)}</div>
-          <button class="stat-info" aria-label="${escapeAttr(card.ariaLabel)}" data-term="${escapeAttr(card.key)}"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
+          <button class="btn-icon-only stat-info" aria-label="${escapeAttr(card.ariaLabel)}" data-term="${escapeAttr(card.key)}"><i class="ti ti-info-circle" aria-hidden="true"></i></button>
         </div>
         <div class="value">${formatNumber(stats?.[card.key])}</div>
       </div>`,
@@ -1538,7 +1538,7 @@ function sourceRow(source) {
     : `<button class="btn-source" data-action="crawl"><i class="ti ti-download"></i> Crawl</button>
        <button class="btn-source" data-action="parse"><i class="ti ti-cpu"></i> Parse</button>`;
   const menuButton = state.me?.is_admin
-    ? `<button class="btn-source icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
+    ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
   return `
     <article class="source-row ${paused ? "paused" : ""}" data-source-id="${escapeAttr(source.id)}">
@@ -1701,9 +1701,9 @@ async function renderSourceDetail(sourceId, tab) {
   app.innerHTML = `
     <div id="source-detail-head"></div>
     <div class="tabs-sub" id="source-detail-tabs">
-      <button class="tab-sub ${activeTab === "documents" ? "active" : ""}" data-tab="documents">Documents</button>
-      <button class="tab-sub ${activeTab === "runs" ? "active" : ""}" data-tab="runs">Runs</button>
-      <button class="tab-sub ${activeTab === "config" ? "active" : ""}" data-tab="config">Config</button>
+      <button class="btn-ghost tab-sub ${activeTab === "documents" ? "active" : ""}" data-tab="documents">Documents</button>
+      <button class="btn-ghost tab-sub ${activeTab === "runs" ? "active" : ""}" data-tab="runs">Runs</button>
+      <button class="btn-ghost tab-sub ${activeTab === "config" ? "active" : ""}" data-tab="config">Config</button>
     </div>
     <div class="tab-content" id="source-tab-content">
       <div class="empty-state"><i class="ti ti-loader"></i><div>Loading…</div></div>
@@ -1739,7 +1739,7 @@ function renderSourceDetailHead(source) {
       <div class="entity-hero-main">
         <h1 id="source-name-title">${
           state.me?.is_admin
-            ? `<button class="source-title-edit" type="button" data-action="edit-source-name">${escapeHtml(title)}</button>`
+            ? `<button class="btn-ghost source-title-edit" type="button" data-action="edit-source-name">${escapeHtml(title)}</button>`
             : escapeHtml(title)
         }</h1>
         <div class="subtitle">${escapeHtml(sourceMetaLine(source))}</div>
@@ -1868,7 +1868,7 @@ async function openDocumentModal(documentId) {
           <div class="modal-title">${escapeHtml(data.title || data.url || "Document")}</div>
           <div class="modal-subtitle">${escapeHtml(data.url || "")}</div>
         </div>
-        <button class="modal-close" onclick="closeModal()" aria-label="Close">×</button>
+        <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
       </div>
       <div class="doc-viewer">
         <div class="muted small">${data.word_count || 0} words · ${data.chunks?.length || 0} chunks · ${data.claims_raw?.length || 0} extracted claims</div>
@@ -2003,7 +2003,7 @@ function renderAddSourceModal() {
         <div class="modal-title">Add source</div>
         <div class="modal-subtitle">Add a crawlable sitemap or upload a file.</div>
       </div>
-      <button class="modal-close" onclick="closeModal()" aria-label="Close">×</button>
+      <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
     </div>
     <div class="modal-body">
       <div>
@@ -2011,7 +2011,7 @@ function renderAddSourceModal() {
         <div class="kind-grid">
           ${SOURCE_KINDS.map(
             (k) => `
-            <button type="button" class="kind-card ${k.id === modalKind ? "selected" : ""}" data-kind="${k.id}">
+            <button type="button" class="btn-secondary kind-card ${k.id === modalKind ? "selected" : ""}" data-kind="${k.id}">
               <i class="ti ${k.icon} icon"></i>
               <div>
                 <div class="label">${escapeHtml(k.label)}</div>
