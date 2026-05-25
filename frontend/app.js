@@ -80,29 +80,26 @@ const STAT_CARDS = [
     key: "documents",
     label: "Documents",
     ariaLabel: "What is a document?",
-    definition:
-      "Articles, files, or records fetched and cleaned. One xlsx row or one news article = one document.",
+    definition: "Example: one news article on tuck.dartmouth.edu or one row in alum_data.xlsx.",
   },
   {
     key: "claims",
     label: "Claims",
     ariaLabel: "What is a claim?",
-    definition:
-      "Structured statements extracted from documents. One document typically yields 5–30 claims.",
+    definition: 'Example: "Errik Anderson founded Adimab in 2007."',
   },
   {
     key: "entities",
     label: "Entities",
     ariaLabel: "What is an entity?",
     definition:
-      "Distinct people, organizations, or projects that claims refer to. One person mentioned across 20 documents is still one entity.",
+      "Example: \"Daniella Reichstetter\" and \"Daniella Reichstetter T'07\" resolve to one entity.",
   },
   {
     key: "sources",
     label: "Sources",
     ariaLabel: "What is a source?",
-    definition:
-      "Registered ingestion endpoints (files, sitemaps, APIs) that produce documents.",
+    definition: "Example: tuck.dartmouth.edu, alum_data.xlsx, a SerpAPI feed.",
   },
 ];
 
@@ -1542,18 +1539,18 @@ async function loadSourcesList() {
     }
     list.innerHTML = sources
       .filter((s) => s.status !== "archived")
-      .map((s, i) => sourceCard(s, i + 1))
+      .map((s) => sourceRow(s))
       .join("");
-    list.querySelectorAll(".source-card").forEach((card) => {
-      const id = card.dataset.sourceId;
-      card.onclick = (e) => {
+    list.querySelectorAll(".source-row").forEach((row) => {
+      const id = row.dataset.sourceId;
+      row.onclick = (e) => {
         if (e.target.closest("button")) return;
         location.hash = `#sources/${id}`;
       };
-      const crawl = card.querySelector("[data-action=crawl]");
-      const parse = card.querySelector("[data-action=parse]");
-      const resume = card.querySelector("[data-action=resume]");
-      const menuBtn = card.querySelector("[data-action=menu]");
+      const crawl = row.querySelector("[data-action=crawl]");
+      const parse = row.querySelector("[data-action=parse]");
+      const resume = row.querySelector("[data-action=resume]");
+      const menuBtn = row.querySelector("[data-action=menu]");
       if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(id, "crawl"); };
       if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(id, "parse"); };
       if (resume) resume.onclick = (e) => {
@@ -1562,7 +1559,7 @@ async function loadSourcesList() {
       };
       if (menuBtn) menuBtn.onclick = (e) => {
         e.stopPropagation();
-        toggleMenu(card, id);
+        toggleMenu(row, id);
       };
     });
   } catch (e) {
@@ -1570,10 +1567,10 @@ async function loadSourcesList() {
   }
 }
 
-function sourceCard(source, index) {
+function sourceRow(source) {
   const paused = source.status === "paused";
-  const indexStr = String(index).padStart(2, "0");
-  const meta = sourceMetaLine(source);
+  const kindLabel = sourceKindLabel(source);
+  const kindIcon = sourceKindIcon(source);
   const actions = paused
     ? `<button class="btn-primary" data-action="resume" style="padding:6px 10px;font-size:12px"><i class="ti ti-player-play"></i> Resume</button>`
     : `<button class="btn-source" data-action="crawl"><i class="ti ti-download"></i> Crawl</button>
@@ -1582,41 +1579,64 @@ function sourceCard(source, index) {
     ? `<button class="btn-source icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
   return `
-    <article class="source-card ${paused ? "paused" : ""}" data-source-id="${escapeAttr(source.id)}">
-      <div class="source-card-head">
-        <div class="source-card-identity">
-          <span class="source-card-index">${indexStr}</span>
-          <i class="ti ${source.icon_hint || "ti-database"} source-card-icon"></i>
-          <div>
-            <div class="source-card-name">${escapeHtml(source.display_name || source.identifier)}</div>
-            <div class="source-card-meta">${escapeHtml(meta)}</div>
+    <article class="source-row ${paused ? "paused" : ""}" data-source-id="${escapeAttr(source.id)}">
+      <div class="source-row-main">
+        <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
+        <div class="source-row-copy">
+          <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
+          <div class="source-row-meta">
+            <span>${escapeHtml(kindLabel)}</span>
+            <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
           </div>
         </div>
+      </div>
+      <div class="source-row-stats">
+        <span><strong>${formatNumber(source.coverage.documents)}</strong> docs</span>
+        <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
+        <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
         <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
       </div>
-      <div class="source-card-foot">
-        <div class="source-stats">
-          <span><strong>${source.coverage.documents}</strong> docs</span>
-          <span><strong>${source.coverage.claims}</strong> claims</span>
-          <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
-        </div>
-        ${state.me?.is_admin ? `<div class="source-card-actions">${actions}${menuButton}</div>` : ""}
-      </div>
+      ${state.me?.is_admin ? `<div class="source-row-actions">${actions}${menuButton}</div>` : ""}
     </article>
   `;
 }
 
 function sourceMetaLine(source) {
-  const kindLabel =
-    {
-      domain: "Sitemap",
-      file: "Manual upload",
-    }[source.kind] || source.kind;
-  return `${kindLabel} · ${source.identifier}`;
+  return `${sourceKindLabel(source)} · ${source.identifier}`;
 }
 
-function toggleMenu(card, sourceId) {
-  const existing = card.querySelector(".menu");
+function sourceFormat(source) {
+  const line = String(source.notes || "")
+    .split("\n")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("format:"));
+  return line ? line.slice("format:".length).trim() : "";
+}
+
+function sourceKindLabel(source) {
+  if (source.kind === "domain") return "Sitemap";
+  if (source.kind === "file") {
+    const format = sourceFormat(source);
+    if (format === "dataset") return "Dataset";
+    if (format === "text") return "General Text";
+    return "File";
+  }
+  return source.kind || "Source";
+}
+
+function sourceKindIcon(source) {
+  if (source.kind === "domain") return "ti-world";
+  if (source.kind === "file") {
+    const format = sourceFormat(source);
+    if (format === "dataset") return "ti-table";
+    if (format === "text") return "ti-file-text";
+    return "ti-file";
+  }
+  return source.icon_hint || "ti-database";
+}
+
+function toggleMenu(container, sourceId) {
+  const existing = container.querySelector(".menu");
   if (existing) {
     existing.remove();
     return;
@@ -1632,7 +1652,7 @@ function toggleMenu(card, sourceId) {
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
     <button class="menu-item danger" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
   `;
-  card.querySelector(".source-card-actions").appendChild(menu);
+  container.querySelector(".source-row-actions, .source-card-actions").appendChild(menu);
   menu.querySelectorAll("button").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();

@@ -1541,8 +1541,85 @@ textarea {
 .sources-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   padding: 0 24px 24px;
+}
+.source-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 52px;
+  padding: 8px 0;
+  border-bottom: 0.5px solid var(--line);
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+.source-row:hover {
+  background: var(--surface);
+}
+.source-row.paused {
+  opacity: 0.72;
+}
+.source-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.source-row-icon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--green-tint);
+  color: var(--green);
+  font-size: 17px;
+  flex: 0 0 auto;
+}
+.source-row-copy {
+  min-width: 0;
+}
+.source-row-name {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.source-row-meta {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+.source-row-identifier {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-row-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.source-row-stats strong {
+  color: var(--text);
+  font-weight: 500;
+}
+.source-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  position: relative;
 }
 .source-card {
   border: 0.5px solid var(--line);
@@ -1741,6 +1818,10 @@ textarea {
   border-radius: var(--radius-md);
   padding: 14px;
   position: relative;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 .stat-card-head {
   display: flex;
