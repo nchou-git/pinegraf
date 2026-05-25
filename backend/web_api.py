@@ -6,6 +6,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from openai import AsyncOpenAI
 from sqlalchemy import func, or_, select
@@ -272,6 +273,11 @@ def source_detail(store: Store, source_id: uuid.UUID) -> dict[str, object] | Non
         source = session.get(Source, source_id)
         if source is None:
             return None
+        file_size_bytes = None
+        if source.kind == "file":
+            upload_path = Path(get_settings().uploads_dir) / source.identifier
+            if upload_path.is_file():
+                file_size_bytes = upload_path.stat().st_size
         runs = list(
             session.execute(
                 select(SourceRun)
@@ -296,6 +302,7 @@ def source_detail(store: Store, source_id: uuid.UUID) -> dict[str, object] | Non
             "trust_weight": source.trust_weight,
             "status": _source_status(source),
             "notes": source.notes,
+            "file_size_bytes": file_size_bytes,
             "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
             "created_at": source.created_at.isoformat(),
             "document_count": document_count,

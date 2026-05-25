@@ -1036,12 +1036,14 @@
 }
 
 .docs-table,
+.files-table,
 .runs-table {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--fs-sm);
 }
 .docs-table th,
+.files-table th,
 .runs-table th {
   text-align: left;
   padding: var(--space-3);
@@ -1051,23 +1053,84 @@
   border-bottom: 1px solid var(--line);
 }
 .docs-table td,
+.files-table td,
 .runs-table td {
   padding: var(--space-3);
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
 .docs-table tr,
+.files-table tr,
 .runs-table tr {
   cursor: default;
 }
 .docs-table tbody tr:hover,
+.files-table tbody tr:hover,
 .runs-table tbody tr:hover {
   background-color: var(--surface);
 }
 .docs-table .num,
+.files-table .num,
 .runs-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.source-files-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.file-upload-zone {
+  display: flex;
+  min-height: calc(var(--space-16) * 2);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-6);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background-color: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color var(--motion),
+    border-color var(--motion),
+    color var(--motion);
+}
+
+.file-upload-zone:hover,
+.file-upload-zone.dragging {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.file-upload-zone:focus-visible {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px var(--green-tint);
+}
+
+.file-upload-zone .ti {
+  font-size: var(--fs-2xl);
+}
+
+.file-replace-input {
+  display: none;
+}
+
+.file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.source-file-empty {
+  padding-block: var(--space-8);
 }
 .cell-truncate {
   max-width: calc(var(--space-16) * 5);

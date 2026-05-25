@@ -71,6 +71,7 @@ class ConflictResolveRequest(BaseModel):
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
+FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 
 
 def _slugify(value: str) -> str:
@@ -219,7 +220,6 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/sources/{source_id}/download")
     async def api_source_download(request: Request, source_id: uuid.UUID) -> FileResponse:
-        require_admin(request)
         source = _store(request).get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
@@ -312,6 +312,57 @@ def create_app(store: Store | None = None) -> FastAPI:
             "size_bytes": len(body),
             "original_filename": original_name,
         }
+
+    @app.post("/admin/sources/{source_id}/upload")
+    async def admin_replace_source_upload(
+        request: Request,
+        source_id: uuid.UUID,
+        file: UploadFile = File(...),
+    ) -> dict[str, object]:
+        require_admin(request)
+        store = _store(request)
+        source = store.get_source(source_id)
+        if source is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        if source.kind != "file":
+            raise HTTPException(status_code=400, detail="source is not a file kind")
+
+        settings = get_settings()
+        os.makedirs(settings.uploads_dir, exist_ok=True)
+        original_name = file.filename or "upload.bin"
+        suffix = Path(original_name).suffix
+        if suffix.lower() not in FILE_UPLOAD_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="file type not supported")
+
+        slug = _slugify(Path(original_name).stem)
+        unique = hashlib.sha256(
+            f"{source.display_name or source.identifier}|{original_name}|{uuid.uuid4()}".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:8]
+        stored_name = f"{slug}-{unique}{suffix}"
+        path = Path(settings.uploads_dir) / stored_name
+        body = await file.read()
+        path.write_bytes(body)
+
+        from backend.db.models import Source
+
+        old_path = Path(settings.uploads_dir) / source.identifier
+        with store.session() as session:
+            db_source = session.get(Source, source_id)
+            if db_source is None:
+                raise HTTPException(status_code=404, detail="source not found")
+            db_source.identifier = stored_name
+            session.commit()
+        if old_path != path and old_path.exists():
+            try:
+                old_path.unlink()
+            except OSError:
+                pass
+        detail = source_detail(store, source_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        return detail
 
     @app.patch("/admin/sources/{source_id}")
     async def admin_update_source(

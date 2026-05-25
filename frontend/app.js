@@ -1796,34 +1796,47 @@ async function renderSourceDetail(sourceId, tab) {
   const app = document.getElementById("app");
   app.innerHTML = `
     <div id="source-detail-head"></div>
-    <div class="tabs-sub" id="source-detail-tabs">
-      <button class="btn-ghost tab-sub ${activeTab === "documents" ? "active" : ""}" data-tab="documents">Documents</button>
-      <button class="btn-ghost tab-sub ${activeTab === "runs" ? "active" : ""}" data-tab="runs">Runs</button>
-      <button class="btn-ghost tab-sub ${activeTab === "config" ? "active" : ""}" data-tab="config">Config</button>
-    </div>
+    <div class="tabs-sub" id="source-detail-tabs"></div>
     <div class="tab-content" id="source-tab-content">
       <div class="empty-state"><i class="ti ti-loader"></i><div>Loading…</div></div>
     </div>
   `;
-  byId("source-detail-tabs")
-    .querySelectorAll(".tab-sub")
-    .forEach((b) => {
-      b.onclick = () => (location.hash = `#sources/${sourceId}/${b.dataset.tab}`);
-    });
   try {
     const detail = await getJSON(`/api/sources/${sourceId}`);
+    const normalizedTab = detail.kind === "file" || activeTab !== "files" ? activeTab : "documents";
     setPageHeader({
       title: detail.display_name || detail.identifier,
       subtitle: sourceMetaLine(detail),
       eyebrow: `<a href="#sources">Sources</a> / Source detail`,
     });
     renderSourceDetailHead(detail);
-    if (activeTab === "documents") renderSourceDocuments(sourceId);
-    else if (activeTab === "runs") renderSourceRuns(detail);
+    renderSourceDetailTabs(detail, normalizedTab);
+    if (normalizedTab === "documents") renderSourceDocuments(sourceId);
+    else if (normalizedTab === "files") renderSourceFiles(detail);
+    else if (normalizedTab === "runs") renderSourceRuns(detail);
     else renderSourceConfig(detail);
   } catch (e) {
     byId("source-tab-content").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+function renderSourceDetailTabs(source, activeTab) {
+  const tabs = [
+    ["documents", "Documents"],
+    ...(source.kind === "file" ? [["files", "Files"]] : []),
+    ["runs", "Runs"],
+    ["config", "Config"],
+  ];
+  const root = byId("source-detail-tabs");
+  root.innerHTML = tabs
+    .map(
+      ([id, label]) =>
+        `<button class="btn-ghost tab-sub ${activeTab === id ? "active" : ""}" data-tab="${id}">${label}</button>`,
+    )
+    .join("");
+  root.querySelectorAll(".tab-sub").forEach((button) => {
+    button.onclick = () => (location.hash = `#sources/${source.id}/${button.dataset.tab}`);
+  });
 }
 
 function renderSourceDetailHead(source) {
@@ -1974,6 +1987,138 @@ async function openDocumentModal(documentId) {
     `);
   } catch (e) {
     openModal(`<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(e.message)}</div></div>`);
+  }
+}
+
+function renderSourceFiles(detail) {
+  const wrap = byId("source-tab-content");
+  const isAdmin = Boolean(state.me?.is_admin);
+  const fileAvailable = detail.file_size_bytes != null;
+  wrap.innerHTML = `
+    <div class="panel panel-flush source-files-panel">
+      ${
+        isAdmin
+          ? `<div class="file-upload-zone" id="file-upload-zone" role="button" tabindex="0">
+               <i class="ti ti-upload" aria-hidden="true"></i>
+               <div>Drop file to replace, or click to browse</div>
+               <input
+                 class="input file-replace-input"
+                 id="file-replace-input"
+                 type="file"
+                 accept=".xlsx,.csv,.json,.tsv,.txt,.md,.pdf,.html"
+               />
+             </div>`
+          : ""
+      }
+      ${
+        fileAvailable
+          ? `<table class="files-table">
+               <thead>
+                 <tr>
+                   <th>Filename</th>
+                   <th>Uploaded</th>
+                   <th class="num">Size</th>
+                   <th>Actions</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 <tr>
+                   <td><div class="cell-truncate">${escapeHtml(detail.identifier)}</div></td>
+                   <td class="muted small">${escapeHtml(timeAgo(detail.created_at))}</td>
+                   <td class="num">${escapeHtml(formatBytes(detail.file_size_bytes))}</td>
+                   <td>
+                     <div class="file-actions">
+                       <a class="btn-secondary" href="/api/sources/${escapeAttr(detail.id)}/download"><i class="ti ti-download" aria-hidden="true"></i> Download</a>
+                       ${
+                         isAdmin
+                           ? `<button class="btn-danger" id="file-remove" type="button" title="Delete the uploaded file and archive this source"><i class="ti ti-trash" aria-hidden="true"></i> Remove</button>`
+                           : ""
+                       }
+                     </div>
+                   </td>
+                 </tr>
+               </tbody>
+             </table>`
+          : `<div class="empty-state source-file-empty">
+               <i class="ti ti-file-off" aria-hidden="true"></i>
+               <div>Original file no longer available.</div>
+               ${isAdmin ? `<div class="muted small">Use the replacement upload above to attach a new file.</div>` : ""}
+             </div>`
+      }
+    </div>
+  `;
+  if (!isAdmin) return;
+  setupSourceFileUpload(detail);
+  const remove = byId("file-remove");
+  if (remove) {
+    remove.onclick = () => removeSourceFile(detail.id);
+  }
+}
+
+function setupSourceFileUpload(detail) {
+  const zone = byId("file-upload-zone");
+  const input = byId("file-replace-input");
+  if (!zone || !input) return;
+  zone.onclick = () => input.click();
+  zone.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  };
+  zone.ondragover = (event) => {
+    event.preventDefault();
+    zone.classList.add("dragging");
+  };
+  zone.ondragleave = () => zone.classList.remove("dragging");
+  zone.ondrop = (event) => {
+    event.preventDefault();
+    zone.classList.remove("dragging");
+    const [file] = Array.from(event.dataTransfer?.files || []);
+    if (file) replaceSourceFile(detail.id, file);
+  };
+  input.onchange = () => {
+    const [file] = Array.from(input.files || []);
+    if (file) replaceSourceFile(detail.id, file);
+  };
+}
+
+async function replaceSourceFile(sourceId, file) {
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const response = await fetch(`/admin/sources/${sourceId}/upload`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || response.statusText);
+    }
+    toast("File replaced.", "success");
+    renderSourceDetail(sourceId, "files");
+  } catch (e) {
+    toast(`Upload failed: ${e.message}`, "error");
+  }
+}
+
+async function removeSourceFile(sourceId) {
+  if (
+    !confirm(
+      "Remove this source? The uploaded file will be deleted and all derived data will be archived.",
+    )
+  )
+    return;
+  try {
+    const response = await fetch(`/admin/sources/${sourceId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || response.statusText);
+    }
+    toast("Source archived.", "success");
+    location.hash = "#sources";
+  } catch (e) {
+    toast(`Remove failed: ${e.message}`, "error");
   }
 }
 
@@ -2410,6 +2555,15 @@ function capitalize(value) {
 function formatNumber(n) {
   if (n == null) return "0";
   return Number(n).toLocaleString();
+}
+
+function formatBytes(bytes) {
+  if (bytes == null) return "—";
+  const value = Number(bytes);
+  if (!Number.isFinite(value)) return "—";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatDate(iso) {
