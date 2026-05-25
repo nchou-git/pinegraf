@@ -180,7 +180,6 @@ def create_app(store: Store | None = None) -> FastAPI:
             "workspace": {
                 "slug": settings.workspace_slug,
                 "display_name": settings.workspace_display_name,
-                "tagline": settings.workspace_tagline,
             },
             "admin_login_url": "/admin/login",
             "admin_logout_url": "/admin/logout",

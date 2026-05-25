@@ -30,7 +30,6 @@ class Settings(BaseModel):
 
     workspace_display_name: str = Field(default="Tuck School of Business")
     workspace_slug: str = Field(default="tuck")
-    workspace_tagline: str = Field(default="Where alumni stories connect.")
 
     uploads_dir: str = Field(default="/tmp/pinegraf_uploads")
 
@@ -64,7 +63,6 @@ def get_settings() -> Settings:
             frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),
             workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),
-            workspace_tagline=os.getenv("WORKSPACE_TAGLINE", "Where alumni stories connect."),
             uploads_dir=os.getenv("UPLOADS_DIR", "/tmp/pinegraf_uploads"),
         )
     except ValidationError as exc:
