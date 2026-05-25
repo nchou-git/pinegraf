@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from backend import main as main_module
 from backend.config import get_settings
 from backend.db.models import (
     Chunk,
@@ -218,3 +220,47 @@ def test_delete_source_repoints_shared_document_first_seen_fetch(store) -> None:
     assert remaining_fetch is not None
     assert remaining_document is not None
     assert remaining_document.first_seen_fetch_id == second_fetch.id
+
+
+def test_nuke_archived_endpoint_requires_admin_and_removes_archived_bloat(
+    store,
+    admin_headers,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir()
+    monkeypatch.setenv("UPLOADS_DIR", str(uploads_dir))
+    get_settings.cache_clear()
+    archived = store.upsert_source(
+        kind="domain",
+        identifier="old.example",
+        notes="status:archived\nold source",
+    )
+    active_file = store.upsert_source(
+        kind="file",
+        identifier="kept.txt",
+        display_name="Kept",
+    )
+    del archived, active_file
+    (uploads_dir / "kept.txt").write_text("keep", encoding="utf-8")
+    (uploads_dir / "orphan.txt").write_text("remove", encoding="utf-8")
+
+    with TestClient(main_module.create_app(store)) as client:
+        assert client.post("/admin/nuke-archived").status_code == 401
+
+        sources_before = client.get("/api/sources").json()
+        assert sources_before["archived_count"] == 1
+
+        response = client.post("/admin/nuke-archived", headers=admin_headers)
+        assert response.status_code == 200
+        summary = response.json()
+
+        sources_after = client.get("/api/sources").json()
+
+    assert summary["archived_sources_removed"] == 1
+    assert summary["orphan_files_removed"] == 1
+    assert sources_after["archived_count"] == 0
+    assert [source["identifier"] for source in sources_after["sources"]] == ["kept.txt"]
+    assert (uploads_dir / "kept.txt").exists()
+    assert not (uploads_dir / "orphan.txt").exists()
