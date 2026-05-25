@@ -1460,7 +1460,6 @@ async function renderSources(parts) {
   const adminActions = state.me?.is_admin
     ? `<div class="source-actions">
          <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
-         <button class="btn-primary" id="run-pipeline" title="Crawl all active sources"><i class="ti ti-player-play"></i> Run pipeline</button>
        </div>`
     : "";
   setPageHeader({ title: "Sources", subtitle: "Loading…", actions: adminActions });
@@ -1484,7 +1483,6 @@ async function renderSources(parts) {
   `;
   if (state.me?.is_admin) {
     byId("add-source").onclick = openAddSourceModal;
-    byId("run-pipeline").onclick = runFullPipeline;
   }
   setupStatInfoButtons();
   await Promise.all([
@@ -2493,26 +2491,6 @@ async function loadAdminConflicts() {
       });
   } catch (e) {
     byId("conflicts-body").innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(e.message)}</div>`;
-  }
-}
-
-async function runFullPipeline() {
-  if (
-    !confirm(
-      "Crawl all active sources? This may take several minutes and incurs API costs.",
-    )
-  )
-    return;
-  try {
-    const sources = state.sourcesCache || (await getJSON("/api/sources")).sources || [];
-    let started = 0;
-    for (const s of sources.filter((x) => x.status === "active")) {
-      const res = await fetch(`/admin/sources/${s.id}/crawl`, { method: "POST" });
-      if (res.ok) started += 1;
-    }
-    toast(`${started} source crawl${started === 1 ? "" : "s"} started.`, "success");
-  } catch (e) {
-    toast(`Failed: ${e.message}`, "error");
   }
 }
 
