@@ -49,37 +49,16 @@ const SOURCE_KINDS = [
     ],
   },
   {
-    id: "dataset",
+    id: "file",
     kind: "file",
-    format: "dataset",
-    label: "Dataset",
-    icon: "ti-table",
-    description: "Structured records. Rows become entities.",
-    hint: "Structured records. Rows become entities.",
+    label: "Upload a file",
+    icon: "ti-file",
+    description: "Upload a file for ingestion.",
     fields: [
       {
         name: "file",
-        label: "Dataset file",
+        label: "File",
         type: "file",
-        accept: ".xlsx,.csv,.json,.tsv",
-        required: true,
-      },
-    ],
-  },
-  {
-    id: "text",
-    kind: "file",
-    format: "text",
-    label: "General Text",
-    icon: "ti-file-text",
-    description: "Unstructured. Chunked and extracted by the LLM pipeline.",
-    hint: "Unstructured. Chunked and extracted by the LLM pipeline.",
-    fields: [
-      {
-        name: "file",
-        label: "Text file",
-        type: "file",
-        accept: ".txt,.md,.pdf,.html",
         required: true,
       },
     ],
@@ -1827,33 +1806,15 @@ function sourceMetaLine(source) {
   return `${sourceKindLabel(source)} · ${source.identifier}`;
 }
 
-function sourceFormat(source) {
-  const line = String(source.notes || "")
-    .split("\n")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith("format:"));
-  return line ? line.slice("format:".length).trim() : "";
-}
-
 function sourceKindLabel(source) {
   if (source.kind === "domain") return "Sitemap";
-  if (source.kind === "file") {
-    const format = sourceFormat(source);
-    if (format === "dataset") return "Dataset";
-    if (format === "text") return "General Text";
-    return "File";
-  }
+  if (source.kind === "file") return "File";
   return source.kind || "Source";
 }
 
 function sourceKindIcon(source) {
   if (source.kind === "domain") return "ti-world";
-  if (source.kind === "file") {
-    const format = sourceFormat(source);
-    if (format === "dataset") return "ti-table";
-    if (format === "text") return "ti-file-text";
-    return "ti-file";
-  }
+  if (source.kind === "file") return "ti-file";
   return source.icon_hint || "ti-database";
 }
 
@@ -2317,7 +2278,6 @@ function renderSourceRuns(detail) {
 function renderSourceConfig(detail) {
   const wrap = byId("source-tab-content");
   const adminOnly = !state.me?.is_admin;
-  const formatLabel = sourceKindLabel(detail);
   wrap.innerHTML = `
     <div class="panel panel-flush">
       <div class="modal-body">
@@ -2332,15 +2292,6 @@ function renderSourceConfig(detail) {
             <span class="field-hint">Identifier cannot be changed after creation.</span>
           </label>
         </div>
-        ${
-          detail.kind === "file"
-            ? `<label class="field">
-                 <span class="field-label">Format</span>
-                 <input class="input" value="${escapeAttr(formatLabel)}" disabled />
-                 <span class="field-hint">This can't be changed after creation.</span>
-               </label>`
-            : ""
-        }
         <label class="field">
           <span class="field-label">Notes</span>
           <textarea class="input" id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripSourceMetaLines(detail.notes || ""))}</textarea>
@@ -2369,17 +2320,13 @@ function renderSourceConfig(detail) {
 function stripSourceMetaLines(notes) {
   return String(notes || "")
     .split("\n")
-    .filter((line) => !line.startsWith("status:") && !line.startsWith("format:"))
+    .filter((line) => !line.startsWith("status:"))
     .join("\n")
     .trim();
 }
 
-function buildSourceNotes(source, userNotes) {
-  const lines = [];
-  const format = sourceFormat(source);
-  if (format) lines.push(`format:${format}`);
-  if (userNotes) lines.push(userNotes);
-  return lines.join("\n") || null;
+function buildSourceNotes(_source, userNotes) {
+  return userNotes || null;
 }
 
 /* ───── Add source modal ───── */
@@ -2428,7 +2375,6 @@ function renderAddSourceModal() {
             return `<label class="field">
                 <span class="field-label">${escapeHtml(f.label)}</span>
                 <input class="input" id="new-${f.name}" type="file" ${f.accept ? `accept="${escapeAttr(f.accept)}"` : ""} />
-                ${selected.hint ? `<span class="field-hint">${escapeHtml(selected.hint)}</span>` : ""}
               </label>`;
           }
           return `<label class="field">
@@ -2469,7 +2415,6 @@ async function submitAddSource() {
       }
       const form = new FormData();
       form.append("display_name", display_name);
-      if (selected.format) form.append("notes", `format:${selected.format}`);
       form.append("file", input.files[0]);
       const res = await fetch("/admin/sources/upload", { method: "POST", body: form });
       if (!res.ok) throw new Error(`${res.status}`);
@@ -2483,7 +2428,6 @@ async function submitAddSource() {
         kind,
         identifier,
         display_name,
-        notes: selected.format ? `format:${selected.format}` : null,
       };
       const res = await fetch("/admin/sources", {
         method: "POST",
