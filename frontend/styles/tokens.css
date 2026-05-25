@@ -59,7 +59,7 @@
   --z-modal: 200;
   --z-toast: 300;
 
-  --sidebar-width-expanded: 260px;
+  --sidebar-width-expanded: 270px;
   --sidebar-width-collapsed: 60px;
   --content-max-width: 1280px;
   --content-gutter: var(--space-8);

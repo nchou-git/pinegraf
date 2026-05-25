@@ -98,10 +98,13 @@ a:hover {
 }
 
 .wordmark {
+  overflow: visible;
   color: var(--green);
   font-size: var(--fs-md);
   font-weight: 500;
   line-height: var(--lh-tight);
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .sidebar-nav {
