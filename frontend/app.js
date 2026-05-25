@@ -114,8 +114,6 @@ async function init() {
   await Promise.all([loadMe(), loadStats()]);
   setupShell();
   renderShell();
-  refreshSystemStatus();
-  setInterval(refreshSystemStatus, 30000);
   window.addEventListener("hashchange", renderRoute);
   renderRoute();
 }
@@ -255,37 +253,6 @@ function openMobileSidebar() {
 function closeMobileSidebar() {
   state.mobileSidebarOpen = false;
   renderShell();
-}
-
-async function refreshSystemStatus() {
-  await loadStats();
-  let status = "idle";
-  let summary = `${formatNumber(state.stats?.documents || 0)} docs · ${formatNumber(state.stats?.entities || 0)} entities`;
-  try {
-    const data = await getJSON("/api/sources");
-    state.sourcesCache = data.sources || state.sourcesCache;
-    const runs = (data.sources || [])
-      .map((source) => ({
-        name: source.display_name || source.identifier,
-        status: source.last_status,
-        at: source.last_run_at,
-      }))
-      .filter((run) => run.status);
-    const latest = runs
-      .filter((run) => run.at)
-      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())[0];
-    if (runs.some((run) => run.status === "running")) status = "running";
-    else if (runs.some((run) => run.status === "failed")) status = "error";
-    if (latest) summary = `${latest.name}: ${latest.status} ${timeAgo(latest.at)}`;
-  } catch (_) {
-    status = "error";
-    summary = "Status unavailable";
-  }
-  const statusRow = byId("system-status");
-  statusRow.innerHTML = `
-    <span class="status-dot ${status}" aria-hidden="true"></span>
-    <span class="system-status-copy">${escapeHtml(status)} · ${escapeHtml(summary)}</span>
-  `;
 }
 
 function currentTab() {

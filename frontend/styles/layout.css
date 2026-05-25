@@ -162,35 +162,6 @@ a:hover {
   margin-top: auto;
 }
 
-.system-status {
-  display: flex;
-  min-height: var(--row-h-nav);
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--line);
-  color: var(--text-faint);
-  font-size: var(--fs-xs);
-  line-height: var(--lh-snug);
-}
-
-.status-dot {
-  width: var(--space-2);
-  height: var(--space-2);
-  flex: 0 0 auto;
-  border-radius: var(--radius-pill);
-  background-color: var(--text-faint);
-}
-
-.status-dot.idle {
-  background-color: var(--green);
-}
-
-.status-dot.running,
-.status-dot.error {
-  background-color: var(--conflict);
-}
-
 .sidebar-org-row {
   position: relative;
   display: flex;
@@ -291,12 +262,10 @@ a:hover {
 .app-shell.sidebar-collapsed .sidebar-header-copy,
 .app-shell.sidebar-collapsed .sidebar-tagline,
 .app-shell.sidebar-collapsed .nav-item span,
-.app-shell.sidebar-collapsed .system-status-copy,
 .app-shell.sidebar-collapsed .sidebar-org-copy,
 .sidebar.collapsed .sidebar-header-copy,
 .sidebar.collapsed .sidebar-tagline,
 .sidebar.collapsed .nav-item span,
-.sidebar.collapsed .system-status-copy,
 .sidebar.collapsed .sidebar-org-copy {
   display: none;
 }
@@ -396,7 +365,6 @@ a:hover {
   .app-shell.sidebar-collapsed .sidebar-header-copy,
   .app-shell.sidebar-collapsed .sidebar-tagline,
   .app-shell.sidebar-collapsed .nav-item span,
-  .app-shell.sidebar-collapsed .system-status-copy,
   .app-shell.sidebar-collapsed .sidebar-org-copy {
     display: flex;
   }
