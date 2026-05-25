@@ -222,45 +222,66 @@ def test_delete_source_repoints_shared_document_first_seen_fetch(store) -> None:
     assert remaining_document.first_seen_fetch_id == second_fetch.id
 
 
-def test_nuke_archived_endpoint_requires_admin_and_removes_archived_bloat(
+def test_archive_status_hides_source_without_deleting_data(
     store,
     admin_headers,
-    tmp_path,
-    monkeypatch,
 ) -> None:
-    uploads_dir = tmp_path / "uploads"
-    uploads_dir.mkdir()
-    monkeypatch.setenv("UPLOADS_DIR", str(uploads_dir))
-    get_settings.cache_clear()
-    archived = store.upsert_source(
+    source = store.upsert_source(
         kind="domain",
-        identifier="old.example",
-        notes="status:archived\nold source",
+        identifier="archive.example",
+        display_name="Archive Example",
     )
-    active_file = store.upsert_source(
-        kind="file",
-        identifier="kept.txt",
-        display_name="Kept",
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="adhoc",
+        spec={},
+        triggered_by="test",
     )
-    del archived, active_file
-    (uploads_dir / "kept.txt").write_text("keep", encoding="utf-8")
-    (uploads_dir / "orphan.txt").write_text("remove", encoding="utf-8")
+    fetch = store.add_fetch(
+        source_run_id=run.id,
+        url="https://archive.example/story",
+        body_bytes=b"Archived source data",
+    )
+    store.create_document_with_chunks(
+        content_hash=content_digest(b"Archived source data"),
+        cleaned_text="Archived source data",
+        title="Archived",
+        canonical_url="https://archive.example/story",
+        language="en",
+        word_count=3,
+        first_seen_fetch_id=fetch.id,
+        chunks=[("Archived source data", 3, None)],
+    )
 
     with TestClient(main_module.create_app(store)) as client:
-        assert client.post("/admin/nuke-archived").status_code == 401
+        archive = client.patch(
+            f"/admin/sources/{source.id}",
+            headers=admin_headers,
+            json={"status": "archived"},
+        )
+        assert archive.status_code == 200
+        assert archive.json()["status"] == "archived"
 
-        sources_before = client.get("/api/sources").json()
-        assert sources_before["archived_count"] == 1
+        main_sources = client.get("/api/sources").json()
+        archived_sources = client.get("/api/sources/archived").json()
 
-        response = client.post("/admin/nuke-archived", headers=admin_headers)
-        assert response.status_code == 200
-        summary = response.json()
+        restore = client.patch(
+            f"/admin/sources/{source.id}",
+            headers=admin_headers,
+            json={"status": "active"},
+        )
+        assert restore.status_code == 200
 
-        sources_after = client.get("/api/sources").json()
+    counts = store.table_counts(["sources", "source_runs", "fetches", "documents", "chunks"])
 
-    assert summary["archived_sources_removed"] == 1
-    assert summary["orphan_files_removed"] == 1
-    assert sources_after["archived_count"] == 0
-    assert [source["identifier"] for source in sources_after["sources"]] == ["kept.txt"]
-    assert (uploads_dir / "kept.txt").exists()
-    assert not (uploads_dir / "orphan.txt").exists()
+    assert main_sources["archived_count"] == 1
+    assert main_sources["sources"] == []
+    assert archived_sources["archived_count"] == 1
+    assert archived_sources["sources"][0]["status"] == "archived"
+    assert counts == {
+        "sources": 1,
+        "source_runs": 1,
+        "fetches": 1,
+        "documents": 1,
+        "chunks": 1,
+    }

@@ -35,7 +35,6 @@ from backend.web_api import (
     list_directory,
     list_source_documents,
     list_sources,
-    nuke_archived_sources,
     resolve_conflict,
     source_detail,
     stats,
@@ -197,6 +196,15 @@ def create_app(store: Store | None = None) -> FastAPI:
             "sources": list_sources(_store(request)),
             "archived_count": archived_source_count(_store(request)),
         }
+
+    @app.get("/api/sources/archived")
+    async def api_archived_sources(request: Request) -> dict[str, object]:
+        sources = [
+            source
+            for source in list_sources(_store(request), include_archived=True)
+            if source["status"] == "archived"
+        ]
+        return {"sources": sources, "archived_count": len(sources)}
 
     @app.get("/api/sources/{source_id}")
     async def api_source_detail(request: Request, source_id: uuid.UUID) -> dict[str, object]:
@@ -392,11 +400,6 @@ def create_app(store: Store | None = None) -> FastAPI:
         if not delete_source(_store(request), source_id):
             raise HTTPException(status_code=404, detail="source not found")
         return {"status": "deleted"}
-
-    @app.post("/admin/nuke-archived")
-    async def admin_nuke_archived(request: Request) -> dict[str, int]:
-        require_admin(request)
-        return nuke_archived_sources(_store(request))
 
     @app.post("/admin/sources/{source_id}/crawl")
     async def admin_source_crawl(request: Request, source_id: uuid.UUID) -> dict[str, str]:

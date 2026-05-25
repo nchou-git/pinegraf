@@ -1,8 +1,10 @@
 "use strict";
 
 const ASK_SESSION_KEY = "pinegraf_ask_session";
-const REMOVE_SOURCE_CONFIRM =
-  "Permanently remove this source? This deletes the source and all derived data (documents, claims, etc.) that came only from this source. Cannot be undone.";
+const ARCHIVE_SOURCE_CONFIRM =
+  "Archive this source? Derived data is preserved and the source can be restored later.";
+const DELETE_SOURCE_CONFIRM =
+  "Permanently delete this source? This removes the source and all derived data (documents, claims, entities) that came only from this source. Cannot be undone.";
 
 const state = {
   me: null,
@@ -1458,6 +1460,9 @@ function loadClaimForEdge(edge) {
 /* ───── Sources ───── */
 
 async function renderSources(parts) {
+  if (parts[0] === "archive") {
+    return renderSourcesArchive();
+  }
   if (parts[0]) {
     return renderSourceDetail(parts[0], parts[1]);
   }
@@ -1471,7 +1476,6 @@ async function renderSources(parts) {
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="stats-grid" id="sources-stats">${statCards(state.stats || {})}</div>
-    <div id="archived-cleanup-banner"></div>
     <div class="sources-list" id="sources-list">
       <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
     </div>
@@ -1552,13 +1556,13 @@ async function loadSourcesList() {
   try {
     const data = await getJSON("/api/sources");
     const sources = data.sources || [];
-    renderArchivedCleanupBanner(Number(data.archived_count || 0));
     state.sourcesCache = sources;
     const active = sources.filter((s) => s.status === "active");
     const paused = sources.filter((s) => s.status === "paused");
+    const archivedCount = Number(data.archived_count || 0);
     const pageSubtitle = byId("page-subtitle");
     if (pageSubtitle) {
-      pageSubtitle.textContent = `${active.length} active · ${paused.length} paused`;
+      pageSubtitle.innerHTML = `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused · <a href="#sources/archive">${formatNumber(archivedCount)} archived</a>`;
     }
     const list = byId("sources-list");
     if (!sources.length) {
@@ -1605,61 +1609,99 @@ async function loadSourcesList() {
   }
 }
 
-function renderArchivedCleanupBanner(count) {
-  const banner = byId("archived-cleanup-banner");
-  if (!banner) return;
-  if (!state.me?.is_admin || count <= 0) {
-    banner.innerHTML = "";
-    return;
-  }
-  banner.innerHTML = `
-    <div class="panel panel-flush">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title">${formatNumber(count)} archived ${count === 1 ? "source" : "sources"} from a previous version are still taking up space.</div>
-          <div class="muted small">Permanently remove archived sources and orphaned data.</div>
-        </div>
-        <button class="btn-secondary" id="nuke-archived" type="button">Clean up now</button>
-      </div>
+async function renderSourcesArchive() {
+  setPageHeader({
+    title: "Archived sources",
+    subtitle: "Hidden from the main Sources list",
+    actions: `<a class="btn-ghost" href="#sources">&larr; Back to Sources</a>`,
+  });
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div class="sources-list" id="archived-sources-list">
+      <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
     </div>
   `;
-  byId("nuke-archived").onclick = nukeArchivedSources;
+  await loadArchivedSourcesList();
 }
 
-async function nukeArchivedSources() {
-  if (
-    !confirm(
-      "This permanently removes all archived sources and orphaned data (documents, claims, entities) that no longer belong to any active source. Cannot be undone.",
-    )
-  )
-    return;
+async function loadArchivedSourcesList() {
+  const list = byId("archived-sources-list");
   try {
-    const response = await fetch("/admin/nuke-archived", { method: "POST" });
+    const data = await getJSON("/api/sources/archived");
+    const sources = data.sources || [];
+    if (!sources.length) {
+      list.innerHTML = `<div class="empty-state sources-empty">
+        <i class="ti ti-archive-off" aria-hidden="true"></i>
+        <h2>No archived sources</h2>
+        <p>Archived sources will appear here.</p>
+      </div>`;
+      return;
+    }
+    list.innerHTML = sources.map((source) => sourceArchiveRow(source)).join("");
+    list.querySelectorAll(".source-row").forEach((row) => {
+      const id = row.dataset.sourceId;
+      const restore = row.querySelector("[data-action=restore]");
+      const destroy = row.querySelector("[data-action=delete]");
+      if (restore) {
+        restore.onclick = () => restoreArchivedSource(id);
+      }
+      if (destroy) {
+        destroy.onclick = () => deleteArchivedSource(id);
+      }
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load archived sources: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+function sourceArchiveRow(source) {
+  const kindLabel = sourceKindLabel(source);
+  const kindIcon = sourceKindIcon(source);
+  return `
+    <article class="source-row archived" data-source-id="${escapeAttr(source.id)}">
+      <div class="source-row-main">
+        <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
+        <div class="source-row-copy">
+          <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
+          <div class="source-row-meta">
+            <span>${escapeHtml(kindLabel)}</span>
+            <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
+          </div>
+        </div>
+      </div>
+      <div class="source-row-stats">
+        <span><strong>${formatNumber(source.coverage.documents)}</strong> docs</span>
+        <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
+        <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
+        <span class="status-pill archived">Archived</span>
+      </div>
+      <div class="source-row-actions">
+        <button class="btn-secondary" data-action="restore" type="button">Restore</button>
+        <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>
+      </div>
+    </article>
+  `;
+}
+
+async function restoreArchivedSource(sourceId) {
+  await patchSource(sourceId, { status: "active" });
+  toast("Source restored.", "success");
+  loadArchivedSourcesList();
+}
+
+async function deleteArchivedSource(sourceId) {
+  if (!confirm(DELETE_SOURCE_CONFIRM)) return;
+  try {
+    const response = await fetch(`/admin/sources/${sourceId}`, { method: "DELETE" });
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || response.statusText);
     }
-    const summary = await response.json();
-    toast(nukeSummaryText(summary), "success");
-    await Promise.all([loadSourcesStats(), loadSourcesList(), loadAdminConflicts()]);
+    toast("Source permanently deleted.", "success");
+    loadArchivedSourcesList();
   } catch (e) {
-    toast(`Cleanup failed: ${e.message}`, "error");
+    toast(`Delete failed: ${e.message}`, "error");
   }
-}
-
-function nukeSummaryText(summary) {
-  const labels = [
-    ["archived_sources_removed", "archived sources"],
-    ["orphan_documents_removed", "documents"],
-    ["orphan_claims_removed", "claims"],
-    ["orphan_entities_removed", "entities"],
-    ["orphan_files_removed", "files"],
-  ];
-  const parts = labels
-    .map(([key, label]) => [Number(summary?.[key] || 0), label])
-    .filter(([count]) => count > 0)
-    .map(([count, label]) => `${formatNumber(count)} ${label}`);
-  return parts.length ? `Cleanup removed ${parts.join(", ")}.` : "Cleanup found nothing to remove.";
 }
 
 function sourceRow(source) {
@@ -1745,7 +1787,7 @@ function toggleMenu(container, sourceId) {
     <button class="menu-item" data-act="rename"><i class="ti ti-pencil"></i> Rename</button>
     ${source && source.kind === "file" ? `<button class="menu-item" data-act="download"><i class="ti ti-download"></i> Download original</button>` : ""}
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
-    <button class="menu-item danger" data-act="remove"><i class="ti ti-trash"></i> Remove</button>
+    <button class="menu-item" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
   `;
   container.querySelector(".source-row-actions, .source-actions").appendChild(menu);
   menu.querySelectorAll("button").forEach((b) => {
@@ -1780,10 +1822,10 @@ async function handleMenuAction(action, sourceId) {
     await patchSource(sourceId, { status: "paused" });
     toast("Source paused.", "success");
     loadSourcesList();
-  } else if (action === "remove") {
-    if (!confirm(REMOVE_SOURCE_CONFIRM)) return;
-    await fetch(`/admin/sources/${sourceId}`, { method: "DELETE" });
-    toast("Source removed.", "success");
+  } else if (action === "archive") {
+    if (!confirm(ARCHIVE_SOURCE_CONFIRM)) return;
+    await patchSource(sourceId, { status: "archived" });
+    toast("Source archived.", "success");
     loadSourcesList();
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
@@ -2068,7 +2110,7 @@ function renderSourceFiles(detail) {
                        <a class="btn-secondary" href="/api/sources/${escapeAttr(detail.id)}/download"><i class="ti ti-download" aria-hidden="true"></i> Download</a>
                        ${
                          isAdmin
-                           ? `<button class="btn-danger" id="file-remove" type="button" title="Delete the uploaded file and remove this source"><i class="ti ti-trash" aria-hidden="true"></i> Remove</button>`
+                           ? `<button class="btn-secondary" id="file-archive" type="button" title="Archive this source; derived data is preserved"><i class="ti ti-archive" aria-hidden="true"></i> Archive</button>`
                            : ""
                        }
                      </div>
@@ -2086,9 +2128,9 @@ function renderSourceFiles(detail) {
   `;
   if (!isAdmin) return;
   setupSourceFileUpload(detail);
-  const remove = byId("file-remove");
-  if (remove) {
-    remove.onclick = () => removeSourceFile(detail.id);
+  const archive = byId("file-archive");
+  if (archive) {
+    archive.onclick = () => archiveSourceFromDetail(detail.id);
   }
 }
 
@@ -2139,23 +2181,14 @@ async function replaceSourceFile(sourceId, file) {
   }
 }
 
-async function removeSourceFile(sourceId) {
-  if (
-    !confirm(
-      REMOVE_SOURCE_CONFIRM,
-    )
-  )
-    return;
+async function archiveSourceFromDetail(sourceId) {
+  if (!confirm(ARCHIVE_SOURCE_CONFIRM)) return;
   try {
-    const response = await fetch(`/admin/sources/${sourceId}`, { method: "DELETE" });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || response.statusText);
-    }
-    toast("Source removed.", "success");
+    await patchSource(sourceId, { status: "archived" });
+    toast("Source archived.", "success");
     location.hash = "#sources";
   } catch (e) {
-    toast(`Remove failed: ${e.message}`, "error");
+    toast(`Archive failed: ${e.message}`, "error");
   }
 }
 

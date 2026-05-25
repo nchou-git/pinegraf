@@ -38,19 +38,6 @@ ASK_CACHE_MAX = 100
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
 ARCHIVED_STATUS_PREFIX = "status:archived"
 PAUSED_STATUS_PREFIX = "status:paused"
-NUKE_SUMMARY_KEYS = [
-    "archived_sources_removed",
-    "orphan_runs_removed",
-    "orphan_fetches_removed",
-    "orphan_documents_removed",
-    "orphan_chunks_removed",
-    "orphan_claims_raw_removed",
-    "orphan_claim_evidence_removed",
-    "orphan_claims_removed",
-    "orphan_mentions_removed",
-    "orphan_entities_removed",
-    "orphan_files_removed",
-]
 
 
 def stats(store: Store) -> dict[str, int]:
@@ -225,6 +212,8 @@ _KIND_ICONS = {
 
 def _source_status(source: Source) -> str:
     notes = source.notes or ""
+    if notes.startswith(ARCHIVED_STATUS_PREFIX):
+        return "archived"
     if notes.startswith(PAUSED_STATUS_PREFIX):
         return "paused"
     return "active"
@@ -245,7 +234,7 @@ def archived_source_count(store: Store) -> int:
         )
 
 
-def list_sources(store: Store) -> list[dict[str, object]]:
+def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[str, object]]:
     with store.session() as session:
         sources = list(
             session.execute(
@@ -256,7 +245,7 @@ def list_sources(store: Store) -> list[dict[str, object]]:
         )
         output = []
         for source in sources:
-            if _source_is_archived(source):
+            if _source_is_archived(source) and not include_archived:
                 continue
             runs = list(
                 session.execute(
@@ -299,10 +288,15 @@ def list_sources(store: Store) -> list[dict[str, object]]:
         return output
 
 
-def source_detail(store: Store, source_id: uuid.UUID) -> dict[str, object] | None:
+def source_detail(
+    store: Store,
+    source_id: uuid.UUID,
+    *,
+    include_archived: bool = False,
+) -> dict[str, object] | None:
     with store.session() as session:
         source = session.get(Source, source_id)
-        if source is None or _source_is_archived(source):
+        if source is None or (_source_is_archived(source) and not include_archived):
             return None
         file_size_bytes = None
         if source.kind == "file":
@@ -475,9 +469,6 @@ def update_source(
     status: str | None = None,
     notes: str | None = None,
 ) -> dict[str, object] | None:
-    if status == "archived":
-        # Backward compatibility for older clients: archived now means hard delete.
-        return {"deleted": True, "id": str(source_id)} if delete_source(store, source_id) else None
     with store.session() as session:
         source = session.get(Source, source_id)
         if source is None:
@@ -505,7 +496,7 @@ def update_source(
                 existing_status_line = first_line + "\n"
             source.notes = f"{existing_status_line}{notes}".strip() or None
         session.commit()
-    return source_detail(store, source_id)
+    return source_detail(store, source_id, include_archived=True)
 
 
 def delete_source(store: Store, source_id: uuid.UUID) -> bool:
@@ -716,197 +707,6 @@ def _delete_uploaded_file(filename: str) -> bool:
 def _delete_rows(session, statement) -> int:
     result = session.execute(statement.execution_options(synchronize_session=False))
     return int(result.rowcount or 0)
-
-
-def nuke_archived_sources(store: Store) -> dict[str, int]:
-    summary = _empty_nuke_summary()
-    with store.session() as session:
-        archived_source_ids = list(
-            session.execute(
-                select(Source.id).where(Source.notes.startswith(ARCHIVED_STATUS_PREFIX))
-            ).scalars()
-        )
-    for source_id in archived_source_ids:
-        if delete_source(store, source_id):
-            summary["archived_sources_removed"] += 1
-    _merge_summary(summary, _sweep_orphaned_data(store))
-    summary["orphan_files_removed"] += _delete_orphan_upload_files(store)
-    return summary
-
-
-def _empty_nuke_summary() -> dict[str, int]:
-    return {key: 0 for key in NUKE_SUMMARY_KEYS}
-
-
-def _merge_summary(target: dict[str, int], source: dict[str, int]) -> None:
-    for key, value in source.items():
-        target[key] = target.get(key, 0) + value
-
-
-def _sweep_orphaned_data(store: Store) -> dict[str, int]:
-    summary = _empty_nuke_summary()
-    with store.session() as session:
-        orphan_run_ids = list(
-            session.execute(
-                select(SourceRun.id).where(
-                    ~select(Source.id).where(Source.id == SourceRun.source_id).exists()
-                )
-            ).scalars()
-        )
-        orphan_fetch_query = select(Fetch.id).where(
-            ~select(SourceRun.id).where(SourceRun.id == Fetch.source_run_id).exists()
-        )
-        if orphan_run_ids:
-            orphan_fetch_query = orphan_fetch_query.union(
-                select(Fetch.id).where(Fetch.source_run_id.in_(orphan_run_ids))
-            )
-        orphan_fetch_ids = list(session.execute(orphan_fetch_query).scalars())
-        _merge_summary(summary, _delete_fetch_tree(session, orphan_fetch_ids))
-        if orphan_run_ids:
-            summary["orphan_runs_removed"] += _delete_rows(
-                session,
-                delete(SourceRun).where(SourceRun.id.in_(orphan_run_ids)),
-            )
-
-        orphan_document_ids = list(
-            session.execute(
-                select(Document.id).where(
-                    ~select(DocumentFetch.document_id)
-                    .where(DocumentFetch.document_id == Document.id)
-                    .exists()
-                )
-            ).scalars()
-        )
-        _merge_summary(summary, _delete_document_tree(session, orphan_document_ids))
-
-        orphan_chunk_ids = list(
-            session.execute(
-                select(Chunk.id).where(
-                    ~select(Document.id).where(Document.id == Chunk.document_id).exists()
-                )
-            ).scalars()
-        )
-        _merge_summary(summary, _delete_chunk_tree(session, orphan_chunk_ids))
-
-        orphan_claim_raw_ids = list(
-            session.execute(
-                select(ClaimRaw.id).where(
-                    ~select(Chunk.id).where(Chunk.id == ClaimRaw.chunk_id).exists()
-                )
-            ).scalars()
-        )
-        _merge_summary(summary, _delete_claim_raw_tree(session, orphan_claim_raw_ids))
-
-        summary["orphan_claim_evidence_removed"] += _delete_rows(
-            session,
-            delete(ClaimEvidence).where(
-                or_(
-                    ~select(Claim.id).where(Claim.id == ClaimEvidence.claim_id).exists(),
-                    ~select(ClaimRaw.id).where(ClaimRaw.id == ClaimEvidence.claim_raw_id).exists(),
-                    ~select(Source.id).where(Source.id == ClaimEvidence.source_id).exists(),
-                )
-            ),
-        )
-        summary["orphan_claims_removed"] += _delete_claims_without_evidence(session)
-        summary["orphan_mentions_removed"] += _delete_rows(
-            session,
-            delete(EntityMention).where(
-                or_(
-                    ~select(ClaimRaw.id).where(ClaimRaw.id == EntityMention.claim_raw_id).exists(),
-                    ~select(Entity.id).where(Entity.id == EntityMention.entity_id).exists(),
-                )
-            ),
-        )
-        summary["orphan_entities_removed"] += _delete_entities_without_refs(
-            session, require_no_aliases=True
-        )
-        session.commit()
-    return summary
-
-
-def _delete_fetch_tree(session, fetch_ids: list[uuid.UUID]) -> dict[str, int]:
-    summary = _empty_nuke_summary()
-    if not fetch_ids:
-        return summary
-    orphan_document_ids = _orphan_document_ids_for_fetches(session, fetch_ids)
-    _repoint_shared_documents(session, fetch_ids, orphan_document_ids)
-    _merge_summary(summary, _delete_document_tree(session, orphan_document_ids))
-    _delete_rows(session, delete(DocumentFetch).where(DocumentFetch.fetch_id.in_(fetch_ids)))
-    summary["orphan_fetches_removed"] += _delete_rows(
-        session,
-        delete(Fetch).where(Fetch.id.in_(fetch_ids)),
-    )
-    return summary
-
-
-def _delete_document_tree(session, document_ids: list[uuid.UUID]) -> dict[str, int]:
-    summary = _empty_nuke_summary()
-    if not document_ids:
-        return summary
-    _merge_summary(
-        summary, _delete_chunk_tree(session, _chunk_ids_for_documents(session, document_ids))
-    )
-    _delete_rows(
-        session,
-        delete(DocumentFetch).where(DocumentFetch.document_id.in_(document_ids)),
-    )
-    summary["orphan_documents_removed"] += _delete_rows(
-        session,
-        delete(Document).where(Document.id.in_(document_ids)),
-    )
-    return summary
-
-
-def _delete_chunk_tree(session, chunk_ids: list[uuid.UUID]) -> dict[str, int]:
-    summary = _empty_nuke_summary()
-    if not chunk_ids:
-        return summary
-    _merge_summary(
-        summary, _delete_claim_raw_tree(session, _claim_raw_ids_for_chunks(session, chunk_ids))
-    )
-    summary["orphan_chunks_removed"] += _delete_rows(
-        session,
-        delete(Chunk).where(Chunk.id.in_(chunk_ids)),
-    )
-    return summary
-
-
-def _delete_claim_raw_tree(session, claim_raw_ids: list[uuid.UUID]) -> dict[str, int]:
-    summary = _empty_nuke_summary()
-    if not claim_raw_ids:
-        return summary
-    summary["orphan_mentions_removed"] += _delete_rows(
-        session,
-        delete(EntityMention).where(EntityMention.claim_raw_id.in_(claim_raw_ids)),
-    )
-    summary["orphan_claim_evidence_removed"] += _delete_rows(
-        session,
-        delete(ClaimEvidence).where(ClaimEvidence.claim_raw_id.in_(claim_raw_ids)),
-    )
-    summary["orphan_claims_raw_removed"] += _delete_rows(
-        session,
-        delete(ClaimRaw).where(ClaimRaw.id.in_(claim_raw_ids)),
-    )
-    summary["orphan_claims_removed"] += _delete_claims_without_evidence(session)
-    summary["orphan_entities_removed"] += _delete_entities_without_refs(
-        session, require_no_aliases=True
-    )
-    return summary
-
-
-def _delete_orphan_upload_files(store: Store) -> int:
-    uploads_dir = Path(get_settings().uploads_dir)
-    if not uploads_dir.is_dir():
-        return 0
-    with store.session() as session:
-        referenced = set(
-            session.execute(select(Source.identifier).where(Source.kind == "file")).scalars()
-        )
-    removed = 0
-    for path in uploads_dir.iterdir():
-        if path.is_file() and path.name not in referenced and _delete_uploaded_file(path.name):
-            removed += 1
-    return removed
 
 
 def list_conflicts(store: Store, page: int = 1, page_size: int = 25) -> dict[str, object]:

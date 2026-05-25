@@ -304,7 +304,8 @@ input[type="file"] {
   color: var(--green);
 }
 
-.status-pill.paused {
+.status-pill.paused,
+.status-pill.archived {
   background-color: var(--surface);
   color: var(--text-muted);
 }
