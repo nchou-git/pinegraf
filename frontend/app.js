@@ -1121,7 +1121,7 @@ function drawPlaceholderGraph() {
       .map((_, index) => {
         const x = 80 + (index % 4) * 150;
         const y = 55 + Math.floor(index / 4) * 72;
-        return `<circle cx="${x}" cy="${y}" r="9" fill="#d8d8d8"></circle>`;
+        return `<circle cx="${x}" cy="${y}" r="9" fill="${escapeAttr(cssVar("--line-strong"))}"></circle>`;
       })
       .join("");
     return;
@@ -1140,7 +1140,7 @@ function drawPlaceholderGraph() {
     .data(links)
     .enter()
     .append("line")
-    .attr("stroke", "#d4d4d4")
+    .attr("stroke", cssVar("--line-strong"))
     .attr("stroke-width", 1);
   const node = svg
     .append("g")
@@ -1149,7 +1149,7 @@ function drawPlaceholderGraph() {
     .enter()
     .append("circle")
     .attr("r", 8)
-    .attr("fill", "#cfcfcf");
+    .attr("fill", cssVar("--line"));
   const sim = d3
     .forceSimulation(nodes)
     .force("link", d3.forceLink(links).id((item) => item.id).distance(64))
@@ -1186,7 +1186,7 @@ function renderEntityPanel(data) {
   byId("entity-panel").innerHTML = `
     <div class="entity-hero">
       <div class="avatar-big">${escapeHtml(initials || "??")}</div>
-      <div style="flex:1">
+      <div class="entity-hero-main">
         <h1>${escapeHtml(data.identity.canonical_name)}</h1>
         ${attrs.class_year ? `<div class="subtitle">${escapeHtml(String(attrs.class_year))}</div>` : ""}
         <div class="subtitle">${escapeHtml(subtitleParts.join(" · "))}</div>
@@ -1208,7 +1208,7 @@ function renderEntityPanel(data) {
           <span class="swatch"><span class="legend-person"></span>person</span>
           <span class="swatch"><span class="legend-org"></span>organization</span>
           <span class="swatch"><span class="legend-project"></span>project</span>
-          <span class="swatch" style="margin-left:auto"><svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke="#00693E" stroke-width="2"/></svg> verified edge</span>
+          <span class="swatch legend-verified"><svg width="20" height="3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke="currentColor" stroke-width="2"/></svg> verified edge</span>
         </div>
       </div>
       <div class="panel">
@@ -1255,8 +1255,8 @@ function drawGraph(data) {
       .attr("x", width / 2)
       .attr("y", height / 2)
       .attr("text-anchor", "middle")
-      .attr("fill", "#888888")
-      .attr("font-size", "13")
+      .attr("fill", cssVar("--text-faint"))
+      .attr("font-size", cssVar("--fs-base"))
       .text("No connections yet.");
     return;
   }
@@ -1279,7 +1279,7 @@ function drawGraph(data) {
     .data(links)
     .enter()
     .append("line")
-    .attr("stroke", (d) => (d.is_resolved === false ? "#888888" : "#00693E"))
+    .attr("stroke", (d) => (d.is_resolved === false ? cssVar("--text-faint") : cssVar("--green")))
     .attr("stroke-dasharray", (d) => (d.is_resolved === false ? "4 3" : null))
     .attr("stroke-width", (d) => Math.max(1, (d.confidence || 0.5) * 3))
     .attr("opacity", (d) => 0.4 + 0.6 * (d.confidence || 0.5))
@@ -1323,21 +1323,21 @@ function drawGraph(data) {
         .attr("width", d.focus ? 44 : 32)
         .attr("height", d.focus ? 44 : 32)
         .attr("rx", 4)
-        .attr("fill", isProject ? "white" : d.focus ? "#00693E" : "white")
-        .attr("stroke", "#00693E")
+        .attr("fill", isProject ? cssVar("--bg") : d.focus ? cssVar("--green") : cssVar("--bg"))
+        .attr("stroke", cssVar("--green"))
         .attr("stroke-width", 2);
     } else {
       g.append("circle")
         .attr("r", d.focus ? 22 : 16)
-        .attr("fill", d.focus ? "#00693E" : "white")
-        .attr("stroke", "#00693E")
+        .attr("fill", d.focus ? cssVar("--green") : cssVar("--bg"))
+        .attr("stroke", cssVar("--green"))
         .attr("stroke-width", 2);
     }
     g.append("text")
       .attr("y", d.focus ? 38 : 32)
       .attr("text-anchor", "middle")
-      .attr("font-size", d.focus ? 12 : 11)
-      .attr("fill", "#1A1A1A")
+      .attr("font-size", d.focus ? cssVar("--fs-sm") : cssVar("--fs-xs"))
+      .attr("fill", cssVar("--text"))
       .attr("font-weight", d.focus ? 500 : 400)
       .text(d.name || "");
   });
@@ -1534,7 +1534,7 @@ function sourceRow(source) {
   const kindLabel = sourceKindLabel(source);
   const kindIcon = sourceKindIcon(source);
   const actions = paused
-    ? `<button class="btn-primary" data-action="resume" style="padding:6px 10px;font-size:12px"><i class="ti ti-player-play"></i> Resume</button>`
+    ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
     : `<button class="btn-source" data-action="crawl"><i class="ti ti-download"></i> Crawl</button>
        <button class="btn-source" data-action="parse"><i class="ti ti-cpu"></i> Parse</button>`;
   const menuButton = state.me?.is_admin
@@ -1735,8 +1735,8 @@ function renderSourceDetailHead(source) {
   const title = source.display_name || source.identifier;
   head.innerHTML = `
     <div class="entity-hero">
-      <i class="ti ${sourceKindIcon(source)}" style="font-size:32px;color:var(--green);width:52px;height:52px;display:flex;align-items:center;justify-content:center;background:var(--green-tint);border-radius:50%"></i>
-      <div style="flex:1">
+      <i class="ti ${sourceKindIcon(source)} source-detail-icon"></i>
+      <div class="entity-hero-main">
         <h1 id="source-name-title">${
           state.me?.is_admin
             ? `<button class="source-title-edit" type="button" data-action="edit-source-name">${escapeHtml(title)}</button>`
@@ -1843,7 +1843,7 @@ async function renderSourceDocuments(sourceId) {
             .join("")}
         </tbody>
       </table>
-      <div class="muted small" style="padding:12px">${data.total} total · showing ${data.results.length}</div>
+      <div class="muted small table-note">${data.total} total · showing ${data.results.length}</div>
     `;
     wrap.querySelectorAll("[data-doc]").forEach((b) => {
       b.onclick = () => openDocumentModal(b.dataset.doc);
@@ -1873,7 +1873,7 @@ async function openDocumentModal(documentId) {
       <div class="doc-viewer">
         <div class="muted small">${data.word_count || 0} words · ${data.chunks?.length || 0} chunks · ${data.claims_raw?.length || 0} extracted claims</div>
         <pre>${escapeHtml((data.cleaned_text || "").slice(0, 5000))}${(data.cleaned_text || "").length > 5000 ? "\n\n…(truncated)" : ""}</pre>
-        ${claimsHtml ? `<div><div class="muted small" style="margin-bottom:6px">Extracted claims</div><ul style="padding-left:18px;font-size:13px">${claimsHtml}</ul></div>` : ""}
+        ${claimsHtml ? `<div class="doc-claims"><div class="muted small doc-claims-title">Extracted claims</div><ul class="doc-claims-list">${claimsHtml}</ul></div>` : ""}
       </div>
     `);
   } catch (e) {
@@ -1923,7 +1923,7 @@ function renderSourceConfig(detail) {
   const adminOnly = !state.me?.is_admin;
   const formatLabel = sourceKindLabel(detail);
   wrap.innerHTML = `
-    <div class="panel" style="margin-top:0">
+    <div class="panel panel-flush">
       <div class="modal-body">
         <label class="field">
           <span class="field-label">Display name</span>
@@ -1951,7 +1951,7 @@ function renderSourceConfig(detail) {
         </label>
         ${
           !adminOnly
-            ? `<div style="display:flex;justify-content:flex-end;gap:8px"><button class="btn-primary" id="cfg-save"><i class="ti ti-device-floppy"></i> Save</button></div>`
+            ? `<div class="form-actions"><button class="btn-primary" id="cfg-save"><i class="ti ti-device-floppy"></i> Save</button></div>`
             : ""
         }
       </div>
@@ -2007,7 +2007,7 @@ function renderAddSourceModal() {
     </div>
     <div class="modal-body">
       <div>
-        <div class="field-label" style="margin-bottom:6px">Kind</div>
+        <div class="field-label kind-label">Kind</div>
         <div class="kind-grid">
           ${SOURCE_KINDS.map(
             (k) => `
@@ -2128,7 +2128,7 @@ async function loadAdminConflicts() {
           <span>vs</span>
           <span>Claim B: ${escapeHtml(c.claim_b_id.slice(0, 8))}</span>
         </div>
-        <div style="margin-top:8px;display:flex;gap:6px">
+        <div class="conflict-actions">
           <button class="btn-source" data-resolve="${escapeAttr(c.id)}" data-side="claim_a_wins">Pick A</button>
           <button class="btn-source" data-resolve="${escapeAttr(c.id)}" data-side="claim_b_wins">Pick B</button>
           <button class="btn-ghost" data-resolve="${escapeAttr(c.id)}" data-side="both_valid_distinct">Both valid</button>
@@ -2231,10 +2231,14 @@ function byId(id) {
   return document.getElementById(id);
 }
 
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || `var(${name})`;
+}
+
 function escapeHtml(value) {
   if (value == null) return "";
   return String(value).replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[c],
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c],
   );
 }
 
