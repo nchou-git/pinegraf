@@ -1476,8 +1476,11 @@ async function renderSources(parts) {
       state.me?.is_admin
         ? `<details class="conflicts" open>
              <summary class="conflicts-header">
-               <div class="panel-title">Conflicts</div>
-               <span class="conflicts-count-pill" id="conflict-count">0 unresolved</span>
+               <div class="conflicts-title-row">
+                 <span class="panel-title">Conflicts</span>
+                 <span class="conflicts-count-pill" id="conflict-count">0 unresolved</span>
+               </div>
+               <span class="chevron" aria-hidden="true"><i class="ti ti-chevron-down"></i></span>
              </summary>
              <div id="conflicts-body"><div class="muted small">Loading…</div></div>
            </details>`
