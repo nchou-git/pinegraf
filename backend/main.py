@@ -123,7 +123,10 @@ def create_app(store: Store | None = None) -> FastAPI:
         return FileResponse(path)
 
     @app.get("/api/logs/stream")
-    async def api_logs_stream() -> StreamingResponse:
+    async def api_logs_stream(request: Request) -> StreamingResponse:
+        if not is_admin_request(request):
+            raise HTTPException(status_code=403, detail="admin auth required")
+
         async def events() -> AsyncIterator[str]:
             async for line in subscribe_logs():
                 yield f"data: {json.dumps(line)}\n\n"

@@ -20,6 +20,7 @@ def test_admin_auth_required_and_happy_paths(store, admin_headers, monkeypatch) 
     monkeypatch.setattr(main_module, "start_run", fake_start_run)
 
     with TestClient(main_module.create_app(store)) as client:
+        assert client.get("/api/logs/stream").status_code == 403
         assert client.get("/admin/conflicts").status_code == 401
         stale_token = base64.b64encode(b"admin:Pinegrafposen$").decode("ascii")
         assert (

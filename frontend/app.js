@@ -23,7 +23,7 @@ const state = {
 
 let modalRestoreFocus = null;
 let modalKeydownHandler = null;
-let logStream = null;
+let logsViewStream = null;
 
 const TAB_DEFS = [
   { id: "directory", label: "Directory", icon: "ti-list-search" },
@@ -31,6 +31,7 @@ const TAB_DEFS = [
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
 ];
+const LOGS_TAB = { id: "logs", label: "Logs", icon: "ti-terminal-2" };
 
 const SOURCE_KINDS = [
   {
@@ -99,7 +100,6 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   await Promise.all([loadMe(), loadStats()]);
   setupShell();
-  setupLogs();
   renderShell();
   window.addEventListener("hashchange", renderRoute);
   renderRoute();
@@ -148,7 +148,7 @@ function renderShell() {
 
   const nav = byId("sidebar-nav");
   const activeTab = currentTab();
-  nav.innerHTML = TAB_DEFS
+  nav.innerHTML = navTabs()
     .map(
       (tab) =>
         `<a class="nav-item ${activeTab === tab.id ? "active" : ""}" data-tab="${tab.id}" href="#${tab.id}">
@@ -170,6 +170,10 @@ function renderShell() {
     state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
   );
   collapse.innerHTML = `<i class="ti ${state.sidebarCollapsed ? "ti-chevron-right" : "ti-chevron-left"}" aria-hidden="true"></i>`;
+}
+
+function navTabs() {
+  return state.me?.is_admin ? [...TAB_DEFS, LOGS_TAB] : TAB_DEFS;
 }
 
 function workspaceInitials(name) {
@@ -249,10 +253,21 @@ function currentTab() {
 function renderRoute() {
   const route = location.hash.replace(/^#/, "") || "directory";
   const [tab, ...rest] = route.split("/");
+  if (tab !== "logs") stopLogsViewStream();
   if (tab === "admin") {
     history.replaceState(null, "", "#sources");
     renderShell();
     return renderSources([]);
+  }
+  if (tab === "logs") {
+    if (!state.me?.is_admin) {
+      history.replaceState(null, "", "#directory");
+      renderShell();
+      return renderDirectory();
+    }
+    closeMobileSidebar();
+    renderShell();
+    return renderLogs();
   }
   closeMobileSidebar();
   renderShell();
@@ -355,7 +370,6 @@ async function loadDirectorySources() {
     updateDirectoryFilterLabels();
   } catch (e) {
     state.sourcesCache = [];
-    logLine("error", `Unable to load sources: ${e.message}`);
   }
 }
 
@@ -1764,7 +1778,6 @@ function sourceArchiveRow(source) {
 
 async function restoreArchivedSource(sourceId) {
   await patchSource(sourceId, { status: "active" });
-  logLine("info", "Source restored.");
   loadArchivedSourcesList();
 }
 
@@ -1778,11 +1791,8 @@ async function deleteArchivedSource(source) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || response.statusText);
     }
-    logLine("info", "Source permanently deleted.");
     loadArchivedSourcesList();
-  } catch (e) {
-    logLine("error", `Delete failed: ${e.message}`);
-  }
+  } catch (_) {}
 }
 
 function sourceRow(source) {
@@ -1896,21 +1906,16 @@ async function handleMenuAction(action, sourceId) {
     const name = prompt("New display name", source.display_name || source.identifier);
     if (!name) return;
     await patchSource(sourceId, { display_name: name });
-    logLine("info", "Renamed.");
     loadSourcesList();
   } else if (action === "pause") {
     await patchSource(sourceId, { status: "paused" });
-    logLine("info", "Source paused.");
     loadSourcesList();
   } else if (action === "archive") {
     if (!confirm(`${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`)) return;
     try {
       await patchSource(sourceId, { status: "archived" });
-      logLine("info", "Source archived.");
       loadSourcesList();
-    } catch (e) {
-      logLine("error", `Archive failed: ${e.message}`);
-    }
+    } catch (_) {}
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
   }
@@ -1926,7 +1931,6 @@ async function patchSource(id, body) {
 
 async function updateSourceStatus(id, status) {
   await patchSource(id, { status });
-  logLine("info", status === "active" ? "Source resumed." : `Source ${status}.`);
   loadSourcesList();
 }
 
@@ -1939,11 +1943,8 @@ async function runSourceAction(sourceId, action) {
       throw new Error(data.detail || res.statusText);
     }
     const data = await res.json();
-    logLine("info", `${capitalize(action)} started for ${sourceDisplayName(source)}.`);
     trackRun(sourceId, sourceDisplayName(source), action, data.run_id);
-  } catch (e) {
-    logLine("error", `${action} failed: ${e.message}`);
-  }
+  } catch (_) {}
 }
 
 function trackRun(sourceId, sourceName, action, runId) {
@@ -1969,10 +1970,6 @@ function trackRun(sourceId, sourceName, action, runId) {
       stream.close();
       delete state.runStreams[runId];
       delete state.runProgress[sourceId];
-      logLine(
-        data.status === "failed" ? "error" : "info",
-        `${capitalize(action)} ${data.status} for ${sourceName}.`,
-      );
       loadStats();
       loadSourcesList();
     }
@@ -1982,7 +1979,6 @@ function trackRun(sourceId, sourceName, action, runId) {
     delete state.runStreams[runId];
     delete state.runProgress[sourceId];
     updateRunProgressDom(sourceId);
-    logLine("error", `Progress stream closed for ${sourceName}.`);
     loadSourcesList();
   };
 }
@@ -2121,7 +2117,6 @@ function startSourceNameEdit(source) {
     }
     saving = true;
     await patchSource(source.id, { display_name: next });
-    logLine("info", "Renamed.");
     renderSourceDetail(source.id, currentSourceDetailTab());
   };
 }
@@ -2314,21 +2309,17 @@ async function replaceSourceFile(sourceId, file) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || response.statusText);
     }
-    logLine("info", "File replaced.");
     renderSourceDetail(sourceId, "files");
-  } catch (e) {
-    logLine("error", `Upload failed: ${e.message}`);
-  }
+  } catch (_) {}
 }
 
 function archiveSourceFromDetail(source) {
   if (!confirm(`${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`)) return;
   patchSource(source.id, { status: "archived" })
     .then(() => {
-      logLine("info", "Source archived.");
       location.hash = "#sources";
     })
-    .catch((e) => logLine("error", `Archive failed: ${e.message}`));
+    .catch(() => {});
 }
 
 function renderSourceRuns(detail) {
@@ -2404,7 +2395,6 @@ function renderSourceConfig(detail) {
         notes: buildSourceNotes(detail, byId("cfg-notes").value.trim()),
       };
       await patchSource(detail.id, body);
-      logLine("info", "Saved.");
       renderSourceDetail(detail.id, "config");
     };
   }
@@ -2491,14 +2481,12 @@ async function submitAddSource() {
   const kind = selected.kind;
   const display_name = byId("new-name").value.trim();
   if (!display_name) {
-    logLine("error", "Label is required.");
     return;
   }
   try {
     if (kind === "file") {
       const input = byId("new-file");
       if (!input.files || !input.files[0]) {
-        logLine("error", "Pick a file to upload.");
         return;
       }
       const form = new FormData();
@@ -2509,7 +2497,6 @@ async function submitAddSource() {
     } else {
       const identifier = byId("new-identifier").value.trim();
       if (!identifier) {
-        logLine("error", "Identifier is required.");
         return;
       }
       const body = {
@@ -2528,11 +2515,8 @@ async function submitAddSource() {
       }
     }
     closeModal();
-    logLine("info", "Source added.");
     await Promise.all([loadSourcesStats(), loadSourcesList()]);
-  } catch (e) {
-    logLine("error", `Add failed: ${e.message}`);
-  }
+  } catch (_) {}
 }
 
 /* ───── Source conflicts ───── */
@@ -2575,7 +2559,6 @@ async function loadAdminConflicts() {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ resolution }),
           });
-          logLine("info", "Resolved.");
           loadAdminConflicts();
         };
       });
@@ -2594,13 +2577,56 @@ async function adminLogout(event) {
   renderShell();
   if (tab === "admin") {
     location.hash = "#sources";
+  } else if (tab === "logs") {
+    stopLogsViewStream();
+    location.hash = "#directory";
   } else if (tab === "sources") {
     await renderRoute();
   }
   return false;
 }
 
-/* ───── Modal + logs ───── */
+/* ───── Logs ───── */
+
+function renderLogs() {
+  setPageHeader({
+    title: "Logs",
+    subtitle: "Live backend stream",
+  });
+  byId("app").innerHTML = `
+    <section class="logs-view" aria-label="Application logs">
+      <div class="logs-terminal" id="logs-terminal"></div>
+    </section>
+  `;
+  startLogsViewStream();
+}
+
+function startLogsViewStream() {
+  stopLogsViewStream();
+  appendLog({
+    timestamp: new Date().toISOString(),
+    level: "INFO",
+    message: "Connecting to backend log stream.",
+  });
+  logsViewStream = new EventSource("/api/logs/stream");
+  logsViewStream.onmessage = (event) => appendLog(JSON.parse(event.data));
+  logsViewStream.onerror = () => {
+    appendLog({
+      timestamp: new Date().toISOString(),
+      level: "ERROR",
+      message: "Log stream disconnected.",
+    });
+    stopLogsViewStream();
+  };
+}
+
+function stopLogsViewStream() {
+  if (!logsViewStream) return;
+  logsViewStream.close();
+  logsViewStream = null;
+}
+
+/* ───── Modal ───── */
 
 function openModal(html) {
   const root = document.getElementById("modal-root");
@@ -2675,23 +2701,8 @@ function modalFocusableElements(modal) {
   ).filter((element) => !element.hidden);
 }
 
-function setupLogs() {
-  logLine("info", "Log stream connecting.");
-  logStream = new EventSource("/api/logs/stream");
-  logStream.onmessage = (event) => appendLog(JSON.parse(event.data));
-  logStream.onerror = () => logLine("error", "Log stream disconnected.");
-}
-
-function logLine(level, message) {
-  appendLog({
-    timestamp: new Date().toISOString(),
-    level: level.toUpperCase(),
-    message,
-  });
-}
-
 function appendLog(line) {
-  const root = byId("log-lines");
+  const root = byId("logs-terminal");
   if (!root) return;
   const entry = document.createElement("div");
   entry.className = `log-line ${String(line.level || "").toLowerCase()}`;

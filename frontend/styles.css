@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=logs-progress";
-@import "./styles/components.css?v=logs-progress";
-@import "./styles/layout.css?v=logs-progress";
+@import "./styles/tokens.css?v=logs-view";
+@import "./styles/components.css?v=logs-view";
+@import "./styles/layout.css?v=logs-view";
 
 /* page-specific rules below */
 
@@ -837,6 +837,33 @@
 .claim-meta strong {
   color: var(--text);
   font-weight: 400;
+}
+
+/* ─── Logs ─────────────────────────────────────────────────────────── */
+
+.logs-view {
+  height: calc(100vh - var(--space-16) - var(--space-12));
+  min-height: calc(var(--space-16) * 6);
+}
+
+.logs-terminal {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--text);
+  color: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+.log-line {
+  white-space: pre-wrap;
+}
+
+.log-line.error {
+  color: var(--conflict-bg);
 }
 
 /* ─── Sources ──────────────────────────────────────────────────────── */
