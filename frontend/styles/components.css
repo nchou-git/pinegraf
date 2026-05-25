@@ -668,10 +668,11 @@ input[type="file"] {
 }
 
 .login-card {
-  padding: var(--space-8);
+  padding: var(--space-6);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background-color: var(--bg);
+  box-shadow: var(--shadow-md);
 }
 
 .login-brand {
@@ -681,6 +682,18 @@ input[type="file"] {
   margin-bottom: var(--space-5);
 }
 
+.login-mark {
+  width: var(--space-6);
+  height: var(--space-6);
+  flex: 0 0 auto;
+  color: var(--green);
+}
+
+.login-subtitle {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
 .login-form {
   display: flex;
   flex-direction: column;
@@ -688,12 +701,14 @@ input[type="file"] {
   margin-bottom: var(--space-4);
 }
 
-.login-form .field span {
-  display: block;
-  margin-bottom: var(--space-2);
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  font-weight: 500;
+.login-form .btn-primary {
+  width: 100%;
+}
+
+.login-note {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
 }
 
 .login-error {

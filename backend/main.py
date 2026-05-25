@@ -437,31 +437,50 @@ def _admin_login_html(error: str | None) -> str:
   <main class="login-shell">
     <div class="login-card">
       <div class="login-brand">
-        <svg width="36" height="36" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+        <svg
+          class="login-mark"
+          viewBox="0 0 40 40"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
           <polygon
             points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
-            fill="#00693E"
+            fill="currentColor"
           />
-          <rect x="18" y="32" width="4" height="4" fill="#00693E"/>
+          <rect x="18" y="32" width="4" height="4" fill="currentColor"/>
         </svg>
         <div>
           <div class="wordmark">Pinegraf</div>
-          <div class="muted small">Admin sign-in</div>
+          <div class="login-subtitle">Admin sign-in</div>
         </div>
       </div>
       {error_block}
       <form method="post" action="/admin/login" class="login-form">
         <label class="field">
-          <span>Login ID</span>
-          <input name="username" autocomplete="username" value="pinegraf" autofocus required />
+          <span class="field-label">Login ID</span>
+          <input
+            class="input"
+            name="username"
+            autocomplete="username"
+            value="pinegraf"
+            autofocus
+            required
+          />
         </label>
         <label class="field">
-          <span>Password</span>
-          <input name="password" type="password" autocomplete="current-password" required />
+          <span class="field-label">Password</span>
+          <input
+            class="input"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
         </label>
         <input type="hidden" name="next" value="/" />
         <button type="submit" class="btn-primary">Sign in</button>
       </form>
+      <div class="login-note">This is separate from the site-wide sign-in.</div>
     </div>
   </main>
 </body>
