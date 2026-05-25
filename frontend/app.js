@@ -851,7 +851,7 @@ function renderAsk() {
 function renderAskComposer(isPinned) {
   return `
     <form class="ask-composer ${isPinned ? "is-pinned" : ""}" id="ask-form">
-      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations"></textarea>
+      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations. For example, who worked on Gyrobike?"></textarea>
       <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Ask question" disabled>
         <i class="ti ti-send" aria-hidden="true"></i>
       </button>
@@ -1095,7 +1095,7 @@ async function renderGraph(entityId) {
       <div class="graph-empty">
         <div class="graph-search-card">
           <div class="search-row">
-            <input class="input" id="graph-search" placeholder="Search for a person, organization, or project" value="${escapeAttr(state.graphSearch)}" autocomplete="off" />
+            <input class="input" id="graph-search" placeholder="Search for a person, project, or organization" value="${escapeAttr(state.graphSearch)}" autocomplete="off" />
             <button class="btn-primary" id="graph-search-go"><i class="ti ti-search" aria-hidden="true"></i> Find</button>
           </div>
           <div id="graph-results" class="graph-autocomplete"></div>
