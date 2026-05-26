@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 import uuid
@@ -12,7 +11,7 @@ from openai import AsyncOpenAI
 from sqlalchemy import delete, func, or_, select
 
 from backend.class_year import expand_class_year_synonyms
-from backend.config import get_settings
+from backend.config import Settings, get_settings
 from backend.db.models import (
     Chunk,
     Claim,
@@ -200,15 +199,45 @@ async def ask_stream(
     cached = _ASK_CACHE.get(key)
     if cached and time.monotonic() - cached[0] < ASK_CACHE_SECONDS:
         answer, citations = cached[1], cached[2]
+        if answer:
+            yield _sse({"kind": "token", "text": answer})
+        yield _sse({"kind": "citations", "citations": citations})
+        yield _sse({"kind": "done"})
+        return
+
+    settings, chunks, claims, citations = await _answer_materials(
+        store, question, max_results=max_results
+    )
+    answer = ""
+    if not claims and not chunks:
+        answer = (
+            "No extracted graph evidence is available yet. Run ingestion and the pipeline first."
+        )
+        yield _sse({"kind": "token", "text": answer})
+    elif settings.openai_api_key:
+        parts: list[str] = []
+        async for token in _llm_answer_tokens(
+            question=question,
+            chunks=chunks,
+            claims=claims,
+            model=settings.frontier_model,
+            api_key=settings.openai_api_key,
+        ):
+            parts.append(token)
+            yield _sse({"kind": "token", "text": token})
+        answer = "".join(parts).strip()
+        if not answer:
+            answer = "No answer could be generated from the available evidence."
+            yield _sse({"kind": "token", "text": answer})
     else:
-        answer, citations = await _answer_from_graph(store, question, max_results=max_results)
-        _ASK_CACHE[key] = (time.monotonic(), answer, citations)
-        while len(_ASK_CACHE) > ASK_CACHE_MAX:
-            _ASK_CACHE.popitem(last=False)
-    for token in answer.split(" "):
-        if token:
-            yield _sse({"kind": "token", "text": token + " "})
-            await asyncio.sleep(0)
+        answer = (
+            f"Based on the current graph, I found {len(claims)} relevant claims for: {question}"
+        )
+        yield _sse({"kind": "token", "text": answer})
+
+    _ASK_CACHE[key] = (time.monotonic(), answer, citations)
+    while len(_ASK_CACHE) > ASK_CACHE_MAX:
+        _ASK_CACHE.popitem(last=False)
     yield _sse({"kind": "citations", "citations": citations})
     yield _sse({"kind": "done"})
 
@@ -955,6 +984,35 @@ async def _answer_from_graph(
     *,
     max_results: int,
 ) -> tuple[str, list[dict[str, object]]]:
+    settings, chunks, claims, citations = await _answer_materials(
+        store, question, max_results=max_results
+    )
+    if not claims and not chunks:
+        return (
+            "No extracted graph evidence is available yet. Run ingestion and the pipeline first.",
+            [],
+        )
+    if settings.openai_api_key:
+        return await _llm_answer(
+            question=question,
+            chunks=chunks,
+            claims=claims,
+            citations=citations,
+            model=settings.frontier_model,
+            api_key=settings.openai_api_key,
+        )
+    return (
+        f"Based on the current graph, I found {len(claims)} relevant claims for: {question}",
+        citations,
+    )
+
+
+async def _answer_materials(
+    store: Store,
+    question: str,
+    *,
+    max_results: int,
+) -> tuple[Settings, list[Chunk], list[Claim], list[dict[str, object]]]:
     settings = get_settings()
     question_variants = expand_class_year_synonyms(question)
     question_vectors = await embed_texts(question_variants)
@@ -985,24 +1043,7 @@ async def _answer_from_graph(
                         "evidence": evidence,
                     }
                 )
-    if not claims and not chunks:
-        return (
-            "No extracted graph evidence is available yet. Run ingestion and the pipeline first.",
-            [],
-        )
-    if settings.openai_api_key:
-        return await _llm_answer(
-            question=question,
-            chunks=chunks,
-            claims=claims,
-            citations=citations,
-            model=settings.frontier_model,
-            api_key=settings.openai_api_key,
-        )
-    return (
-        f"Based on the current graph, I found {len(claims)} relevant claims for: {question}",
-        citations,
-    )
+    return settings, chunks, claims, citations
 
 
 async def _llm_answer(
@@ -1014,6 +1055,28 @@ async def _llm_answer(
     model: str,
     api_key: str,
 ) -> tuple[str, list[dict[str, object]]]:
+    parts = [
+        token
+        async for token in _llm_answer_tokens(
+            question=question,
+            chunks=chunks,
+            claims=claims,
+            model=model,
+            api_key=api_key,
+        )
+    ]
+    content = "".join(parts)
+    return content.strip() or "No answer could be generated from the available evidence.", citations
+
+
+async def _llm_answer_tokens(
+    *,
+    question: str,
+    chunks: list[Chunk],
+    claims: list[Claim],
+    model: str,
+    api_key: str,
+) -> AsyncIterator[str]:
     chunk_context = "\n\n".join(
         f"[chunk {index + 1}] {chunk.text}" for index, chunk in enumerate(chunks)
     )
@@ -1027,7 +1090,7 @@ async def _llm_answer(
         for claim in claims
     )
     client = AsyncOpenAI(api_key=api_key)
-    response = await client.chat.completions.create(
+    stream = await client.chat.completions.create(
         model=model,
         messages=[
             {
@@ -1048,9 +1111,14 @@ async def _llm_answer(
             },
         ],
         temperature=0,
+        stream=True,
     )
-    content = response.choices[0].message.content or ""
-    return content.strip() or "No answer could be generated from the available evidence.", citations
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        token = chunk.choices[0].delta.content
+        if token:
+            yield token
 
 
 def _rank_chunks(chunks: list[Chunk], question_vectors: list[list[float]]) -> list[Chunk]:

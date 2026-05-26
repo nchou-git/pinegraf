@@ -46,3 +46,50 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
         link_count = session.execute(select(func.count()).select_from(DocumentFetch)).scalar_one()
     assert document_count == 1
     assert link_count == 2
+
+
+def test_create_document_with_chunks_returns_existing_document_on_hash_race(store) -> None:
+    source = store.upsert_source(kind="domain", identifier="race.example")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={},
+        triggered_by="test",
+    )
+    first = store.add_fetch(
+        source_run_id=run.id,
+        url="https://race.example/one",
+        body_bytes=b"Same",
+    )
+    second = store.add_fetch(
+        source_run_id=run.id,
+        url="https://race.example/two",
+        body_bytes=b"Same",
+    )
+    digest = b"1" * 32
+
+    created = store.create_document_with_chunks(
+        content_hash=digest,
+        cleaned_text="Same",
+        title="One",
+        canonical_url="https://race.example/one",
+        language="en",
+        word_count=1,
+        first_seen_fetch_id=first.id,
+        chunks=[("Same", 1, None)],
+    )
+    existing = store.create_document_with_chunks(
+        content_hash=digest,
+        cleaned_text="Same",
+        title="Two",
+        canonical_url="https://race.example/two",
+        language="en",
+        word_count=1,
+        first_seen_fetch_id=second.id,
+        chunks=[("Same", 1, None)],
+    )
+
+    assert existing.id == created.id
+    with store.session() as session:
+        document_count = session.execute(select(func.count()).select_from(Document)).scalar_one()
+    assert document_count == 1

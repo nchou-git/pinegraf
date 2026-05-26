@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.config import get_settings
 from backend.db.models import (
+    Base,
     Chunk,
     Claim,
     ClaimConflict,
@@ -298,26 +299,28 @@ class Store:
                 word_count=word_count,
                 first_seen_fetch_id=first_seen_fetch_id,
             )
-            session.add(document)
-            session.flush()
-            for ordinal, (text, token_count, embedding) in enumerate(chunks):
-                session.add(
-                    Chunk(
-                        document_id=document.id,
-                        ordinal=ordinal,
-                        text=text,
-                        token_count=token_count,
-                        embedding=embedding,
-                    )
-                )
-            session.add(DocumentFetch(document_id=document.id, fetch_id=first_seen_fetch_id))
             try:
+                session.add(document)
+                session.flush()
+                for ordinal, (text, token_count, embedding) in enumerate(chunks):
+                    session.add(
+                        Chunk(
+                            document_id=document.id,
+                            ordinal=ordinal,
+                            text=text,
+                            token_count=token_count,
+                            embedding=embedding,
+                        )
+                    )
+                session.add(DocumentFetch(document_id=document.id, fetch_id=first_seen_fetch_id))
                 session.commit()
-            except IntegrityError:
+            except IntegrityError as exc:
                 session.rollback()
                 existing = session.execute(
                     select(Document).where(Document.content_hash == content_hash)
-                ).scalar_one()
+                ).scalar_one_or_none()
+                if existing is None:
+                    raise exc
                 return existing
             return document
 
