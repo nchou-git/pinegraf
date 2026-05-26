@@ -13,6 +13,7 @@ const state = {
   directoryRows: [],
   directoryOptionRows: [],
   sourcesCache: null,
+  sourcesError: null,
   runProgress: {},
   runStreams: {},
   askSession: JSON.parse(sessionStorage.getItem(ASK_SESSION_KEY) || "[]"),
@@ -373,9 +374,11 @@ async function loadDirectorySources() {
   try {
     const data = await getJSON("/api/sources");
     state.sourcesCache = data.sources || [];
+    state.sourcesError = null;
     updateDirectoryFilterLabels();
   } catch (e) {
-    state.sourcesCache = [];
+    state.sourcesCache = null;
+    state.sourcesError = e;
   }
 }
 
@@ -401,17 +404,26 @@ async function loadDirectory() {
   try {
     const data = await getJSON(`/api/directory?${params.toString()}`);
     const total = data.total || 0;
-    const sourceTotal = (state.sourcesCache || []).length;
+    const sourceLoadFailed = state.sourcesCache === null && state.sourcesError;
+    const sourceTotal = sourceLoadFailed ? null : (state.sourcesCache || []).length;
     const totalPages = Math.max(1, Math.ceil(total / (data.page_size || 50)));
     state.directoryRows = sortDirectoryRows(data.results || []);
     setPageHeader({
       title: "Directory",
-      subtitle: `${formatNumber(total || state.stats?.entities || 0)} people across ${formatNumber(sourceTotal)} source${sourceTotal === 1 ? "" : "s"}`,
+      subtitle: sourceLoadFailed
+        ? `${formatNumber(total || state.stats?.entities || 0)} people · sources unavailable`
+        : `${formatNumber(total || state.stats?.entities || 0)} people across ${formatNumber(sourceTotal)} source${sourceTotal === 1 ? "" : "s"}`,
       actions: directoryHeaderActions(),
     });
     updateDirectoryFilterLabels();
     bindDirectoryHeaderFilters();
-    if (!sourceTotal) {
+    if (sourceLoadFailed) {
+      results.innerHTML = directorySourcesErrorState(state.sourcesError);
+      bindDirectorySourcesErrorActions();
+      byId("pagination").innerHTML = "";
+      return;
+    }
+    if (sourceTotal === 0) {
       results.innerHTML = `
         <div class="directory-empty-panel">
           <i class="ti ti-database-off" aria-hidden="true"></i>
@@ -456,6 +468,34 @@ async function loadDirectory() {
   } catch (e) {
     results.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load directory: ${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+function directorySourcesErrorState(error) {
+  const message = normalizeErrorMessage(error);
+  const signIn = isAuthError(error)
+    ? `<a class="btn-secondary" href="${escapeAttr(state.me?.admin_login_url || "/admin/login")}">Sign in</a>`
+    : "";
+  return `
+    <div class="directory-empty-panel">
+      <i class="ti ti-alert-circle" aria-hidden="true"></i>
+      <h2>Couldn't load sources.</h2>
+      <p>${escapeHtml(message)}</p>
+      <div class="empty-actions">
+        <button class="btn-primary" id="directory-sources-retry" type="button">Retry</button>
+        ${signIn}
+      </div>
+    </div>
+  `;
+}
+
+function bindDirectorySourcesErrorActions() {
+  const retry = byId("directory-sources-retry");
+  if (!retry) return;
+  retry.onclick = async () => {
+    retry.disabled = true;
+    await loadDirectorySources();
+    await loadDirectory();
+  };
 }
 
 function bindDirectoryHeaderFilters() {
@@ -1689,6 +1729,7 @@ async function loadSourcesList() {
     const sources = data.sources || [];
     const archivedSources = archivedData.sources || [];
     state.sourcesCache = sources;
+    state.sourcesError = null;
     const active = sources.filter((s) => s.status === "active");
     const paused = sources.filter((s) => s.status === "paused");
     const archivedCount = archivedSources.length;
@@ -1728,7 +1769,8 @@ async function loadSourcesList() {
     setupSourceRows(list, sources, { archived: false });
     if (isAdmin()) setupSourceRows(list, archivedSources, { archived: true });
   } catch (e) {
-    state.sourcesCache = [];
+    state.sourcesCache = null;
+    state.sourcesError = e;
     const pageSubtitle = byId("page-subtitle");
     if (pageSubtitle) pageSubtitle.textContent = "Unable to load";
     const statsGrid = byId("sources-stats");
@@ -1854,6 +1896,12 @@ function normalizeErrorMessage(error) {
   } catch (_) {
     return raw;
   }
+}
+
+function isAuthError(error) {
+  const status = Number(error?.status || 0);
+  if (status === 401 || status === 403) return true;
+  return /\b(401|403)\b/.test(String(error?.message || error || ""));
 }
 
 async function renderSourcesArchive() {
@@ -3033,7 +3081,10 @@ async function getJSON(url) {
   const res = await fetch(url);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(body || `${res.status} ${res.statusText}`);
+    const error = new Error(body || `${res.status} ${res.statusText}`);
+    error.status = res.status;
+    error.statusText = res.statusText;
+    throw error;
   }
   return res.json();
 }
