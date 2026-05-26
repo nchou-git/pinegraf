@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 import subprocess
 import sys
@@ -43,6 +42,8 @@ def _assert_not_production_database(database_url: str) -> None:
 
 def _guard_configured_database() -> None:
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    os.environ.setdefault("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$")
+    os.environ.setdefault("ADMIN_SESSION_SECRET", "test-session-secret")
     test_database_url = os.getenv("TEST_DATABASE_URL")
     if test_database_url:
         _assert_not_production_database(test_database_url)
@@ -114,6 +115,7 @@ class FakeAsyncClient:
 @pytest.fixture(autouse=True)
 def isolated_settings(monkeypatch) -> Iterator[None]:
     monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$")
+    monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-session-secret")
     monkeypatch.setenv("USE_MOCK_EMBEDDINGS", "true")
     monkeypatch.setenv("PINEGRAF_AUTO_PARSE", "false")
     get_settings.cache_clear()
@@ -192,8 +194,9 @@ def _restore_database_url(previous: str | None) -> None:
 
 @pytest.fixture
 def admin_headers() -> dict[str, str]:
-    token = base64.b64encode(b"pinegraf:Pinegrafposen$").decode("ascii")
-    return {"Authorization": f"Basic {token}"}
+    from backend.admin_session import COOKIE_NAME, issue
+
+    return {"Cookie": f"{COOKIE_NAME}={issue()}"}
 
 
 @pytest.fixture

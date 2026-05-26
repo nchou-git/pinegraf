@@ -32,7 +32,6 @@ from backend.db.models import (
     SourceRun,
 )
 from backend.db.store import SCHEMA_TABLES, Store, utc_now
-from backend.progress import has_progress
 from backend.resolution.embedder import embed_texts
 
 ASK_CACHE_SECONDS = 3600
@@ -46,6 +45,12 @@ class ActiveSourceRunError(RuntimeError):
         super().__init__("source has an active run")
         self.run_id = run_id
         self.status = status
+
+
+def _source_run_action_kind(run: SourceRun) -> str:
+    if run.kind == "parse":
+        return "parse"
+    return "crawl"
 
 
 def stats(store: Store) -> dict[str, int]:
@@ -338,7 +343,10 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                 ).scalars()
             )
             last_run = runs[0] if runs else None
-            active_run = next((run for run in runs if has_progress(run.id, store=store)), None)
+            active_run = next(
+                (run for run in runs if run.status in ACTIVE_SOURCE_RUN_STATUSES),
+                None,
+            )
             output.append(
                 {
                     "id": str(source.id),
@@ -353,6 +361,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "last_run_at": last_run.started_at.isoformat() if last_run else None,
                     "last_status": last_run.status if last_run else None,
                     "active_run_id": str(active_run.id) if active_run else None,
+                    "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
                     "runs": [
                         {
                             "id": str(run.id),
@@ -396,6 +405,10 @@ def source_detail(
                 .limit(50)
             ).scalars()
         )
+        active_run = next(
+            (run for run in runs if run.status in ACTIVE_SOURCE_RUN_STATUSES),
+            None,
+        )
         coverage = _source_coverage(session, source.id)
         document_count = session.execute(
             select(func.count(func.distinct(DocumentFetch.document_id)))
@@ -417,6 +430,10 @@ def source_detail(
             "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
             "created_at": source.created_at.isoformat(),
             "document_count": document_count,
+            "last_run_at": runs[0].started_at.isoformat() if runs else None,
+            "last_status": runs[0].status if runs else None,
+            "active_run_id": str(active_run.id) if active_run else None,
+            "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
             "coverage": coverage,
             "runs": [
                 {

@@ -1,6 +1,7 @@
 "use strict";
 
 const ASK_SESSION_KEY = "pinegraf_ask_session";
+const RUN_PROGRESS_KEY = "pinegraf_run_progress";
 const ASK_EXAMPLES = ["Tuck alums in tech", "Who worked on Gyrobike?"];
 const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
 const ARCHIVE_SOURCE_CONFIRM = "Derived data is preserved and the source can be restored later.";
@@ -14,7 +15,7 @@ const state = {
   directoryOptionRows: [],
   sourcesCache: null,
   sourcesError: null,
-  runProgress: {},
+  runProgress: readSessionJSON(RUN_PROGRESS_KEY, {}),
   runStreams: {},
   askSession: JSON.parse(sessionStorage.getItem(ASK_SESSION_KEY) || "[]"),
   graphSearch: "",
@@ -220,7 +221,7 @@ function toggleWorkspaceMenu(event) {
     if (action.dataset.adminAction === "logout") {
       await adminLogout(clickEvent);
     } else {
-      location.href = state.me?.admin_login_url || "/admin/login";
+      location.href = loginUrl();
     }
   };
   setTimeout(() => {
@@ -473,7 +474,7 @@ async function loadDirectory() {
 function directorySourcesErrorState(error) {
   const message = normalizeErrorMessage(error);
   const signIn = isAuthError(error)
-    ? `<a class="btn-secondary" href="${escapeAttr(state.me?.admin_login_url || "/admin/login")}">Sign in</a>`
+    ? `<a class="btn-secondary" href="${escapeAttr(loginUrl())}">Sign in</a>`
     : "";
   return `
     <div class="directory-empty-panel">
@@ -1725,7 +1726,13 @@ async function loadSourcesList() {
   }
   try {
     const data = await getJSON("/api/sources");
-    const archivedData = isAdmin() ? await getJSON("/api/sources/archived") : { sources: [] };
+    const archivedData = isAdmin()
+      ? await loadAdminPanelData("/api/sources/archived", {
+          targetId: "sources-list",
+          title: "Sign in to view archived sources",
+        })
+      : { sources: [] };
+    if (!archivedData) return;
     const sources = data.sources || [];
     const archivedSources = archivedData.sources || [];
     state.sourcesCache = sources;
@@ -1768,6 +1775,7 @@ async function loadSourcesList() {
     `;
     setupSourceRows(list, sources, { archived: false });
     if (isAdmin()) setupSourceRows(list, archivedSources, { archived: true });
+    ensureActiveRunStreams(sources);
   } catch (e) {
     state.sourcesCache = null;
     state.sourcesError = e;
@@ -1811,7 +1819,7 @@ function setupSourceRows(root, sources, { archived }) {
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
     if (resume) resume.onclick = (e) => {
       e.stopPropagation();
-      updateSourceStatus(source.id, "active");
+      resumeSourceRun(source);
     };
     if (unarchive) unarchive.onclick = (e) => {
       e.stopPropagation();
@@ -1824,7 +1832,6 @@ function setupSourceRows(root, sources, { archived }) {
     };
     if (cancel) cancel.onclick = async (e) => {
       e.stopPropagation();
-      if (!window.confirm("Cancel this run?")) return;
       await cancelSourceRun(source);
     };
     if (menuBtn) menuBtn.onclick = (e) => {
@@ -1933,7 +1940,11 @@ async function renderSourcesArchive() {
 async function loadArchivedSourcesList() {
   const list = byId("archived-sources-list");
   try {
-    const data = await getJSON("/api/sources/archived");
+    const data = await loadAdminPanelData("/api/sources/archived", {
+      targetId: "archived-sources-list",
+      title: "Sign in to view archived sources",
+    });
+    if (!data) return;
     const sources = data.sources || [];
     if (!sources.length) {
       list.innerHTML = `<div class="empty-state sources-empty">
@@ -2007,18 +2018,7 @@ function sourceRow(source, options = {}) {
   const kindIcon = sourceKindIcon(source);
   const progress = state.runProgress[source.id];
   const hasActiveRun = Boolean(source.active_run_id);
-  const actions = archived
-    ? `<button class="btn-secondary" data-action="unarchive" type="button">Unarchive</button>
-       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`
-    : hasActiveRun
-      ? `<button class="btn-danger-outline" data-action="cancel" type="button"><i class="ti ti-x"></i> Cancel</button>`
-      : paused
-      ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
-      : `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
-         <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>`;
-  const menuButton = !archived && isAdmin()
-    ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
-    : "";
+  const actions = sourceRowActions(source, { archived, paused, progress, hasActiveRun });
   return `
     <article class="source-row ${paused ? "paused" : ""} ${archived ? "archived" : ""}" data-source-id="${escapeAttr(source.id)}">
       <div class="source-row-main">
@@ -2040,11 +2040,32 @@ function sourceRow(source, options = {}) {
       </div>
       ${
         isAdmin()
-          ? `<div class="source-row-actions">${progress && !archived && !hasActiveRun ? runProgressMarkup(progress) : `${actions}${hasActiveRun ? "" : menuButton}${hasActiveRun ? "" : parseHint(source)}`}</div>`
+          ? `<div class="source-row-actions">${actions}</div>`
           : ""
       }
     </article>
   `;
+}
+
+function sourceRowActions(source, { archived, paused, progress, hasActiveRun }) {
+  if (archived) {
+    return `<button class="btn-secondary" data-action="unarchive" type="button">Unarchive</button>
+      <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
+  }
+  if (hasActiveRun) {
+    return `${progress ? runProgressMarkup(progress) : runStartingMarkup(source.active_run_id)}
+      <button class="btn-danger-outline" data-action="cancel" type="button"><i class="ti ti-x"></i> Cancel</button>`;
+  }
+  if (paused) {
+    return `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`;
+  }
+  const menuButton = isAdmin()
+    ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
+    : "";
+  return `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
+    <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>
+    ${menuButton}
+    ${parseHint(source)}`;
 }
 
 function parseHint(source) {
@@ -2053,6 +2074,18 @@ function parseHint(source) {
     return `<span class="source-action-message">Crawl complete. Run parse to extract documents.</span>`;
   }
   return "";
+}
+
+function runStartingMarkup(runId) {
+  return `
+    <div class="run-progress is-starting" data-run-id="${escapeAttr(runId)}">
+      <div class="run-progress-track">
+        <div class="run-progress-fill"></div>
+      </div>
+      <span class="run-progress-percent">Starting…</span>
+      <span class="run-progress-count"></span>
+    </div>
+  `;
 }
 
 function runProgressMarkup(progress) {
@@ -2216,6 +2249,18 @@ async function updateSourceStatus(id, status) {
   }
 }
 
+async function resumeSourceRun(source) {
+  if (!source?.id || !isAdmin()) return;
+  showSourceActionMessage(source.id, "");
+  try {
+    await patchSource(source.id, { status: "active" });
+    await loadSourcesList();
+    await runSourceAction(source.id, "crawl");
+  } catch (error) {
+    showSourceActionMessage(source.id, normalizeErrorMessage(error));
+  }
+}
+
 async function runSourceAction(sourceId, action) {
   if (!isAdmin()) return;
   const source = (state.sourcesCache || []).find((item) => item.id === sourceId);
@@ -2290,15 +2335,18 @@ function showSourceActionMessage(sourceId, message) {
 }
 
 function trackRun(sourceId, sourceName, action, runId) {
-  if (!runId || state.runStreams[runId]) return;
+  if (!runId) return;
   state.runProgress[sourceId] = {
+    ...state.runProgress[sourceId],
     runId,
     sourceId,
     sourceName,
     action,
     percent: state.runProgress[sourceId]?.percent || 0,
   };
+  persistRunProgress();
   updateRunProgressDom(sourceId);
+  if (state.runStreams[runId]) return;
   const stream = new EventSource(`/admin/runs/${runId}/stream`);
   state.runStreams[runId] = stream;
   stream.onmessage = (event) => {
@@ -2311,22 +2359,37 @@ function trackRun(sourceId, sourceName, action, runId) {
     progress.host_pacing = progressData.host_pacing || progress.host_pacing || {};
     progress.status = data.status;
     state.runProgress[sourceId] = progress;
+    persistRunProgress();
     updateRunProgressDom(sourceId);
     if (data.status === "complete" || data.status === "failed" || data.status === "cancelled") {
       stream.close();
       delete state.runStreams[runId];
       delete state.runProgress[sourceId];
+      persistRunProgress();
       loadStats();
       loadSourcesList();
     }
   };
   stream.onerror = () => {
-    stream.close();
-    delete state.runStreams[runId];
-    delete state.runProgress[sourceId];
     updateRunProgressDom(sourceId);
-    loadSourcesList();
   };
+}
+
+function ensureActiveRunStreams(sources) {
+  if (!isAdmin()) return;
+  sources.forEach((source) => {
+    if (!source.active_run_id) return;
+    trackRun(
+      source.id,
+      sourceDisplayName(source),
+      source.active_run_kind || "run",
+      source.active_run_id,
+    );
+  });
+}
+
+function persistRunProgress() {
+  sessionStorage.setItem(RUN_PROGRESS_KEY, JSON.stringify(state.runProgress || {}));
 }
 
 function updateRunProgressDom(sourceId) {
@@ -2335,9 +2398,8 @@ function updateRunProgressDom(sourceId) {
   const actions = row?.querySelector(".source-row-actions");
   if (!actions) return;
   if (!progress) return;
-  if (actions.querySelector("[data-action=cancel]")) return;
   if (!actions.querySelector(".run-progress")) {
-    actions.innerHTML = runProgressMarkup(progress);
+    actions.insertAdjacentHTML("afterbegin", runProgressMarkup(progress));
   }
   const percent = Number(progress.percent || 0).toFixed(1);
   const fill = actions.querySelector(".run-progress-fill");
@@ -2407,30 +2469,13 @@ function renderSourceDetailTabs(source, activeTab) {
 
 function renderSourceDetailHead(source) {
   const head = byId("source-detail-head");
-  const title = source.display_name || source.identifier;
   head.innerHTML = `
-    <div class="entity-hero">
-      <i class="ti ${sourceKindIcon(source)} source-detail-icon"></i>
-      <div class="entity-hero-main">
-        <h1 id="source-name-title">${
-          isAdmin()
-            ? `<button class="btn-ghost source-title-edit" type="button" data-action="edit-source-name">${escapeHtml(title)}</button>`
-            : escapeHtml(title)
-        }</h1>
-        <div class="subtitle">${escapeHtml(sourceMetaLine(source))}</div>
-        <div class="meta">
-          <span><strong>${source.coverage.pages_fetched}</strong> pages fetched</span>
-          <span><strong>${source.coverage.documents_parsed}</strong> documents parsed</span>
-          <span><strong>${source.coverage.claims}</strong> claims</span>
-          ${source.coverage.conflicts ? `<span class="conflict-pill"><i class="ti ti-alert-triangle"></i>${source.coverage.conflicts} conflicts</span>` : ""}
-          <span class="muted">Created ${escapeHtml(formatDate(source.created_at))}</span>
-        </div>
-      </div>
+    <div class="source-detail-row-wrap" data-source-list="active">
+      ${sourceRow(source)}
     </div>
   `;
-  if (isAdmin()) {
-    head.querySelector("[data-action=edit-source-name]").onclick = () => startSourceNameEdit(source);
-  }
+  setupSourceRows(head, [source], { archived: false });
+  ensureActiveRunStreams([source]);
 }
 
 function startSourceNameEdit(source) {
@@ -2890,7 +2935,11 @@ async function submitAddSource() {
 
 async function loadAdminConflicts() {
   try {
-    const data = await getJSON("/admin/conflicts");
+    const data = await loadAdminPanelData("/admin/conflicts", {
+      targetId: "conflicts-body",
+      title: "Sign in to view conflicts",
+    });
+    if (!data) return;
     const rows = data.results || [];
     byId("conflict-count").textContent = `${data.total || 0} unresolved`;
     if (!rows.length) {
@@ -2921,11 +2970,11 @@ async function loadAdminConflicts() {
         b.onclick = async () => {
           const id = b.dataset.resolve;
           const resolution = b.dataset.side;
-          await fetch(`/admin/conflicts/${id}/resolve`, {
+          await expectOk(fetch(`/admin/conflicts/${id}/resolve`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ resolution }),
-          });
+          }));
           loadAdminConflicts();
         };
       });
@@ -2940,6 +2989,29 @@ function renderConflictClaim(label, claim, claimId) {
       <span class="muted small">${escapeHtml(label)}: ${escapeHtml(String(claimId || "").slice(0, 8))}</span>
       <strong>${escapeHtml(claim?.statement || "Claim unavailable")}</strong>
       ${claimAttribution(claim)}
+    </div>
+  `;
+}
+
+async function loadAdminPanelData(url, { targetId, title }) {
+  try {
+    return await getJSON(url, { redirectOnAuth: false });
+  } catch (error) {
+    if (isAuthError(error)) {
+      const target = byId(targetId);
+      if (target) target.innerHTML = adminSignInPrompt(title);
+      return null;
+    }
+    throw error;
+  }
+}
+
+function adminSignInPrompt(title = "Sign in to view") {
+  return `
+    <div class="empty-state compact admin-auth-prompt">
+      <i class="ti ti-lock" aria-hidden="true"></i>
+      <div>${escapeHtml(title)}</div>
+      <a class="btn-secondary" href="${escapeAttr(loginUrl())}">Sign in</a>
     </div>
   `;
 }
@@ -2961,6 +3033,15 @@ async function adminLogout(event) {
     await renderRoute();
   }
   return false;
+}
+
+function loginUrl() {
+  const next = `${location.pathname}${location.search}${location.hash || ""}`;
+  return `${state.me?.admin_login_url || "/admin/login"}?next=${encodeURIComponent(next)}`;
+}
+
+function handleAdminUnauthorized() {
+  location.href = loginUrl();
 }
 
 /* ───── Logs ───── */
@@ -3130,21 +3211,23 @@ function appendLog(line) {
 
 /* ───── Utilities ───── */
 
-async function getJSON(url) {
+async function getJSON(url, options = {}) {
+  const { redirectOnAuth = true } = options;
   const res = await fetch(url);
   if (!res.ok) {
-    throw await errorFromResponse(res);
+    throw await errorFromResponse(res, url, { redirectOnAuth });
   }
   return res.json();
 }
 
-async function expectOk(responsePromise) {
+async function expectOk(responsePromise, options = {}) {
+  const { redirectOnAuth = true } = options;
   const res = await responsePromise;
-  if (!res.ok) throw await errorFromResponse(res);
+  if (!res.ok) throw await errorFromResponse(res, res.url, { redirectOnAuth });
   return res;
 }
 
-async function errorFromResponse(res) {
+async function errorFromResponse(res, url, { redirectOnAuth = true } = {}) {
   const contentType = res.headers.get("content-type") || "";
   let message = `${res.status} ${res.statusText}`;
   if (contentType.includes("application/json")) {
@@ -3156,7 +3239,16 @@ async function errorFromResponse(res) {
   const error = new Error(message);
   error.status = res.status;
   error.statusText = res.statusText;
+  error.adminAuthRequired = res.status === 401 && isAdminEndpoint(url);
+  if (error.adminAuthRequired && redirectOnAuth) {
+    setTimeout(handleAdminUnauthorized, 0);
+  }
   return error;
+}
+
+function isAdminEndpoint(url) {
+  const pathname = new URL(url, location.origin).pathname;
+  return pathname.startsWith("/admin/") || pathname === "/api/sources/archived";
 }
 
 function byId(id) {
@@ -3165,6 +3257,14 @@ function byId(id) {
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || `var(${name})`;
+}
+
+function readSessionJSON(key, fallback) {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) || "") || fallback;
+  } catch (_) {
+    return fallback;
+  }
 }
 
 function escapeHtml(value) {

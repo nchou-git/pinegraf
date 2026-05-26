@@ -43,7 +43,7 @@ upsert_job() {
     "--command=python"
     "--args=-m,backend.jobs.run"
     "--set-env-vars=PINEGRAF_MODE=${mode}"
-    "--set-secrets=DATABASE_URL=DATABASE_URL:latest"
+    "--set-secrets=DATABASE_URL=DATABASE_URL:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest"
   )
 
   if gcloud run jobs describe "${job}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then

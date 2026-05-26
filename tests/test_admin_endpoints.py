@@ -30,7 +30,9 @@ def test_admin_auth_required_and_happy_paths(
     }
     with TestClient(main_module.create_app(store)) as client:
         assert client.get("/api/logs/stream").status_code == 403
-        assert client.get("/admin/conflicts").status_code == 401
+        unauthorized = client.get("/admin/conflicts")
+        assert unauthorized.status_code == 401
+        assert "www-authenticate" not in unauthorized.headers
         stale_token = base64.b64encode(b"admin:Pinegrafposen$").decode("ascii")
         assert (
             client.get(
@@ -175,6 +177,7 @@ def test_cancel_run_marks_cancelled_and_audits(store, admin_headers, monkeypatch
 
     with TestClient(main_module.create_app(store)) as client:
         response = client.post(f"/admin/runs/{run.id}/cancel", headers=admin_headers)
+        assert store.get_source(source.id).status == "paused"
         delete_response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
         audit_response = client.get("/admin/audit", headers=admin_headers)
 

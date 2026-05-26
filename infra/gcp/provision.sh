@@ -78,7 +78,7 @@ done < "${HOME}/pinegraf/.gcp-secrets-staging"
 
 rm "${HOME}/pinegraf/.gcp-secrets-staging"
 
-for secret in OPENAI_API_KEY PINEGRAF_ADMIN_PASSWORD DATABASE_URL DB_PASSWORD; do
+for secret in OPENAI_API_KEY PINEGRAF_ADMIN_PASSWORD ADMIN_SESSION_SECRET DATABASE_URL DB_PASSWORD; do
   gcloud secrets add-iam-policy-binding "${secret}" \
     --member="serviceAccount:${SERVICE_ACCOUNT}" \
     --role="roles/secretmanager.secretAccessor"
@@ -101,7 +101,7 @@ gcloud run deploy pinegraf \
   --max-instances=4 \
   --concurrency=80 \
   --timeout=300 \
-  --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,DATABASE_URL=DATABASE_URL:latest,DB_PASSWORD=DB_PASSWORD:latest"
+  --set-secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,DATABASE_URL=DATABASE_URL:latest,DB_PASSWORD=DB_PASSWORD:latest"
 
 gcloud billing budgets create \
   --billing-account="${BILLING_ACCOUNT}" \

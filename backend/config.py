@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import secrets as secrets_mod
 from functools import lru_cache
 
 from dotenv import load_dotenv
@@ -16,9 +15,9 @@ class Settings(BaseModel):
     database_url: str
     openai_api_key: str = Field(default="")
 
-    pinegraf_admin_password: str = Field(default="Pinegrafposen$")
+    pinegraf_admin_password: str
 
-    admin_session_secret: str = Field(default="")
+    admin_session_secret: str
     admin_session_max_age_seconds: int = Field(default=28800, ge=60)
     secure_cookies: bool = Field(default=True)
 
@@ -49,16 +48,19 @@ class Settings(BaseModel):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     try:
-        admin_secret = os.getenv("ADMIN_SESSION_SECRET", "")
-        if not admin_secret:
-            admin_secret = secrets_mod.token_urlsafe(48)
         database_url = os.getenv("DATABASE_URL")
         if not database_url:
             raise RuntimeError("DATABASE_URL is required")
+        admin_secret = os.getenv("ADMIN_SESSION_SECRET")
+        if not admin_secret:
+            raise RuntimeError("ADMIN_SESSION_SECRET is required")
+        admin_password = os.getenv("PINEGRAF_ADMIN_PASSWORD")
+        if not admin_password:
+            raise RuntimeError("PINEGRAF_ADMIN_PASSWORD is required")
         return Settings(
             database_url=database_url,
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
-            pinegraf_admin_password=os.getenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$"),
+            pinegraf_admin_password=admin_password,
             admin_session_secret=admin_secret,
             admin_session_max_age_seconds=int(os.getenv("ADMIN_SESSION_MAX_AGE_SECONDS", "28800")),
             secure_cookies=os.getenv("SECURE_COOKIES", "true"),

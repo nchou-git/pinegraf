@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import os
 import re
@@ -31,7 +32,7 @@ from backend.admin_auth import (
 )
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
-from backend.db.models import AuditLog, SourceRun
+from backend.db.models import AuditLog, Source, SourceRun
 from backend.db.store import Store, source_to_dict, utc_now
 from backend.jobs.run import cancel_cloud_run_execution, execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
@@ -191,8 +192,11 @@ def create_app(store: Store | None = None) -> FastAPI:
         return FileResponse(FRONTEND_DIR / "favicon.svg", headers=FRONTEND_ASSET_HEADERS)
 
     @app.get("/admin/login")
-    async def admin_login_form() -> HTMLResponse:
-        return HTMLResponse(_admin_login_html(error=None))
+    async def admin_login_form(request: Request) -> HTMLResponse:
+        next_url = request.query_params.get("next", "/")
+        if not next_url.startswith("/"):
+            next_url = "/"
+        return HTMLResponse(_admin_login_html(error=None, next_url=next_url))
 
     @app.post("/admin/login", response_model=None)
     async def admin_login_submit(request: Request):
@@ -214,7 +218,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             next_url = "/"
         if not valid_admin_credentials(username, password):
             return HTMLResponse(
-                _admin_login_html(error="Wrong username or password."),
+                _admin_login_html(error="Wrong username or password.", next_url=next_url),
                 status_code=401,
             )
         settings = get_settings()
@@ -267,6 +271,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/sources/archived")
     async def api_archived_sources(request: Request) -> dict[str, object]:
+        require_admin(request)
         sources = [
             source
             for source in list_sources(_store(request), include_archived=True)
@@ -633,6 +638,9 @@ def create_app(store: Store | None = None) -> FastAPI:
                     db_run.status = "cancelled"
                     db_run.error_message = warning
                     db_run.finished_at = db_run.finished_at or utc_now()
+                    db_source = session.get(Source, db_run.source_id)
+                    if db_source is not None:
+                        db_source.status = "paused"
                 session.add(
                     AuditLog(
                         action="run.cancel",
@@ -780,7 +788,7 @@ def _already_running_response(run: SourceRun) -> JSONResponse:
     )
 
 
-def _admin_login_html(error: str | None) -> str:
+def _admin_login_html(error: str | None, next_url: str = "/") -> str:
     error_block = f'<div class="login-error">{error}</div>' if error else ""
     return f"""<!doctype html>
 <html lang="en">
@@ -860,7 +868,7 @@ def _admin_login_html(error: str | None) -> str:
             </button>
           </span>
         </label>
-        <input type="hidden" name="next" value="/" />
+        <input type="hidden" name="next" value="{html.escape(next_url, quote=True)}" />
         <button type="submit" class="btn-primary">Sign in</button>
       </form>
       <div class="login-note">Admin access controls source management.</div>
