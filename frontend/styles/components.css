@@ -5,6 +5,7 @@
 .btn-source,
 .btn-ghost,
 .btn-danger,
+.btn-danger-outline,
 .btn-icon-only {
   display: inline-flex;
   align-items: center;
@@ -50,6 +51,7 @@
 .btn-source:disabled,
 .btn-ghost:disabled,
 .btn-danger:disabled,
+.btn-danger-outline:disabled,
 .btn-icon-only:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -114,6 +116,18 @@
   border-color: var(--conflict-bg);
 }
 
+.btn-danger-outline {
+  background-color: var(--bg);
+  color: var(--conflict);
+  border-color: var(--conflict);
+  font-weight: 500;
+}
+
+.btn-danger-outline:hover {
+  background-color: var(--conflict-bg);
+  text-decoration: none;
+}
+
 .btn-icon-only {
   width: var(--button-h-small);
   height: var(--button-h-small);
@@ -137,6 +151,7 @@
 .btn-source:focus-visible,
 .btn-ghost:focus-visible,
 .btn-danger:focus-visible,
+.btn-danger-outline:focus-visible,
 .btn-icon-only:focus-visible,
 .menu-item:focus-visible,
 .chip:focus-visible,
@@ -566,6 +581,15 @@ input[type="file"]::file-selector-button {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+.modal-error {
+  padding: var(--space-3);
+  border: 1px solid var(--conflict);
+  border-radius: var(--radius-sm);
+  background-color: var(--conflict-bg);
+  color: var(--conflict);
+  font-size: var(--fs-sm);
 }
 
 .modal-footer {

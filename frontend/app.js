@@ -849,7 +849,7 @@ function claimAttribution(claimOrEvidence) {
     : `${first.source_name || first.source_identifier || "Source"}${first.fetched_at ? ` · ${formatDate(first.fetched_at)}` : ""}`;
   return `
     <details class="claim-attribution">
-      <summary><i class="ti ti-link" aria-hidden="true"></i><span>${escapeHtml(label)}</span></summary>
+      <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><i class="ti ti-link" aria-hidden="true"></i><span>${escapeHtml(label)}</span></summary>
       <div class="claim-attribution-panel">
         ${evidence.map(claimEvidenceRow).join("")}
       </div>
@@ -1107,7 +1107,7 @@ function renderAskSources(item) {
   const count = citations.length;
   return `
     <details class="ask-source-details">
-      <summary class="ask-source-pill">Sources (${count} ${count === 1 ? "source" : "sources"})</summary>
+      <summary class="ask-source-pill"><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>Sources (${count} ${count === 1 ? "source" : "sources"})</summary>
       <div class="ask-source-list">
         ${
           count
@@ -1635,7 +1635,7 @@ async function renderSources(parts) {
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="stats-grid" id="sources-stats">${statCards(ZERO_STATS)}</div>
-    <div class="sources-list" id="sources-list">
+    <div class="sources-list" id="sources-list" data-source-list="active">
       ${sourceSkeletonRow()}
     </div>
     ${
@@ -1643,10 +1643,10 @@ async function renderSources(parts) {
         ? `<details class="conflicts" open>
              <summary class="conflicts-header">
                <div class="conflicts-title-row">
+                 <i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>
                  <span class="panel-title">Conflicts</span>
                  <span class="conflicts-count-pill" id="conflict-count">0 unresolved</span>
                </div>
-               <span class="chevron" aria-hidden="true"><i class="ti ti-chevron-down"></i></span>
              </summary>
              <div id="conflicts-body"><div class="muted small">Loading…</div></div>
            </details>`
@@ -1754,8 +1754,8 @@ async function loadSourcesList() {
       ${
         isAdmin()
           ? `<details class="archived-sources">
-              <summary>Archived (${formatNumber(archivedCount)})</summary>
-              <div class="archived-sources-list">
+              <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span>Archived (${formatNumber(archivedCount)})</span></summary>
+              <div class="archived-sources-list" data-source-list="archived">
                 ${
                   archivedSources.length
                     ? archivedSources.map((source) => sourceRow(source, { archived: true })).join("")
@@ -1805,6 +1805,7 @@ function setupSourceRows(root, sources, { archived }) {
     const resume = row.querySelector("[data-action=resume]");
     const unarchive = row.querySelector("[data-action=unarchive]");
     const destroy = row.querySelector("[data-action=delete]");
+    const cancel = row.querySelector("[data-action=cancel]");
     const menuBtn = row.querySelector("[data-action=menu]");
     if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
@@ -1818,7 +1819,13 @@ function setupSourceRows(root, sources, { archived }) {
     };
     if (destroy) destroy.onclick = (e) => {
       e.stopPropagation();
-      confirmDeleteSource(source);
+      const listKind = row.closest("[data-source-list]")?.dataset.sourceList || (archived ? "archived" : "active");
+      confirmDeleteSource(source, listKind);
+    };
+    if (cancel) cancel.onclick = async (e) => {
+      e.stopPropagation();
+      if (!window.confirm("Cancel this run?")) return;
+      await cancelSourceRun(source);
     };
     if (menuBtn) menuBtn.onclick = (e) => {
       e.stopPropagation();
@@ -1916,7 +1923,7 @@ async function renderSourcesArchive() {
   });
   const app = document.getElementById("app");
   app.innerHTML = `
-    <div class="sources-list" id="archived-sources-list">
+    <div class="sources-list" id="archived-sources-list" data-source-list="archived">
       <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
     </div>
   `;
@@ -1990,7 +1997,7 @@ async function restoreArchivedSource(sourceId) {
 }
 
 async function deleteArchivedSource(source) {
-  confirmDeleteSource(source);
+  confirmDeleteSource(source, "archived");
 }
 
 function sourceRow(source, options = {}) {
@@ -1999,10 +2006,13 @@ function sourceRow(source, options = {}) {
   const kindLabel = sourceKindLabel(source);
   const kindIcon = sourceKindIcon(source);
   const progress = state.runProgress[source.id];
+  const hasActiveRun = Boolean(source.active_run_id);
   const actions = archived
     ? `<button class="btn-secondary" data-action="unarchive" type="button">Unarchive</button>
        <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`
-    : paused
+    : hasActiveRun
+      ? `<button class="btn-danger-outline" data-action="cancel" type="button"><i class="ti ti-x"></i> Cancel</button>`
+      : paused
       ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
       : `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
          <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>`;
@@ -2030,7 +2040,7 @@ function sourceRow(source, options = {}) {
       </div>
       ${
         isAdmin()
-          ? `<div class="source-row-actions">${progress && !archived ? runProgressMarkup(progress) : `${actions}${menuButton}${parseHint(source)}`}</div>`
+          ? `<div class="source-row-actions">${progress && !archived && !hasActiveRun ? runProgressMarkup(progress) : `${actions}${hasActiveRun ? "" : menuButton}${hasActiveRun ? "" : parseHint(source)}`}</div>`
           : ""
       }
     </article>
@@ -2157,15 +2167,17 @@ async function handleMenuAction(action, sourceId) {
     try {
       await patchSource(sourceId, { status: "archived" });
       loadSourcesList();
-    } catch (_) {}
+    } catch (error) {
+      showSourceActionMessage(sourceId, normalizeErrorMessage(error));
+    }
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
   } else if (action === "delete") {
-    confirmDeleteSource(source);
+    confirmDeleteSource(source, "active");
   }
 }
 
-function confirmDeleteSource(source) {
+function confirmDeleteSource(source, listKind = "active") {
   if (!source || !isAdmin()) return;
   openConfirmModal({
     title: "Delete permanently",
@@ -2173,16 +2185,12 @@ function confirmDeleteSource(source) {
     danger: true,
     confirmLabel: "Delete permanently",
     onConfirm: async () => {
-      const response = await fetch(`/admin/sources/${source.id}`, { method: "DELETE" });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.detail || response.statusText);
-      }
+      await expectOk(fetch(`/admin/sources/${source.id}`, { method: "DELETE" }));
       await loadSourcesStats();
-      if (byId("sources-list")) {
-        await loadSourcesList();
-      } else if (byId("archived-sources-list")) {
+      if (listKind === "archived" && byId("archived-sources-list")) {
         await loadArchivedSourcesList();
+      } else if (byId("sources-list")) {
+        await loadSourcesList();
       } else {
         await renderRoute();
       }
@@ -2192,16 +2200,20 @@ function confirmDeleteSource(source) {
 
 async function patchSource(id, body) {
   if (!isAdmin()) return;
-  await fetch(`/admin/sources/${id}`, {
+  await expectOk(fetch(`/admin/sources/${id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }));
 }
 
 async function updateSourceStatus(id, status) {
-  await patchSource(id, { status });
-  loadSourcesList();
+  try {
+    await patchSource(id, { status });
+    await loadSourcesList();
+  } catch (error) {
+    showSourceActionMessage(id, normalizeErrorMessage(error));
+  }
 }
 
 async function runSourceAction(sourceId, action) {
@@ -2222,9 +2234,31 @@ async function runSourceAction(sourceId, action) {
       throw new Error(data.detail || res.statusText);
     }
     trackRun(sourceId, sourceDisplayName(source), action, data.run_id);
-  } catch (_) {}
+    await loadSourcesList();
+  } catch (error) {
+    showSourceActionMessage(sourceId, normalizeErrorMessage(error));
+  }
   finally {
     if (!keepDisabled) setSourceActionButtonsDisabled(sourceId, false);
+  }
+}
+
+async function cancelSourceRun(source) {
+  if (!source?.active_run_id || !isAdmin()) return;
+  setSourceActionButtonsDisabled(source.id, true);
+  showSourceActionMessage(source.id, "");
+  try {
+    await expectOk(fetch(`/admin/runs/${source.active_run_id}/cancel`, { method: "POST" }));
+    const stream = state.runStreams[source.active_run_id];
+    if (stream) {
+      stream.close();
+      delete state.runStreams[source.active_run_id];
+    }
+    delete state.runProgress[source.id];
+    await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
+  } catch (error) {
+    showSourceActionMessage(source.id, normalizeErrorMessage(error));
+    setSourceActionButtonsDisabled(source.id, false);
   }
 }
 
@@ -2237,7 +2271,8 @@ function setSourceActionButtonsDisabled(sourceId, disabled) {
 function sourceActionButtons(sourceId) {
   return document.querySelectorAll(
     `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse]`,
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=cancel]`,
   );
 }
 
@@ -2300,6 +2335,7 @@ function updateRunProgressDom(sourceId) {
   const actions = row?.querySelector(".source-row-actions");
   if (!actions) return;
   if (!progress) return;
+  if (actions.querySelector("[data-action=cancel]")) return;
   if (!actions.querySelector(".run-progress")) {
     actions.innerHTML = runProgressMarkup(progress);
   }
@@ -2500,11 +2536,7 @@ function confirmDeleteDocument(sourceId, documentId) {
     danger: true,
     confirmLabel: "Delete document",
     onConfirm: async () => {
-      const response = await fetch(`/admin/documents/${documentId}`, { method: "DELETE" });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.detail || response.statusText);
-      }
+      await expectOk(fetch(`/admin/documents/${documentId}`, { method: "DELETE" }));
       await Promise.all([loadStats(), renderSourceDocuments(sourceId)]);
     },
   });
@@ -2983,6 +3015,7 @@ function openConfirmModal({ title, body, danger = false, confirmLabel = "Confirm
     </div>
     <div class="modal-body">
       <p>${escapeHtml(body)}</p>
+      <div class="modal-error" id="confirm-error" hidden></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
@@ -2991,11 +3024,20 @@ function openConfirmModal({ title, body, danger = false, confirmLabel = "Confirm
   `);
   byId("confirm-submit").onclick = async () => {
     const button = byId("confirm-submit");
+    const errorBox = byId("confirm-error");
+    if (errorBox) {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
+    }
     button.disabled = true;
     try {
       await onConfirm();
       closeModal();
-    } catch (_) {
+    } catch (error) {
+      if (errorBox) {
+        errorBox.textContent = normalizeErrorMessage(error);
+        errorBox.hidden = false;
+      }
       button.disabled = false;
     }
   };
@@ -3091,13 +3133,30 @@ function appendLog(line) {
 async function getJSON(url) {
   const res = await fetch(url);
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    const error = new Error(body || `${res.status} ${res.statusText}`);
-    error.status = res.status;
-    error.statusText = res.statusText;
-    throw error;
+    throw await errorFromResponse(res);
   }
   return res.json();
+}
+
+async function expectOk(responsePromise) {
+  const res = await responsePromise;
+  if (!res.ok) throw await errorFromResponse(res);
+  return res;
+}
+
+async function errorFromResponse(res) {
+  const contentType = res.headers.get("content-type") || "";
+  let message = `${res.status} ${res.statusText}`;
+  if (contentType.includes("application/json")) {
+    const data = await res.json().catch(() => ({}));
+    message = data.detail || data.error || message;
+  } else {
+    message = (await res.text().catch(() => "")).trim() || message;
+  }
+  const error = new Error(message);
+  error.status = res.status;
+  error.statusText = res.statusText;
+  return error;
 }
 
 function byId(id) {

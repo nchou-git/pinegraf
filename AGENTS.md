@@ -52,6 +52,12 @@ from structured rows or raw-page RAG.
 - Run dev server: `uvicorn backend.main:app --reload`
 - Test: `pytest -v`
 
+## End of every session
+
+- After committing and pushing final work, create a fresh workspace snapshot:
+  `tar -czf /mnt/c/Users/Nate/Downloads/pinegraf.tar.gz -C ~/pinegraf --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' --exclude='.pytest_cache' --exclude='*.pyc' .`
+- Print: `Snapshot ready at C:\Users\Nate\Downloads\pinegraf.tar.gz`
+
 ## Things To Avoid
 
 - Do not add Next.js, React, or any heavy frontend framework. Plain HTML/JS only.
