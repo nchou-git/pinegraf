@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -70,12 +71,18 @@ class SourceRun(Base):
             name="ck_source_runs_kind",
         ),
         CheckConstraint(
-            "status in ('running','complete','failed','partial','cancelled')",
+            "status in ('queued','running','complete','failed','partial','cancelled')",
             name="ck_source_runs_status",
         ),
         Index("ix_source_runs_source_id", "source_id"),
         Index("ix_source_runs_status", "status"),
         Index("ix_source_runs_started_at_desc", "started_at"),
+        Index(
+            "ix_source_runs_one_active_per_source",
+            "source_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued','running')"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)

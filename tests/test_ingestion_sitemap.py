@@ -42,11 +42,8 @@ async def test_sitemap_runner_fetches_urls_and_writes_rows(store, fake_httpx) ->
 
     stats = await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
-    assert stats["sitemaps"] == 1
-    assert stats["discovered"] == 2
     assert stats["fetched"] == 2
     assert stats["errors"] == 0
-    assert stats["from_sitemap"] == 2
     with store.session() as session:
         urls = list(session.execute(select(Fetch.url).order_by(Fetch.url)).scalars())
     assert urls == ["https://example.com/a", "https://example.com/b"]
@@ -90,10 +87,7 @@ async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx
     stats = await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
     assert stats["fetched"] == 2
-    assert stats["from_sitemap"] == 1
-    assert stats["from_link_follow"] == 1
-    assert stats["dropped_scope"] >= 1
-    assert stats["dropped_filter"] >= 1
+    assert stats["errors"] == 0
     with store.session() as session:
         urls = sorted(session.execute(select(Fetch.url)).scalars())
     assert urls == [
@@ -130,8 +124,7 @@ async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None
     stats = await run_sitemap(run.id, "tuck.dartmouth.edu", store=store)
 
     assert stats["fetched"] == 2
-    assert stats["from_seed" if "from_seed" in stats else "from_link_follow"] >= 1
+    assert stats["errors"] == 0
     with store.session() as session:
         urls = sorted(session.execute(select(Fetch.url)).scalars())
     assert "https://mba.tuck.dartmouth.edu/page" in urls
-

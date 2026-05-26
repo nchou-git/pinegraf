@@ -11,5 +11,25 @@ steps:
     args: [push, us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID]
   - name: "gcr.io/cloud-builders/docker"
     args: [push, us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:latest]
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - pinegraf
+      - --image=us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID
+      - --region=us-east4
+      - --platform=managed
+      - --allow-unauthenticated
+      - --memory=1Gi
+      - --cpu=1
+      - --min-instances=0
+      - --max-instances=4
+      - --concurrency=80
+      - --timeout=300
+      - --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,DATABASE_URL=DATABASE_URL:latest,DB_PASSWORD=DB_PASSWORD:latest
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: bash
+    args: ["infra/gcp/create_jobs.sh"]
 options:
   logging: CLOUD_LOGGING_ONLY

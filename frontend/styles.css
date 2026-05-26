@@ -855,7 +855,7 @@
   padding: var(--space-4);
   border-radius: var(--radius-md);
   background-color: var(--text);
-  color: var(--bg);
+  color: var(--green-tint-2);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: var(--fs-xs);
   line-height: var(--lh-snug);
@@ -863,6 +863,10 @@
 
 .log-line {
   white-space: pre-wrap;
+}
+
+.log-line .log-time {
+  color: var(--text-faint);
 }
 
 .log-line.error {
@@ -982,7 +986,7 @@
 }
 .run-progress {
   display: flex;
-  width: calc(var(--space-16) * 3);
+  width: calc(var(--space-16) * 4);
   align-items: center;
   gap: var(--space-2);
   font-size: var(--fs-xs);
@@ -1006,10 +1010,20 @@
   min-width: var(--space-10);
   text-align: right;
 }
+.run-progress-count {
+  min-width: var(--space-12);
+  text-align: right;
+}
 .source-actions {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
   position: relative;
+}
+.source-action-message {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 details.conflicts {

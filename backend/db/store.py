@@ -118,6 +118,7 @@ class Store:
         kind: str,
         spec: dict[str, object],
         triggered_by: str,
+        status: str = "running",
     ) -> SourceRun:
         with self.session() as session:
             run = SourceRun(
@@ -125,7 +126,7 @@ class Store:
                 kind=kind,
                 spec=spec,
                 triggered_by=triggered_by,
-                status="running",
+                status=status,
             )
             session.add(run)
             session.commit()
@@ -138,6 +139,7 @@ class Store:
         status: str | None = None,
         stats: dict[str, object] | None = None,
         error_message: str | None = None,
+        clear_finished: bool = False,
         finished: bool = False,
     ) -> SourceRun | None:
         with self.session() as session:
@@ -150,6 +152,8 @@ class Store:
                 run.stats = stats
             if error_message is not None:
                 run.error_message = error_message
+            if clear_finished:
+                run.finished_at = None
             if finished:
                 run.finished_at = utc_now()
             session.commit()

@@ -566,8 +566,13 @@ input[type="file"]::file-selector-button {
 
 .kind-card {
   width: 100%;
+  height: auto;
+  min-height: var(--button-h-default);
+  align-items: flex-start;
   justify-content: flex-start;
+  padding: var(--space-3);
   border: 1px solid var(--line);
+  text-align: left;
 }
 
 .kind-card.selected {
@@ -583,6 +588,18 @@ input[type="file"]::file-selector-button {
 .kind-card .label {
   font-size: inherit;
   font-weight: 500;
+}
+
+.kind-card-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kind-card .description {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
 }
 
 .field-row {

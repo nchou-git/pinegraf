@@ -23,6 +23,7 @@ dependencies = [
   "langdetect",
   "itsdangerous",
   "python-multipart",
+  "google-cloud-run",
 ]
 
 [build-system]

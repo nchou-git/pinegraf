@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -12,8 +11,16 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.admin_auth import (
     ADMIN_USERNAME,
@@ -23,10 +30,10 @@ from backend.admin_auth import (
 )
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
+from backend.db.models import SourceRun
 from backend.db.store import Store, source_to_dict
-from backend.ingestion.orchestrator import start_run
+from backend.jobs.run import execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
-from backend.pipeline.orchestrator import run_full_pipeline
 from backend.progress import subscribe as subscribe_progress
 from backend.web_api import (
     archived_source_count,
@@ -79,6 +86,8 @@ class ConflictResolveRequest(BaseModel):
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
+ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
+ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source"
 
 
 def _slugify(value: str) -> str:
@@ -424,48 +433,64 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="source not found")
         return {"status": "deleted"}
 
-    @app.post("/admin/sources/{source_id}/crawl")
-    async def admin_source_crawl(request: Request, source_id: uuid.UUID) -> dict[str, str]:
+    @app.post("/admin/sources/{source_id}/crawl", response_model=None)
+    async def admin_source_crawl(
+        request: Request,
+        source_id: uuid.UUID,
+    ) -> dict[str, str] | JSONResponse:
         require_admin(request)
-        source = _store(request).get_source(source_id)
+        store = _store(request)
+        source = store.get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
-        if source.kind == "domain":
-            run_id = await start_run(
-                "sitemap",
-                {
-                    "source_id": str(source.id),
-                    "source_input": source.identifier,
-                },
-                "admin",
-                store=_store(request),
+        try:
+            if source.kind == "domain":
+                run = store.create_source_run(
+                    source_id=source.id,
+                    kind="sitemap",
+                    spec={"source_id": str(source.id), "source_input": source.identifier},
+                    triggered_by="admin",
+                    status="queued",
+                )
+            elif source.kind == "file":
+                seed_path = Path(get_settings().uploads_dir) / source.identifier
+                run = store.create_source_run(
+                    source_id=source.id,
+                    kind="seed",
+                    spec={"source_id": str(source.id), "seed_file_path": str(seed_path)},
+                    triggered_by="admin",
+                    status="queued",
+                )
+            else:
+                raise HTTPException(
+                    status_code=400, detail=f"crawl not supported for kind={source.kind}"
+                )
+        except IntegrityError as exc:
+            return _already_running_from_integrity_error(store, source_id, exc)
+        try:
+            await execute_cloud_run_job(run.id, "crawl")
+        except Exception as exc:
+            store.update_source_run(
+                run.id,
+                status="failed",
+                error_message=f"{type(exc).__name__}: {exc}",
+                finished=True,
             )
-        elif source.kind == "file":
-            seed_path = Path(get_settings().uploads_dir) / source.identifier
-            run_id = await start_run(
-                "seed",
-                {"source_id": str(source.id), "seed_file_path": str(seed_path)},
-                "admin",
-                store=_store(request),
-            )
-        else:
-            raise HTTPException(
-                status_code=400, detail=f"crawl not supported for kind={source.kind}"
-            )
-        append_log("info", f"Crawl started for {source.display_name or source.identifier}")
-        return {"run_id": str(run_id), "status": "started"}
+            raise HTTPException(status_code=502, detail="failed to queue crawl job") from exc
+        append_log("info", f"Crawl queued for {source.display_name or source.identifier}")
+        return {"run_id": str(run.id), "status": "queued"}
 
-    @app.post("/admin/sources/{source_id}/parse")
-    async def admin_source_parse(request: Request, source_id: uuid.UUID) -> dict[str, str]:
+    @app.post("/admin/sources/{source_id}/parse", response_model=None)
+    async def admin_source_parse(
+        request: Request,
+        source_id: uuid.UUID,
+    ) -> dict[str, str] | JSONResponse:
         require_admin(request)
-        source = _store(request).get_source(source_id)
+        store = _store(request)
+        source = store.get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
-        from sqlalchemy import select
-
-        from backend.db.models import SourceRun
-
-        with _store(request).session() as session:
+        with store.session() as session:
             latest = session.execute(
                 select(SourceRun)
                 .where(SourceRun.source_id == source_id)
@@ -474,9 +499,31 @@ def create_app(store: Store | None = None) -> FastAPI:
             ).scalar_one_or_none()
         if latest is None:
             raise HTTPException(status_code=400, detail="no source run to parse — crawl first")
-        asyncio.create_task(run_full_pipeline(latest.id, store=_store(request)))
-        append_log("info", f"Parse started for {source.display_name or source.identifier}")
-        return {"run_id": str(latest.id), "status": "parsing"}
+        try:
+            run = store.create_source_run(
+                source_id=source.id,
+                kind=latest.kind,
+                spec={
+                    "source_id": str(source.id),
+                    "pipeline_source_run_id": str(latest.id),
+                },
+                triggered_by="admin",
+                status="queued",
+            )
+        except IntegrityError as exc:
+            return _already_running_from_integrity_error(store, source_id, exc)
+        try:
+            await execute_cloud_run_job(run.id, "pipeline")
+        except Exception as exc:
+            store.update_source_run(
+                run.id,
+                status="failed",
+                error_message=f"{type(exc).__name__}: {exc}",
+                finished=True,
+            )
+            raise HTTPException(status_code=502, detail="failed to queue pipeline job") from exc
+        append_log("info", f"Parse queued for {source.display_name or source.identifier}")
+        return {"run_id": str(run.id), "status": "queued"}
 
     @app.get("/admin/runs/{run_id}/stream")
     async def admin_run_stream(request: Request, run_id: uuid.UUID) -> StreamingResponse:
@@ -529,6 +576,52 @@ def create_app(store: Store | None = None) -> FastAPI:
 
 def _store(request: Request) -> Store:
     return request.app.state.store
+
+
+def _active_source_run(store: Store, source_id: uuid.UUID) -> SourceRun | None:
+    with store.session() as session:
+        return session.execute(
+            select(SourceRun)
+            .where(
+                SourceRun.source_id == source_id,
+                SourceRun.status.in_(ACTIVE_SOURCE_RUN_STATUSES),
+            )
+            .order_by(SourceRun.started_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+
+def _already_running_from_integrity_error(
+    store: Store,
+    source_id: uuid.UUID,
+    exc: IntegrityError,
+) -> JSONResponse:
+    if not _is_one_active_source_run_error(exc):
+        raise exc
+    active_run = _active_source_run(store, source_id)
+    if active_run is None:
+        raise exc
+    return _already_running_response(active_run)
+
+
+def _is_one_active_source_run_error(exc: IntegrityError) -> bool:
+    original = getattr(exc, "orig", None)
+    diag = getattr(original, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None)
+    if constraint_name == ACTIVE_SOURCE_RUN_INDEX:
+        return True
+    return ACTIVE_SOURCE_RUN_INDEX in str(original or exc)
+
+
+def _already_running_response(run: SourceRun) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": "already_running",
+            "run_id": str(run.id),
+            "status": run.status,
+        },
+    )
 
 
 def _admin_login_html(error: str | None) -> str:

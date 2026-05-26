@@ -37,17 +37,28 @@ def test_user_api_is_public_and_lists_directory(store) -> None:
 
 
 def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypatch) -> None:
-    async def fake_run_full_pipeline(source_run_id, *, store):
-        del source_run_id, store
+    from backend.jobs import run as jobs_run
+
+    async def fake_run_full_pipeline(source_run_id, *, store, progress_run_id=None):
+        del source_run_id, store, progress_run_id
         return set()
 
-    monkeypatch.setattr(main_module, "run_full_pipeline", fake_run_full_pipeline)
+    monkeypatch.setattr(jobs_run, "run_full_pipeline", fake_run_full_pipeline)
+
+    async def fake_execute_cloud_run_job(run_id, mode: str) -> None:
+        assert mode == "pipeline"
+        monkeypatch.setenv("PINEGRAF_RUN_ID", str(run_id))
+        monkeypatch.setenv("PINEGRAF_MODE", mode)
+        await jobs_run.run_from_env(store=store)
+
+    monkeypatch.setattr(main_module, "execute_cloud_run_job", fake_execute_cloud_run_job)
     source = store.upsert_source(kind="domain", identifier="example.com")
     store.create_source_run(
         source_id=source.id,
         kind="adhoc",
         spec={"urls": ["https://example.com/story"]},
         triggered_by="test",
+        status="complete",
     )
 
     with TestClient(main_module.create_app(store)) as client:
@@ -59,4 +70,4 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
 
         pipeline_response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
         assert pipeline_response.status_code == 200
-        assert pipeline_response.json()["status"] == "parsing"
+        assert pipeline_response.json()["status"] == "queued"

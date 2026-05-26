@@ -90,3 +90,16 @@ def fake_httpx(monkeypatch) -> type[FakeAsyncClient]:
     monkeypatch.setattr(fetcher.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(sitemap_runner.httpx, "AsyncClient", FakeAsyncClient)
     return FakeAsyncClient
+
+
+@pytest.fixture
+def run_jobs_inline(monkeypatch, store) -> None:
+    from backend import main as main_module
+    from backend.jobs.run import run_from_env
+
+    async def execute(run_id, mode: str) -> None:
+        monkeypatch.setenv("PINEGRAF_RUN_ID", str(run_id))
+        monkeypatch.setenv("PINEGRAF_MODE", mode)
+        await run_from_env(store=store)
+
+    monkeypatch.setattr(main_module, "execute_cloud_run_job", execute)

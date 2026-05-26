@@ -15,15 +15,17 @@ async def run_full_pipeline(
     source_run_id: uuid.UUID | str,
     *,
     store: Store,
+    progress_run_id: uuid.UUID | str | None = None,
 ) -> set[uuid.UUID]:
-    run_id = uuid.UUID(str(source_run_id))
+    fetch_run_id = uuid.UUID(str(source_run_id))
+    run_id = uuid.UUID(str(progress_run_id or source_run_id))
     touched: set[uuid.UUID] = set()
     stats = dict(store.get_source_run(run_id).stats or {}) if store.get_source_run(run_id) else {}
     try:
         await _emit(run_id, ProgressEvent("normalization", "running", "Normalizing fetches", 0.0))
         documents = await normalize_pending(
             store=store,
-            source_run_id=run_id,
+            source_run_id=fetch_run_id,
             progress=lambda done, total: _item_progress(
                 run_id, "normalization", "Normalizing fetches", done, total, 0.0, 20.0
             ),

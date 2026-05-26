@@ -37,7 +37,8 @@ const SOURCE_KINDS = [
   {
     id: "domain",
     kind: "domain",
-    label: "Sitemap",
+    label: "Website",
+    description: "Crawl a website by domain, sitemap URL, or any page URL.",
     icon: "ti-world",
     fields: [
       {
@@ -1833,14 +1834,21 @@ function sourceRow(source) {
 
 function runProgressMarkup(progress) {
   const percent = Number(progress.percent || 0).toFixed(1);
+  const count = runProgressCount(progress);
   return `
     <div class="run-progress" data-run-id="${escapeAttr(progress.runId)}">
       <div class="run-progress-track">
         <div class="run-progress-fill"></div>
       </div>
       <span class="run-progress-percent">${escapeHtml(percent)}%</span>
+      <span class="run-progress-count">${escapeHtml(count)}</span>
     </div>
   `;
+}
+
+function runProgressCount(progress) {
+  if (!Number.isFinite(progress.fetched) || !Number.isFinite(progress.known)) return "";
+  return `${formatNumber(progress.fetched)} / ${formatNumber(progress.known)}`;
 }
 
 function sourceMetaLine(source) {
@@ -1852,9 +1860,16 @@ function sourceDisplayName(source) {
 }
 
 function sourceKindLabel(source) {
-  if (source.kind === "domain") return "Sitemap";
+  if (source.kind === "domain") return "Website";
   if (source.kind === "file") return "File";
   return source.kind || "Source";
+}
+
+function sourceRunKindLabel(kind) {
+  if (kind === "sitemap") return "Website";
+  if (kind === "seed") return "File upload";
+  if (kind === "adhoc") return "Manual URLs";
+  return capitalize(kind || "");
 }
 
 function sourceKindIcon(source) {
@@ -1880,7 +1895,7 @@ function toggleMenu(container, sourceId) {
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
     <button class="menu-item" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
   `;
-  container.querySelector(".source-row-actions, .source-actions").appendChild(menu);
+  container.querySelector(".source-row-actions").appendChild(menu);
   menu.querySelectorAll("button").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
@@ -1937,15 +1952,51 @@ async function updateSourceStatus(id, status) {
 
 async function runSourceAction(sourceId, action) {
   const source = (state.sourcesCache || []).find((item) => item.id === sourceId);
+  let keepDisabled = false;
+  setSourceActionButtonsDisabled(sourceId, true);
+  showSourceActionMessage(sourceId, "");
   try {
     const res = await fetch(`/admin/sources/${sourceId}/${action}`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409 && data.error === "already_running") {
+      keepDisabled = true;
+      showSourceActionMessage(sourceId, "A run is already in progress");
+      return;
+    }
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || res.statusText);
     }
-    const data = await res.json();
     trackRun(sourceId, sourceDisplayName(source), action, data.run_id);
   } catch (_) {}
+  finally {
+    if (!keepDisabled) setSourceActionButtonsDisabled(sourceId, false);
+  }
+}
+
+function setSourceActionButtonsDisabled(sourceId, disabled) {
+  sourceActionButtons(sourceId).forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
+function sourceActionButtons(sourceId) {
+  return document.querySelectorAll(
+    `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse]`,
+  );
+}
+
+function showSourceActionMessage(sourceId, message) {
+  document
+    .querySelectorAll(`[data-source-id="${CSS.escape(sourceId)}"] .source-row-actions`)
+    .forEach((container) => {
+      container.querySelector(".source-action-message")?.remove();
+      if (!message) return;
+      const label = document.createElement("span");
+      label.className = "source-action-message";
+      label.textContent = message;
+      container.appendChild(label);
+    });
 }
 
 function trackRun(sourceId, sourceName, action, runId) {
@@ -1963,7 +2014,10 @@ function trackRun(sourceId, sourceName, action, runId) {
   stream.onmessage = (event) => {
     const data = JSON.parse(event.data);
     const progress = state.runProgress[sourceId] || { runId, sourceId, sourceName, action };
+    const progressData = data.data || {};
     progress.percent = Number(data.percent || 0);
+    progress.fetched = Number(progressData.fetched);
+    progress.known = Number(progressData.known);
     progress.status = data.status;
     state.runProgress[sourceId] = progress;
     updateRunProgressDom(sourceId);
@@ -1996,8 +2050,10 @@ function updateRunProgressDom(sourceId) {
   const percent = Number(progress.percent || 0).toFixed(1);
   const fill = actions.querySelector(".run-progress-fill");
   const label = actions.querySelector(".run-progress-percent");
+  const count = actions.querySelector(".run-progress-count");
   if (fill) fill.style.width = `${percent}%`;
   if (label) label.textContent = `${percent}%`;
+  if (count) count.textContent = runProgressCount(progress);
 }
 
 /* ───── Source detail ───── */
@@ -2075,19 +2131,9 @@ function renderSourceDetailHead(source) {
           <span class="muted">Created ${escapeHtml(formatDate(source.created_at))}</span>
         </div>
       </div>
-      ${
-        state.me?.is_admin
-          ? `<div class="source-actions">
-               <button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
-               <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>
-             </div>`
-          : ""
-      }
     </div>
   `;
   if (state.me?.is_admin) {
-    head.querySelector("[data-action=crawl]").onclick = () => runSourceAction(source.id, "crawl");
-    head.querySelector("[data-action=parse]").onclick = () => runSourceAction(source.id, "parse");
     head.querySelector("[data-action=edit-source-name]").onclick = () => startSourceNameEdit(source);
   }
 }
@@ -2346,7 +2392,7 @@ function renderSourceRuns(detail) {
           .map(
             (r) => `
           <tr>
-            <td>${escapeHtml(r.kind)}</td>
+            <td>${escapeHtml(sourceRunKindLabel(r.kind))}</td>
             <td><span class="status-pill ${r.status === "complete" ? "active" : r.status === "running" ? "running" : "paused"}">${escapeHtml(r.status)}</span></td>
             <td class="muted small">${escapeHtml(timeAgo(r.started_at))}</td>
             <td class="muted small">${r.finished_at ? escapeHtml(timeAgo(r.finished_at)) : "—"}</td>
@@ -2435,14 +2481,17 @@ function renderAddSourceModal() {
             (k) => `
             <button type="button" class="btn-secondary kind-card ${k.id === modalKind ? "selected" : ""}" data-kind="${k.id}">
               <i class="ti ${k.icon} icon"></i>
-              <span class="label">${escapeHtml(k.label)}</span>
+              <span class="kind-card-copy">
+                <span class="label">${escapeHtml(k.label)}</span>
+                ${k.description ? `<span class="description">${escapeHtml(k.description)}</span>` : ""}
+              </span>
             </button>`,
           ).join("")}
         </div>
       </div>
       <label class="field">
         <span class="field-label">Label</span>
-        <input class="input" id="new-name" placeholder="e.g. Tuck News" />
+        <input class="input" id="new-name" placeholder="e.g. Tuck Website" />
       </label>
       ${selected.fields
         .map((f) => {
@@ -2704,7 +2753,7 @@ function appendLog(line) {
   const entry = document.createElement("div");
   entry.className = `log-line ${String(line.level || "").toLowerCase()}`;
   const timestamp = new Date(line.timestamp || Date.now()).toLocaleTimeString();
-  entry.textContent = `[${timestamp}] ${line.level || "INFO"} ${line.message || ""}`;
+  entry.innerHTML = `<span class="log-time">[${escapeHtml(timestamp)}]</span> <span class="log-level">${escapeHtml(line.level || "INFO")}</span> ${escapeHtml(line.message || "")}`;
   root.appendChild(entry);
   while (root.children.length > 1000) root.firstElementChild?.remove();
   root.scrollTop = root.scrollHeight;

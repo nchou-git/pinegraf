@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import Any
 
@@ -11,34 +10,22 @@ from backend.ingestion.runners.sitemap import run_sitemap
 from backend.progress import ProgressEvent, emit_progress
 
 
-async def start_run(
-    kind: str,
-    spec: dict[str, Any],
-    triggered_by: str,
-    *,
-    store: Store,
-) -> uuid.UUID:
-    source_id = uuid.UUID(str(spec["source_id"]))
-    run = store.create_source_run(
-        source_id=source_id,
-        kind=kind,
-        spec=spec,
-        triggered_by=triggered_by,
-    )
-    asyncio.create_task(_dispatch(run.id, kind, spec, store=store))
-    return run.id
-
-
-async def _dispatch(
-    run_id: uuid.UUID,
-    kind: str,
-    spec: dict[str, Any],
+async def run_source_run(
+    source_run_id: uuid.UUID | str,
     *,
     store: Store,
 ) -> None:
+    run_id = uuid.UUID(str(source_run_id))
+    run = store.get_source_run(run_id)
+    if run is None:
+        raise ValueError(f"source run not found: {run_id}")
+    store.update_source_run(run_id, status="running", clear_finished=True)
+    kind = run.kind
+    spec: dict[str, Any] = dict(run.spec)
     try:
         if kind == "sitemap":
-            await run_sitemap(run_id, str(spec.get("source_input") or spec["sitemap_url"]), store=store)
+            source_input = str(spec.get("source_input") or spec["sitemap_url"])
+            await run_sitemap(run_id, source_input, store=store)
         elif kind == "seed":
             await run_seed(run_id, str(spec["seed_file_path"]), store=store)
         elif kind == "adhoc":
@@ -46,7 +33,7 @@ async def _dispatch(
             await run_adhoc(run_id, urls, store=store)
         else:
             raise ValueError(f"unsupported run kind: {kind}")
-    except Exception as exc:  # noqa: BLE001 - background failures belong on source_runs.
+    except Exception as exc:  # noqa: BLE001
         store.update_source_run(
             run_id,
             status="failed",
