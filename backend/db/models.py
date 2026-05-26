@@ -44,7 +44,7 @@ class Source(Base):
     __tablename__ = "sources"
     __table_args__ = (
         CheckConstraint(
-            "kind in ('domain','file','api','human')",
+            "kind in ('domain','file')",
             name="ck_sources_kind",
         ),
         CheckConstraint(
@@ -69,7 +69,7 @@ class SourceRun(Base):
     __tablename__ = "source_runs"
     __table_args__ = (
         CheckConstraint(
-            "kind in ('sitemap','seed','adhoc','api','manual_upload','pipeline')",
+            "kind in ('sitemap','seed','pipeline')",
             name="ck_source_runs_kind",
         ),
         CheckConstraint(

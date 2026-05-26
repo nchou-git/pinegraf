@@ -177,13 +177,13 @@ def test_delete_source_repoints_shared_document_first_seen_fetch(store) -> None:
     second_source = store.upsert_source(kind="domain", identifier="second.example")
     first_run = store.create_source_run(
         source_id=first_source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={},
         triggered_by="test",
     )
     second_run = store.create_source_run(
         source_id=second_source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={},
         triggered_by="test",
     )
@@ -226,7 +226,7 @@ def test_delete_document_removes_derived_rows_but_keeps_entities(store, admin_he
     source = store.upsert_source(kind="domain", identifier="doc-delete.example")
     run = store.create_source_run(
         source_id=source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={},
         triggered_by="test",
     )
@@ -346,7 +346,7 @@ def test_archive_status_hides_source_without_deleting_data(
     )
     run = store.create_source_run(
         source_id=source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={},
         triggered_by="test",
     )

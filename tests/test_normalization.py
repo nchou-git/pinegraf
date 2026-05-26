@@ -13,7 +13,7 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
     source = store.upsert_source(kind="domain", identifier="example.com")
     run = store.create_source_run(
         source_id=source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={"urls": []},
         triggered_by="test",
     )

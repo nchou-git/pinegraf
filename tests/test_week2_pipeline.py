@@ -60,7 +60,7 @@ async def test_full_pipeline_promotes_claims_and_builds_projections(store, monke
     )
     run = store.create_source_run(
         source_id=source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={"urls": ["https://example.com/story"]},
         triggered_by="test",
     )

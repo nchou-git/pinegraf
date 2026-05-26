@@ -4,7 +4,6 @@ import uuid
 from typing import Any
 
 from backend.db.store import Store
-from backend.ingestion.runners.adhoc import run_adhoc
 from backend.ingestion.runners.seed import run_seed
 from backend.ingestion.runners.sitemap import run_sitemap
 from backend.progress import progress_stats
@@ -28,9 +27,6 @@ async def run_source_run(
             await run_sitemap(run_id, source_input, store=store)
         elif kind == "seed":
             await run_seed(run_id, str(spec["seed_file_path"]), store=store)
-        elif kind == "adhoc":
-            urls = [str(url) for url in spec.get("urls", [])]
-            await run_adhoc(run_id, urls, store=store)
         else:
             raise ValueError(f"unsupported run kind: {kind}")
     except Exception as exc:  # noqa: BLE001

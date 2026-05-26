@@ -79,7 +79,7 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
     source = store.upsert_source(kind="domain", identifier="example.com")
     store.create_source_run(
         source_id=source.id,
-        kind="adhoc",
+        kind="sitemap",
         spec={"urls": ["https://example.com/story"]},
         triggered_by="test",
         status="complete",
