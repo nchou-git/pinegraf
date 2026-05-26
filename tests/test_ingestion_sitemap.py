@@ -80,7 +80,7 @@ async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx
                 <a href="/discovered">in-scope</a>
                 <a href="https://other.com/out">out-of-scope</a>
                 <a href="mailto:x@y.com">non-http</a>
-                <a href="/file.pdf">binary</a>
+                <a href="/file.pdf">document</a>
                 <a href="/discovered?utm_source=foo">duplicate</a>
             </body></html>""",
         ),
@@ -89,16 +89,23 @@ async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx
             200,
             b"<html>leaf</html>",
         ),
+        "https://example.com/file.pdf": fake_httpx.Response(
+            "https://example.com/file.pdf",
+            200,
+            b"%PDF-1.7",
+            headers={"content-type": "application/pdf"},
+        ),
     }
 
     stats = await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
-    assert stats["fetched"] == 2
+    assert stats["fetched"] == 3
     assert stats["errors"] == 0
     with store.session() as session:
         urls = sorted(session.execute(select(Fetch.url)).scalars())
     assert urls == [
         "https://example.com/discovered",
+        "https://example.com/file.pdf",
         "https://example.com/seed",
     ]
 

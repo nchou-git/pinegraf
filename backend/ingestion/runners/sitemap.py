@@ -19,16 +19,8 @@ from backend.ingestion.fetcher import TIMEOUT_SECONDS, fetch_url, robots_allowed
 from backend.live_logs import append_log
 from backend.progress import progress_stats
 
-_BINARY_EXTENSIONS = frozenset(
+_SKIP_EXTENSIONS = frozenset(
     [
-        ".pdf",
-        ".doc",
-        ".docx",
-        ".xls",
-        ".xlsx",
-        ".ppt",
-        ".pptx",
-        ".csv",
         ".jpg",
         ".jpeg",
         ".png",
@@ -72,7 +64,19 @@ _BINARY_EXTENSIONS = frozenset(
         ".deb",
         ".rpm",
         ".msi",
+    ]
+)
+_DOCUMENT_EXTENSIONS = frozenset(
+    [
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".csv",
         ".txt",
+        ".json",
+        ".xml",
+        ".rss",
+        ".atom",
     ]
 )
 
@@ -580,7 +584,10 @@ def _host_key(url: str) -> str:
 
 def _passes_filters(url: str) -> bool:
     parsed = urlparse(url)
-    return not parsed.path.lower().endswith(tuple(_BINARY_EXTENSIONS))
+    path = parsed.path.lower()
+    if path.endswith(tuple(_DOCUMENT_EXTENSIONS)):
+        return True
+    return not path.endswith(tuple(_SKIP_EXTENSIONS))
 
 
 def _canonicalize(url: str) -> str:
@@ -634,9 +641,9 @@ def _enqueue(
         return False
     if not _passes_filters(canonical):
         _log_fetch_decision(
-            f"Skipped {_display_url(canonical)} — binary file extension",
+            f"Skipped {_display_url(canonical)} — asset file extension",
             event="skipped",
-            reason="binary_file_extension",
+            reason="asset_file_extension",
             url=canonical,
             discovery_method=method,
         )
