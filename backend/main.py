@@ -18,7 +18,7 @@ from fastapi.responses import (
     RedirectResponse,
     StreamingResponse,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -35,6 +35,7 @@ from backend.db.store import Store, source_to_dict
 from backend.jobs.run import execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
 from backend.progress import subscribe as subscribe_progress
+from backend.source_identifiers import normalize_identifier
 from backend.web_api import (
     archived_source_count,
     ask_stream,
@@ -59,6 +60,13 @@ class SourceCreate(BaseModel):
     respect_robots: bool = True
     display_name: str | None = None
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def normalize_source_identifier(self) -> "SourceCreate":
+        self.identifier = normalize_identifier(self.kind, self.identifier)
+        if not self.identifier:
+            raise ValueError("identifier is required")
+        return self
 
 
 class SourceUpdate(BaseModel):

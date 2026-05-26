@@ -24,6 +24,7 @@ from backend.db.models import (
     Source,
     SourceRun,
 )
+from backend.source_identifiers import normalize_identifier
 
 SCHEMA_TABLES = [
     "sources",
@@ -94,6 +95,9 @@ class Store:
         display_name: str | None = None,
         notes: str | None = None,
     ) -> Source:
+        identifier = normalize_identifier(kind, identifier)
+        if not identifier:
+            raise ValueError("identifier is required")
         with self.session() as session:
             existing = session.execute(
                 select(Source).where(Source.identifier == identifier)
