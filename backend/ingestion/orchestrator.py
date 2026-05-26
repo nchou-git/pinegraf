@@ -7,7 +7,7 @@ from backend.db.store import Store
 from backend.ingestion.runners.adhoc import run_adhoc
 from backend.ingestion.runners.seed import run_seed
 from backend.ingestion.runners.sitemap import run_sitemap
-from backend.progress import ProgressEvent, emit_progress
+from backend.progress import progress_stats
 
 
 async def run_source_run(
@@ -37,11 +37,13 @@ async def run_source_run(
         store.update_source_run(
             run_id,
             status="failed",
-            stats={"errors": 1},
+            stats=progress_stats(
+                {"errors": 1},
+                stage="crawl",
+                status="failed",
+                message=f"{type(exc).__name__}: {exc}",
+                percent=100.0,
+            ),
             error_message=f"{type(exc).__name__}: {exc}",
             finished=True,
-        )
-        await emit_progress(
-            run_id,
-            ProgressEvent("crawl", "failed", f"{type(exc).__name__}: {exc}", 100.0),
         )

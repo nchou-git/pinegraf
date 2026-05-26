@@ -556,7 +556,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         require_admin(request)
 
         async def events() -> AsyncIterator[str]:
-            async for event in subscribe_progress(run_id):
+            async for event in subscribe_progress(run_id, store=_store(request)):
                 payload = {
                     "stage": event.stage,
                     "status": event.status,

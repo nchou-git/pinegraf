@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 from backend.config import get_settings
 from backend.db.store import Store
 from backend.ingestion.fetcher import fetch_url
-from backend.progress import ProgressEvent, emit_progress
+from backend.progress import progress_stats
 
 
 async def run_seed(
@@ -23,16 +23,24 @@ async def run_seed(
     run_id = uuid.UUID(str(source_run_id))
     rows = _read_seed_rows(Path(seed_file_path))[: get_settings().max_pages]
     stats = {"queried": 0, "found": 0, "fetched": 0, "missed": 0}
-    await emit_progress(run_id, ProgressEvent("crawl", "running", "Crawling seed rows", 0.0))
+    store.update_source_run(
+        run_id,
+        stats=progress_stats(
+            stats,
+            stage="crawl",
+            status="running",
+            message="Crawling seed rows",
+            percent=0.0,
+        ),
+    )
     total = len(rows)
-    last_running_stats_fetched = 0
     for index, row in enumerate(rows, start=1):
         stats["queried"] += 1
         candidates = _candidate_urls(row)
         fetched_for_row = False
         for url in candidates:
             try:
-                body = await fetch_url(url)
+                body = await fetch_url(url, store=store, source_run_id=run_id)
             except Exception as exc:  # noqa: BLE001 - failures are recorded per URL.
                 store.add_fetch(
                     source_run_id=run_id,
@@ -48,25 +56,31 @@ async def run_seed(
             break
         if not fetched_for_row:
             stats["missed"] += 1
-        await emit_progress(
+        store.update_source_run(
             run_id,
-            ProgressEvent("crawl", "running", "Crawling seed rows", index / max(total, 1) * 100),
+            stats=progress_stats(
+                stats,
+                stage="crawl",
+                status="running",
+                message="Crawling seed rows",
+                percent=index / max(total, 1) * 100,
+            ),
         )
-        if (
-            stats["fetched"] > 0
-            and stats["fetched"] % 10 == 0
-            and stats["fetched"] != last_running_stats_fetched
-        ):
-            store.update_source_run(run_id, stats=stats)
-            last_running_stats_fetched = stats["fetched"]
 
     status = "complete" if stats["missed"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["missed"] > 0:
         status = "failed"
-    store.update_source_run(run_id, status=status, stats=stats, finished=True)
-    await emit_progress(
+    store.update_source_run(
         run_id,
-        ProgressEvent("crawl", "failed" if status == "failed" else "complete", status, 100.0),
+        status=status,
+        stats=progress_stats(
+            stats,
+            stage="crawl",
+            status="failed" if status == "failed" else "complete",
+            message=status,
+            percent=100.0,
+        ),
+        finished=True,
     )
     return stats
 

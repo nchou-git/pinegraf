@@ -267,10 +267,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                 ).scalars()
             )
             last_run = runs[0] if runs else None
-            active_run = next(
-                (run for run in runs if run.status == "running" and has_progress(run.id)),
-                None,
-            )
+            active_run = next((run for run in runs if has_progress(run.id, store=store)), None)
             output.append(
                 {
                     "id": str(source.id),

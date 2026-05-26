@@ -16,7 +16,7 @@ from backend.config import get_settings
 from backend.db.store import Store
 from backend.ingestion.fetcher import TIMEOUT_SECONDS, fetch_url, robots_allowed, user_agent
 from backend.live_logs import append_log
-from backend.progress import ProgressEvent, emit_progress
+from backend.progress import progress_stats
 
 _BINARY_EXTENSIONS = frozenset(
     [
@@ -107,14 +107,28 @@ async def run_sitemap(
         store.update_source_run(
             run_id,
             status="failed",
-            stats=stats,
+            stats=progress_stats(
+                stats,
+                stage="crawl",
+                status="failed",
+                message="invalid source input",
+                percent=100.0,
+            ),
             error_message=f"invalid source input: {source_input!r}",
             finished=True,
         )
-        await emit_progress(run_id, ProgressEvent("crawl", "failed", "invalid source input", 100.0))
         return stats
 
-    await emit_progress(run_id, ProgressEvent("crawl", "running", "Starting crawl", 0.0))
+    store.update_source_run(
+        run_id,
+        stats=progress_stats(
+            stats,
+            stage="crawl",
+            status="running",
+            message="Starting crawl",
+            percent=0.0,
+        ),
+    )
 
     queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
     seen: set[str] = set()
@@ -129,7 +143,6 @@ async def run_sitemap(
     host_limits: dict[str, int] = {}
     host_backoff_until: dict[str, float] = {}
     highest_percent = 0.0
-    last_running_stats_fetched = 0
     reserved = 0
 
     source_url = source_input.strip()
@@ -204,7 +217,7 @@ async def run_sitemap(
         )
 
     async def worker() -> None:
-        nonlocal highest_percent, last_running_stats_fetched
+        nonlocal highest_percent
         while True:
             url, method = await queue.get()
             slot_reserved = False
@@ -282,7 +295,6 @@ async def run_sitemap(
                             ):
                                 discovered_count += 1
 
-                update_running_stats = False
                 async with stats_lock:
                     stats["fetched"] += 1
                     known = stats["fetched"] + queue.qsize() + max(reserved - 1, 0)
@@ -290,11 +302,17 @@ async def run_sitemap(
                     displayed_percent = round(min(99.9, max(highest_percent, raw_percent)), 1)
                     highest_percent = displayed_percent
                     fetched = stats["fetched"]
-                    stats_snapshot = dict(stats)
-                    if fetched > 0 and fetched % 10 == 0 and fetched != last_running_stats_fetched:
-                        update_running_stats = True
-                        last_running_stats_fetched = fetched
-
+                    stats_snapshot = progress_stats(
+                        stats,
+                        stage="crawl",
+                        status="running",
+                        message="Retrieving documents",
+                        percent=displayed_percent,
+                        data={
+                            "known": known,
+                            "raw_percent": raw_percent,
+                        },
+                    )
                 if discovered_count:
                     _log_fetch_decision(
                         (
@@ -307,22 +325,7 @@ async def run_sitemap(
                         fetched=fetched,
                         known=known,
                     )
-                await emit_progress(
-                    run_id,
-                    ProgressEvent(
-                        "crawl",
-                        "running",
-                        "Retrieving documents",
-                        displayed_percent,
-                        {
-                            "fetched": fetched,
-                            "known": known,
-                            "raw_percent": raw_percent,
-                        },
-                    ),
-                )
-                if update_running_stats:
-                    store.update_source_run(run_id, stats=stats_snapshot)
+                store.update_source_run(run_id, stats=stats_snapshot)
                 _log_fetch_decision(
                     (
                         f"Retrieved {_display_url(final_url)} — "
@@ -354,20 +357,22 @@ async def run_sitemap(
         status = "failed"
     final_known = stats["fetched"] + queue.qsize()
     final_raw_percent = round(100.0 * stats["fetched"] / final_known, 1) if final_known else 0.0
-    store.update_source_run(run_id, status=status, stats=stats, finished=True)
-    await emit_progress(
+    store.update_source_run(
         run_id,
-        ProgressEvent(
-            "crawl",
-            "failed" if status == "failed" else "complete",
-            status,
-            100.0,
-            {
+        status=status,
+        stats=progress_stats(
+            stats,
+            stage="crawl",
+            status="failed" if status == "failed" else "complete",
+            message=status,
+            percent=100.0,
+            data={
                 "fetched": stats["fetched"],
                 "known": final_known,
                 "raw_percent": final_raw_percent,
             },
         ),
+        finished=True,
     )
     return stats
 
