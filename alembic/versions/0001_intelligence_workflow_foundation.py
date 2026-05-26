@@ -1,4 +1,4 @@
-"""intelligence pipeline foundation
+"""intelligence workflow foundation
 
 Revision ID: 0001_foundation
 Revises:

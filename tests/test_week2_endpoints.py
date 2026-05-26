@@ -64,14 +64,14 @@ def test_source_coverage_separates_pages_fetched_from_documents_parsed(store) ->
 def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypatch) -> None:
     from backend.jobs import run as jobs_run
 
-    async def fake_run_full_pipeline(source_run_id, *, store, progress_run_id=None):
+    async def fake_run_full_parse(source_run_id, *, store, progress_run_id=None):
         del source_run_id, store, progress_run_id
         return set()
 
-    monkeypatch.setattr(jobs_run, "run_full_pipeline", fake_run_full_pipeline)
+    monkeypatch.setattr(jobs_run, "run_full_parse", fake_run_full_parse)
 
     async def fake_execute_cloud_run_job(run_id, mode: str) -> None:
-        assert mode == "pipeline"
+        assert mode == "parse"
         monkeypatch.setenv("PINEGRAF_RUN_ID", str(run_id))
         monkeypatch.setenv("PINEGRAF_MODE", mode)
         await jobs_run.run_from_env(store=store)
@@ -93,12 +93,12 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
         assert conflicts_response.status_code == 200
         assert conflicts_response.json()["results"] == []
 
-        pipeline_response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
-        assert pipeline_response.status_code == 200
-        assert pipeline_response.json()["status"] == "queued"
+        parse_response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
+        assert parse_response.status_code == 200
+        assert parse_response.json()["status"] == "queued"
 
     with store.session() as session:
-        pipeline_run = session.execute(
-            select(SourceRun).where(SourceRun.source_id == source.id, SourceRun.kind == "pipeline")
+        parse_run = session.execute(
+            select(SourceRun).where(SourceRun.source_id == source.id, SourceRun.kind == "parse")
         ).scalar_one()
-    assert pipeline_run.spec["pipeline_source_run_id"]
+    assert parse_run.spec["parse_source_run_id"]

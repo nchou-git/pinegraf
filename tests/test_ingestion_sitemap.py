@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from backend.config import get_settings
 from backend.db.models import Fetch, SourceRun
+from backend.ingestion.runners import sitemap as sitemap_runner
 from backend.ingestion.runners.sitemap import run_sitemap
 
 
@@ -152,7 +153,7 @@ async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None
 
 
 @pytest.mark.asyncio
-async def test_sitemap_runner_auto_queues_pipeline_on_completion(
+async def test_sitemap_runner_auto_queues_parse_on_completion(
     store,
     fake_httpx,
     monkeypatch,
@@ -164,7 +165,7 @@ async def test_sitemap_runner_auto_queues_pipeline_on_completion(
 
     from backend.jobs import run as jobs_run
 
-    monkeypatch.setenv("PINEGRAF_AUTO_PIPELINE", "true")
+    monkeypatch.setenv("PINEGRAF_AUTO_PARSE", "true")
     get_settings.cache_clear()
     monkeypatch.setattr(jobs_run, "execute_cloud_run_job", fake_execute_cloud_run_job)
     source = store.upsert_source(kind="domain", identifier="example.com")
@@ -195,8 +196,28 @@ async def test_sitemap_runner_auto_queues_pipeline_on_completion(
     await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
     with store.session() as session:
-        pipeline_run = session.execute(
-            select(SourceRun).where(SourceRun.kind == "pipeline")
+        parse_run = session.execute(
+            select(SourceRun).where(SourceRun.kind == "parse")
         ).scalar_one()
-    assert pipeline_run.spec["pipeline_source_run_id"] == str(run.id)
-    assert queued == [(str(pipeline_run.id), "pipeline")]
+    assert parse_run.spec["parse_source_run_id"] == str(run.id)
+    assert queued == [(str(parse_run.id), "parse")]
+
+
+def test_host_pacing_exponential_growth_with_cap(monkeypatch) -> None:
+    monkeypatch.setattr(sitemap_runner.random, "uniform", lambda low, high: 1.0)
+    pacing = sitemap_runner._HostPacing()
+
+    delays = []
+    for _ in range(5):
+        pacing.record_status(429)
+        delays.append(round(pacing.delay_seconds, 3))
+
+    assert delays == [5.0, 10.0, 20.0, 40.0, 80.0]
+
+    pacing.delay_seconds = 299
+    pacing.record_status(429)
+    assert pacing.delay_seconds == 300.0
+
+    pacing.delay_seconds = 5
+    pacing.record_status(429, retry_after_seconds=45)
+    assert pacing.delay_seconds == 45

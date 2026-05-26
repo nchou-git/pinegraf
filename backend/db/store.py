@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.config import get_settings
 from backend.db.models import (
+    AuditLog,
     Base,
     Chunk,
     Claim,
@@ -30,6 +31,7 @@ SCHEMA_TABLES = [
     "sources",
     "source_runs",
     "live_logs",
+    "audit_log",
     "fetches",
     "documents",
     "document_fetches",
@@ -87,6 +89,9 @@ class Store:
         status: str = "active",
         display_name: str | None = None,
         notes: str | None = None,
+        audit_actor: str | None = None,
+        audit_request_ip: str | None = None,
+        audit_payload: dict[str, object] | None = None,
     ) -> Source:
         identifier = normalize_identifier(kind, identifier)
         if not identifier:
@@ -102,6 +107,17 @@ class Store:
                 existing.status = status
                 existing.display_name = display_name
                 existing.notes = notes
+                if audit_payload is not None:
+                    session.add(
+                        AuditLog(
+                            action="source.create",
+                            target_table="sources",
+                            target_id=str(existing.id),
+                            actor=audit_actor,
+                            request_ip=audit_request_ip,
+                            payload=audit_payload,
+                        )
+                    )
                 session.commit()
                 return existing
             source = Source(
@@ -114,6 +130,18 @@ class Store:
                 notes=notes,
             )
             session.add(source)
+            session.flush()
+            if audit_payload is not None:
+                session.add(
+                    AuditLog(
+                        action="source.create",
+                        target_table="sources",
+                        target_id=str(source.id),
+                        actor=audit_actor,
+                        request_ip=audit_request_ip,
+                        payload=audit_payload,
+                    )
+                )
             session.commit()
             return source
 
@@ -125,6 +153,10 @@ class Store:
         spec: dict[str, object],
         triggered_by: str,
         status: str = "running",
+        audit_action: str | None = None,
+        audit_actor: str | None = None,
+        audit_request_ip: str | None = None,
+        audit_payload: dict[str, object] | None = None,
     ) -> SourceRun:
         with self.session() as session:
             run = SourceRun(
@@ -135,6 +167,18 @@ class Store:
                 status=status,
             )
             session.add(run)
+            session.flush()
+            if audit_action is not None:
+                session.add(
+                    AuditLog(
+                        action=audit_action,
+                        target_table="source_runs",
+                        target_id=str(run.id),
+                        actor=audit_actor,
+                        request_ip=audit_request_ip,
+                        payload=audit_payload,
+                    )
+                )
             session.commit()
             return run
 
@@ -162,6 +206,17 @@ class Store:
                 run.finished_at = None
             if finished:
                 run.finished_at = utc_now()
+            session.commit()
+            return run
+
+    def patch_source_run_spec(
+        self, run_id: uuid.UUID, values: dict[str, object]
+    ) -> SourceRun | None:
+        with self.session() as session:
+            run = session.get(SourceRun, run_id)
+            if run is None:
+                return None
+            run.spec = {**dict(run.spec or {}), **values}
             session.commit()
             return run
 

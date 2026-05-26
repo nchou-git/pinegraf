@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import time
 import uuid
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from typing import NamedTuple
 from urllib.parse import parse_qsl, urldefrag, urlencode, urljoin, urlparse, urlunparse
 from xml.etree import ElementTree
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 
 from backend.config import get_settings
 from backend.db.store import Store
-from backend.ingestion.auto_pipeline import enqueue_pipeline_after_crawl
+from backend.ingestion.auto_parse import enqueue_parse_after_crawl
 from backend.ingestion.fetcher import TIMEOUT_SECONDS, fetch_url, robots_allowed, user_agent
 from backend.live_logs import append_log
 from backend.progress import progress_stats
@@ -97,6 +101,48 @@ _TRACKING_PARAMS = frozenset(
     ]
 )
 
+ACTIVE_RUN_STATUSES = {"queued", "running"}
+HOST_PACING_STATS_INTERVAL = 10
+HOST_DELAY_INITIAL_SECONDS = 0.250
+HOST_DELAY_FLOOR_SECONDS = 0.100
+HOST_DELAY_RATE_LIMIT_MIN_SECONDS = 5.0
+HOST_DELAY_CAP_SECONDS = 300.0
+HOST_DELAY_JITTER = 0.25
+
+
+class _HostPacing:
+    def __init__(self, delay_seconds: float = HOST_DELAY_INITIAL_SECONDS) -> None:
+        self.delay_seconds = delay_seconds
+        self.last_fetch_at: float | None = None
+        self.last_429_at: str | None = None
+
+    def wait_seconds(self, now: float) -> float:
+        if self.last_fetch_at is None:
+            return 0.0
+        return max(0.0, self.last_fetch_at + self.delay_seconds - now)
+
+    def mark_dispatched(self, now: float) -> None:
+        self.last_fetch_at = now
+
+    def record_status(
+        self,
+        status_code: int,
+        *,
+        retry_after_seconds: float | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        if 200 <= status_code < 300:
+            self.delay_seconds = max(HOST_DELAY_FLOOR_SECONDS, self.delay_seconds * 0.9)
+            return
+        if status_code not in {429, 503}:
+            return
+        computed = max(self.delay_seconds * 2, HOST_DELAY_RATE_LIMIT_MIN_SECONDS)
+        computed *= random.uniform(1 - HOST_DELAY_JITTER, 1 + HOST_DELAY_JITTER)
+        if retry_after_seconds is not None:
+            computed = max(computed, retry_after_seconds)
+        self.delay_seconds = min(HOST_DELAY_CAP_SECONDS, computed)
+        self.last_429_at = (now or datetime.now(UTC)).isoformat()
+
 
 async def run_sitemap(
     source_run_id: uuid.UUID | str,
@@ -140,15 +186,16 @@ async def run_sitemap(
     settings = get_settings()
     cap = settings.max_pages
     concurrency = settings.crawl_concurrency
+    liveness_check_interval = settings.crawl_liveness_check_interval
     semaphore = asyncio.Semaphore(concurrency)
     stats_lock = asyncio.Lock()
     seen_lock = asyncio.Lock()
     host_lock = asyncio.Lock()
-    host_active: dict[str, int] = {}
-    host_limits: dict[str, int] = {}
-    host_backoff_until: dict[str, float] = {}
+    host_pacing: dict[str, _HostPacing] = {}
+    stop_requested = asyncio.Event()
     highest_percent = 0.0
     reserved = 0
+    liveness_checks = 0
 
     source_url = source_input.strip()
     if "://" not in source_url:
@@ -180,46 +227,63 @@ async def run_sitemap(
         async with stats_lock:
             reserved = max(0, reserved - 1)
 
-    async def enter_host(host: str) -> None:
+    async def run_is_active() -> bool:
+        run = store.get_source_run(run_id)
+        return run is not None and run.status in ACTIVE_RUN_STATUSES
+
+    async def check_liveness(*, force: bool = False) -> bool:
+        nonlocal liveness_checks
+        if stop_requested.is_set():
+            return False
+        should_check = force
+        if not force:
+            async with stats_lock:
+                liveness_checks += 1
+                should_check = liveness_checks % liveness_check_interval == 0
+        if should_check and not await run_is_active():
+            stop_requested.set()
+            return False
+        return True
+
+    async def wait_for_host(host: str) -> None:
         while True:
             async with host_lock:
                 now = time.monotonic()
-                until = host_backoff_until.get(host, 0.0)
-                if until and now >= until:
-                    host_backoff_until.pop(host, None)
-                    host_limits[host] = concurrency
-                limit = host_limits.get(host, concurrency)
-                active = host_active.get(host, 0)
-                if active < limit:
-                    host_active[host] = active + 1
+                pacing = host_pacing.setdefault(host, _HostPacing())
+                delay = pacing.wait_seconds(now)
+                if delay <= 0:
+                    pacing.mark_dispatched(now)
                     return
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(min(delay, 1.0))
 
-    async def leave_host(host: str) -> None:
+    async def update_host_pacing(host: str, result: _Result) -> None:
         async with host_lock:
-            active = max(0, host_active.get(host, 0) - 1)
-            if active:
-                host_active[host] = active
-            else:
-                host_active.pop(host, None)
+            pacing = host_pacing.setdefault(host, _HostPacing())
+            previous = pacing.delay_seconds
+            pacing.record_status(
+                result.status,
+                retry_after_seconds=_retry_after_seconds(result.headers.get("retry-after")),
+            )
+            current = pacing.delay_seconds
+        if result.status in {429, 503}:
+            _log_fetch_decision(
+                f"Throttled {host} after HTTP {result.status}; next delay {current:.2f}s",
+                event="host_pacing",
+                host=host,
+                url=result.final_url,
+                http_status=result.status,
+                previous_delay_ms=int(previous * 1000),
+                delay_ms=int(current * 1000),
+            )
 
-    async def backoff_host(host: str, status_code: int, url: str) -> None:
-        reduced = max(1, concurrency // 2)
-        until = time.monotonic() + 30
-        async with host_lock:
-            host_limits[host] = reduced
-            host_backoff_until[host] = max(host_backoff_until.get(host, 0.0), until)
-        _log_fetch_decision(
-            (
-                f"Reducing crawl concurrency for {host} to {reduced} for 30s "
-                f"after HTTP {status_code}"
-            ),
-            event="host_backoff",
-            host=host,
-            url=url,
-            http_status=status_code,
-            effective_concurrency=reduced,
-        )
+    def host_pacing_snapshot() -> dict[str, dict[str, object]]:
+        return {
+            host: {
+                "delay_ms": int(pacing.delay_seconds * 1000),
+                "last_429_at": pacing.last_429_at,
+            }
+            for host, pacing in sorted(host_pacing.items())
+        }
 
     async def worker() -> None:
         nonlocal highest_percent
@@ -227,17 +291,19 @@ async def run_sitemap(
             url, method = await queue.get()
             slot_reserved = False
             try:
+                if stop_requested.is_set():
+                    continue
                 slot_reserved = await reserve_fetch_slot()
                 if not slot_reserved:
+                    continue
+                if not await check_liveness():
                     continue
                 host = _host_key(url)
                 try:
                     async with semaphore:
-                        await enter_host(host)
-                        try:
-                            result = await _retrieve(url, store=store, run_id=run_id)
-                        finally:
-                            await leave_host(host)
+                        await wait_for_host(host)
+                        result = await _retrieve(url, store=store, run_id=run_id)
+                        await update_host_pacing(_host_key(result.final_url), result)
                 except Exception as exc:  # noqa: BLE001
                     async with stats_lock:
                         stats["errors"] += 1
@@ -253,7 +319,10 @@ async def run_sitemap(
                         error_type=type(exc).__name__,
                         error=message,
                     )
-                    store.add_fetch(
+                    if not await check_liveness(force=True):
+                        continue
+                    _safe_add_fetch(
+                        store,
                         source_run_id=run_id,
                         url=url,
                         body_bytes=None,
@@ -264,8 +333,6 @@ async def run_sitemap(
                     continue
 
                 final_url = result.final_url
-                if result.status in {429, 503}:
-                    await backoff_host(_host_key(final_url), result.status, final_url)
                 if not _in_scope(final_url, root_host):
                     _log_fetch_decision(
                         f"Skipped {_display_url(final_url)} — out of scope",
@@ -276,7 +343,10 @@ async def run_sitemap(
                     )
                     continue
 
-                store.add_fetch(
+                if not await check_liveness(force=True):
+                    continue
+                if not _safe_add_fetch(
+                    store,
                     source_run_id=run_id,
                     url=final_url,
                     body_bytes=result.body,
@@ -285,7 +355,8 @@ async def run_sitemap(
                     original_url=url,
                     redirect_chain=result.chain if len(result.chain) > 1 else None,
                     discovery_method=method,
-                )
+                ):
+                    continue
 
                 discovered_count = 0
                 if result.is_html:
@@ -307,6 +378,11 @@ async def run_sitemap(
                     displayed_percent = round(min(99.9, max(highest_percent, raw_percent)), 1)
                     highest_percent = displayed_percent
                     fetched = stats["fetched"]
+                    pacing = (
+                        host_pacing_snapshot()
+                        if fetched % HOST_PACING_STATS_INTERVAL == 0
+                        else None
+                    )
                     stats_snapshot = progress_stats(
                         stats,
                         stage="crawl",
@@ -316,6 +392,7 @@ async def run_sitemap(
                         data={
                             "known": known,
                             "raw_percent": raw_percent,
+                            **({"host_pacing": pacing} if pacing is not None else {}),
                         },
                     )
                 if discovered_count:
@@ -330,6 +407,8 @@ async def run_sitemap(
                         fetched=fetched,
                         known=known,
                     )
+                if not await check_liveness(force=True):
+                    continue
                 store.update_source_run(run_id, stats=stats_snapshot)
                 _log_fetch_decision(
                     (
@@ -357,6 +436,9 @@ async def run_sitemap(
         task.cancel()
     await asyncio.gather(*workers, return_exceptions=True)
 
+    if stop_requested.is_set() or not await run_is_active():
+        return stats
+
     status = "complete" if stats["errors"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["errors"] > 0:
         status = "failed"
@@ -375,11 +457,12 @@ async def run_sitemap(
                 "fetched": stats["fetched"],
                 "known": final_known,
                 "raw_percent": final_raw_percent,
+                "host_pacing": host_pacing_snapshot(),
             },
         ),
         finished=True,
     )
-    await enqueue_pipeline_after_crawl(store=store, crawl_run_id=run_id, crawl_status=status)
+    await enqueue_parse_after_crawl(store=store, crawl_run_id=run_id, crawl_status=status)
     return stats
 
 
@@ -387,6 +470,7 @@ class _Result(NamedTuple):
     body: bytes
     status: int
     content_type: str | None
+    headers: dict[str, str]
     final_url: str
     chain: list[str]
     is_html: bool
@@ -410,6 +494,7 @@ async def _retrieve(url: str, *, store: Store, run_id: uuid.UUID) -> _Result:
         body=response.content,
         status=response.status_code,
         content_type=content_type,
+        headers={key.lower(): value for key, value in response.headers.items()},
         final_url=final_url,
         chain=chain,
         is_html=is_html,
@@ -580,6 +665,41 @@ def _in_scope(url: str, root_host: str) -> bool:
 def _host_key(url: str) -> str:
     parsed = urlparse(url)
     return parsed.netloc.lower().split(":")[0]
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        return max(0.0, float(stripped))
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(stripped)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+
+def _safe_add_fetch(store: Store, **kwargs: object) -> bool:
+    try:
+        store.add_fetch(**kwargs)
+        return True
+    except IntegrityError as exc:
+        url = str(kwargs.get("url") or "")
+        run_id = kwargs.get("source_run_id")
+        append_log(
+            "error",
+            f"Skipped fetch write for {_display_url(url)}: {type(exc).__name__}: {exc}",
+            source_run_id=run_id,
+            store=store,
+        )
+        return False
 
 
 def _passes_filters(url: str) -> bool:

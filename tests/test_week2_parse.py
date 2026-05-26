@@ -14,7 +14,7 @@ from backend.db.models import (
 from backend.extraction.cascading_extractor import extract_claims
 from backend.normalization import normalizer
 from backend.normalization.chunker import Chunk
-from backend.pipeline.orchestrator import run_full_pipeline
+from backend.parse.orchestrator import run_full_parse
 from backend.resolution.resolver import resolve_mention
 
 
@@ -50,7 +50,7 @@ async def test_resolution_exact_match_normalizes_tuck_suffix(store) -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_promotes_claims_and_builds_projections(store, monkeypatch) -> None:
+async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     source = store.upsert_source(
         kind="domain",
@@ -82,7 +82,7 @@ async def test_full_pipeline_promotes_claims_and_builds_projections(store, monke
 
     monkeypatch.setattr(normalizer, "embed_chunks", fake_embed)
 
-    rebuilt = await run_full_pipeline(run.id, store=store)
+    rebuilt = await run_full_parse(run.id, store=store)
 
     with store.session() as session:
         errik = session.execute(

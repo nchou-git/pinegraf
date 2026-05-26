@@ -74,7 +74,7 @@ class SourceRun(Base):
     __tablename__ = "source_runs"
     __table_args__ = (
         CheckConstraint(
-            "kind in ('sitemap','seed','pipeline')",
+            "kind in ('sitemap','seed','parse')",
             name="ck_source_runs_kind",
         ),
         CheckConstraint(
@@ -127,6 +127,23 @@ class LiveLog(Base):
         Uuid(as_uuid=True),
         ForeignKey("source_runs.id", ondelete="SET NULL"),
     )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_ts", "ts"),
+        Index("ix_audit_log_target", "target_table", "target_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_table: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str | None] = mapped_column(Text)
+    request_ip: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
 
 
 class Fetch(Base):

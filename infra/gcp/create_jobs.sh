@@ -54,4 +54,4 @@ upsert_job() {
 }
 
 upsert_job pinegraf-crawl crawl
-upsert_job pinegraf-pipeline pipeline
+upsert_job pinegraf-parse parse

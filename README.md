@@ -1,6 +1,6 @@
 # Pinegraf
 
-Pinegraf is a five-layer intelligence pipeline:
+Pinegraf is a five-layer intelligence workflow:
 
 1. Ingestion: `sources`, `source_runs`, `fetches`
 2. Normalization: `documents`, `document_fetches`, `chunks`
@@ -42,10 +42,14 @@ service must be moved behind controlled egress and that IP authorized.
 
 ## Test
 
-Tests run against the live Cloud SQL database and truncate Pinegraf tables before
-and after each database-backed test.
+Tests must run against an isolated PostgreSQL database. The test fixture
+truncates Pinegraf tables before and after each database-backed test and refuses
+to run against the production Cloud SQL host. Set `TEST_DATABASE_URL` to a
+throwaway database, or let pytest start a `pgvector/pgvector:pg16` test
+container when Docker is available.
 
 ```bash
+export TEST_DATABASE_URL="postgresql+psycopg://pinegraf_test:PASSWORD@localhost:5432/pinegraf_test"
 ruff format .
 ruff check .
 pytest -v

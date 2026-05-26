@@ -42,6 +42,7 @@ def test_delete_source_hard_deletes_source_scoped_data(store, tmp_path, monkeypa
         kind="seed",
         spec={"path": str(upload_path)},
         triggered_by="test",
+        status="complete",
     )
     fetch = store.add_fetch(
         source_run_id=run.id,
@@ -180,12 +181,14 @@ def test_delete_source_repoints_shared_document_first_seen_fetch(store) -> None:
         kind="sitemap",
         spec={},
         triggered_by="test",
+        status="complete",
     )
     second_run = store.create_source_run(
         source_id=second_source.id,
         kind="sitemap",
         spec={},
         triggered_by="test",
+        status="complete",
     )
     first_fetch = store.add_fetch(
         source_run_id=first_run.id,

@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 
 from backend.config import get_settings
 from backend.db.store import Store
-from backend.ingestion.auto_pipeline import enqueue_pipeline_after_crawl
+from backend.ingestion.auto_parse import enqueue_parse_after_crawl
 from backend.ingestion.fetcher import fetch_url
 from backend.progress import progress_stats
 
@@ -83,7 +83,7 @@ async def run_seed(
         ),
         finished=True,
     )
-    await enqueue_pipeline_after_crawl(store=store, crawl_run_id=run_id, crawl_status=status)
+    await enqueue_parse_after_crawl(store=store, crawl_run_id=run_id, crawl_status=status)
     return stats
 
 

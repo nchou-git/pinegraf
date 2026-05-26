@@ -440,7 +440,7 @@ async function loadDirectory() {
         results.innerHTML = `
           <div class="directory-empty-panel">
             <i class="ti ti-route-off" aria-hidden="true"></i>
-            <h2>Pipeline hasn't run yet</h2>
+            <h2>Parse hasn't run yet</h2>
             <p>Go to Sources to crawl your first source.</p>
             <a class="btn-primary" href="#sources">Open Sources <i class="ti ti-arrow-right" aria-hidden="true"></i></a>
           </div>`;
@@ -2060,8 +2060,18 @@ function runProgressMarkup(progress) {
 }
 
 function runProgressCount(progress) {
+  const throttled = throttledDelay(progress);
+  if (throttled > 2000) return `Throttled (${formatNumber(throttled)}ms)`;
   if (!Number.isFinite(progress.fetched) || !Number.isFinite(progress.known)) return "";
   return `${formatNumber(progress.fetched)} / ${formatNumber(progress.known)}`;
+}
+
+function throttledDelay(progress) {
+  const pacing = progress?.host_pacing || {};
+  return Math.max(
+    0,
+    ...Object.values(pacing).map((entry) => Number(entry?.delay_ms || 0)),
+  );
 }
 
 function sourceMetaLine(source) {
@@ -2082,7 +2092,7 @@ function sourceRunKindLabel(kind) {
   if (kind === "sitemap") return "Website";
   if (kind === "seed") return "File upload";
   if (kind === "adhoc") return "Manual URLs";
-  if (kind === "pipeline") return "Parse";
+  if (kind === "parse") return "Parse";
   return capitalize(kind || "");
 }
 
@@ -2263,10 +2273,11 @@ function trackRun(sourceId, sourceName, action, runId) {
     progress.percent = Number(data.percent || 0);
     progress.fetched = Number(progressData.fetched);
     progress.known = Number(progressData.known);
+    progress.host_pacing = progressData.host_pacing || progress.host_pacing || {};
     progress.status = data.status;
     state.runProgress[sourceId] = progress;
     updateRunProgressDom(sourceId);
-    if (data.status === "complete" || data.status === "failed") {
+    if (data.status === "complete" || data.status === "failed" || data.status === "cancelled") {
       stream.close();
       delete state.runStreams[runId];
       delete state.runProgress[sourceId];

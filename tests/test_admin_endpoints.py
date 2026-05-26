@@ -4,8 +4,10 @@ import base64
 import uuid
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from backend import main as main_module
+from backend.db.models import AuditLog
 
 
 def test_admin_auth_required_and_happy_paths(
@@ -133,6 +135,83 @@ def test_parse_rejects_existing_active_source_run(store, admin_headers, monkeypa
     assert called is False
     assert store.get_source_run(complete.id).status == "complete"
     assert store.get_source_run(existing.id).status == "running"
+
+
+def test_delete_source_rejects_active_run(store, admin_headers) -> None:
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_id": str(source.id), "source_input": source.identifier},
+        triggered_by="test",
+        status="running",
+    )
+
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
+
+    assert response.status_code == 409
+    assert "cancel the run first" in response.json()["detail"]
+    assert store.get_source(source.id) is not None
+    assert store.get_source_run(run.id).status == "running"
+
+
+def test_cancel_run_marks_cancelled_and_audits(store, admin_headers, monkeypatch) -> None:
+    cancelled = []
+
+    def cancel_cloud_run_execution(run) -> str:
+        cancelled.append(run.id)
+        return "projects/p/locations/r/jobs/pinegraf-crawl/executions/e"
+
+    monkeypatch.setattr(main_module, "cancel_cloud_run_execution", cancel_cloud_run_execution)
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_id": str(source.id), "source_input": source.identifier},
+        triggered_by="test",
+        status="running",
+    )
+
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.post(f"/admin/runs/{run.id}/cancel", headers=admin_headers)
+        delete_response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
+        audit_response = client.get("/admin/audit", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert response.json()["cloud_cancelled"] is True
+    assert cancelled == [run.id]
+    assert delete_response.status_code == 200
+    assert store.get_source(source.id) is None
+    assert audit_response.status_code == 200
+    assert [entry["action"] for entry in audit_response.json()["entries"][:2]] == [
+        "source.delete",
+        "run.cancel",
+    ]
+
+
+def test_source_create_and_update_are_audited(store, admin_headers) -> None:
+    with TestClient(main_module.create_app(store)) as client:
+        create = client.post(
+            "/admin/sources",
+            headers=admin_headers,
+            json={"kind": "domain", "identifier": "example.com"},
+        )
+        source_id = create.json()["id"]
+        update = client.patch(
+            f"/admin/sources/{source_id}",
+            headers=admin_headers,
+            json={"display_name": "Example"},
+        )
+
+    assert create.status_code == 200
+    assert update.status_code == 200
+    with store.session() as session:
+        actions = list(
+            session.execute(select(AuditLog.action).order_by(AuditLog.ts.asc())).scalars()
+        )
+    assert actions == ["source.create", "source.update"]
 
 
 def test_admin_login_page_uses_single_account_and_password_toggle(store) -> None:

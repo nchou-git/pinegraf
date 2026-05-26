@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -19,7 +20,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from backend.admin_auth import (
@@ -30,18 +31,20 @@ from backend.admin_auth import (
 )
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
-from backend.db.models import SourceRun
-from backend.db.store import Store, source_to_dict
-from backend.jobs.run import execute_cloud_run_job
+from backend.db.models import AuditLog, SourceRun
+from backend.db.store import Store, source_to_dict, utc_now
+from backend.jobs.run import cancel_cloud_run_execution, execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
 from backend.progress import subscribe as subscribe_progress
 from backend.source_identifiers import normalize_identifier
 from backend.web_api import (
+    ActiveSourceRunError,
     archived_source_count,
     ask_stream,
     delete_source,
     document_detail,
     entity_detail,
+    list_audit_log,
     list_conflicts,
     list_directory,
     list_source_documents,
@@ -106,6 +109,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source"
+EXPECTED_ALEMBIC_HEAD = "0013_audit_log"
 
 
 def _slugify(value: str) -> str:
@@ -141,6 +145,7 @@ def create_app(store: Store | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         os.makedirs(get_settings().uploads_dir, exist_ok=True)
+        _warn_if_empty_database_since_deploy(app_store)
         append_log("info", "Pinegraf started", store=app_store)
         yield
 
@@ -357,8 +362,16 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.post("/admin/sources")
     async def admin_create_source(request: Request, payload: SourceCreate) -> dict[str, object]:
         require_admin(request)
-        source = _store(request).upsert_source(**payload.model_dump())
-        return source_to_dict(source)
+        store = _store(request)
+        source_payload = payload.model_dump()
+        source = store.upsert_source(
+            **source_payload,
+            audit_actor=_admin_actor(request),
+            audit_request_ip=_request_ip(request),
+            audit_payload=source_payload,
+        )
+        detail = source_to_dict(source)
+        return detail
 
     @app.post("/admin/sources/upload")
     async def admin_upload_source(
@@ -438,14 +451,18 @@ def create_app(store: Store | None = None) -> FastAPI:
         payload: SourceUpdate,
     ) -> dict[str, object]:
         require_admin(request)
+        store = _store(request)
         detail = update_source(
-            _store(request),
+            store,
             source_id,
             display_name=payload.display_name,
             trust_weight=payload.trust_weight,
             respect_robots=payload.respect_robots,
             status=payload.status,
             notes=payload.notes,
+            audit_actor=_admin_actor(request),
+            audit_request_ip=_request_ip(request),
+            audit_payload={"changes": payload.model_dump(exclude_none=True)},
         )
         if detail is None:
             raise HTTPException(status_code=404, detail="source not found")
@@ -454,7 +471,25 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.delete("/admin/sources/{source_id}")
     async def admin_delete_source(request: Request, source_id: uuid.UUID) -> dict[str, str]:
         require_admin(request)
-        if not delete_source(_store(request), source_id):
+        store = _store(request)
+        before = source_detail(store, source_id, include_archived=True)
+        try:
+            deleted = delete_source(
+                store,
+                source_id,
+                audit_actor=_admin_actor(request),
+                audit_request_ip=_request_ip(request),
+                audit_payload={"source": before},
+            )
+        except ActiveSourceRunError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "source has an active run; cancel the run first or wait for completion "
+                    "before deleting"
+                ),
+            ) from exc
+        if not deleted:
             raise HTTPException(status_code=404, detail="source not found")
         return {"status": "deleted"}
 
@@ -519,7 +554,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             latest = session.execute(
                 select(SourceRun)
                 .where(SourceRun.source_id == source_id)
-                .where(SourceRun.kind != "pipeline")
+                .where(SourceRun.kind != "parse")
                 .order_by(SourceRun.started_at.desc())
                 .limit(1)
             ).scalar_one_or_none()
@@ -528,10 +563,10 @@ def create_app(store: Store | None = None) -> FastAPI:
         try:
             run = store.create_source_run(
                 source_id=source.id,
-                kind="pipeline",
+                kind="parse",
                 spec={
                     "source_id": str(source.id),
-                    "pipeline_source_run_id": str(latest.id),
+                    "parse_source_run_id": str(latest.id),
                 },
                 triggered_by="admin",
                 status="queued",
@@ -539,7 +574,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         except IntegrityError as exc:
             return _already_running_from_integrity_error(store, source_id, exc)
         try:
-            await execute_cloud_run_job(run.id, "pipeline")
+            await execute_cloud_run_job(run.id, "parse")
         except Exception as exc:
             store.update_source_run(
                 run.id,
@@ -547,7 +582,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                 error_message=f"{type(exc).__name__}: {exc}",
                 finished=True,
             )
-            raise HTTPException(status_code=502, detail="failed to queue pipeline job") from exc
+            raise HTTPException(status_code=502, detail="failed to queue parse job") from exc
         append_log("info", f"Parse queued for {source.display_name or source.identifier}")
         return {"run_id": str(run.id), "status": "queued"}
 
@@ -572,6 +607,49 @@ def create_app(store: Store | None = None) -> FastAPI:
                     )
 
         return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.post("/admin/runs/{run_id}/cancel")
+    async def admin_cancel_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
+        store = _store(request)
+        run = store.get_source_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+
+        cloud_cancelled = False
+        warning = None
+        status = run.status
+        if run.status in ACTIVE_SOURCE_RUN_STATUSES:
+            try:
+                await asyncio.to_thread(cancel_cloud_run_execution, run)
+                cloud_cancelled = True
+            except Exception as exc:  # noqa: BLE001
+                warning = f"{type(exc).__name__}: {exc}"
+            status = "cancelled"
+        with store.session() as session:
+            db_run = session.get(SourceRun, run_id)
+            if db_run is not None:
+                if run.status in ACTIVE_SOURCE_RUN_STATUSES:
+                    db_run.status = "cancelled"
+                    db_run.error_message = warning
+                    db_run.finished_at = db_run.finished_at or utc_now()
+                session.add(
+                    AuditLog(
+                        action="run.cancel",
+                        target_table="source_runs",
+                        target_id=str(run_id),
+                        actor=_admin_actor(request),
+                        request_ip=_request_ip(request),
+                        payload={"cloud_cancelled": cloud_cancelled, "warning": warning},
+                    )
+                )
+                session.commit()
+        return {"status": status, "cloud_cancelled": cloud_cancelled, "warning": warning}
+
+    @app.get("/admin/audit")
+    async def admin_audit(request: Request) -> dict[str, object]:
+        require_admin(request)
+        return list_audit_log(_store(request))
 
     @app.get("/admin/conflicts")
     async def admin_conflicts(
@@ -602,6 +680,58 @@ def create_app(store: Store | None = None) -> FastAPI:
 
 def _store(request: Request) -> Store:
     return request.app.state.store
+
+
+def _admin_actor(request: Request) -> str:
+    return ADMIN_USERNAME if is_admin_request(request) else "unknown"
+
+
+def _request_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip() or None
+    return request.client.host if request.client else None
+
+
+def _warn_if_empty_database_since_deploy(store: Store) -> None:
+    try:
+        with store.session() as session:
+            version = session.execute(text("select version_num from alembic_version")).scalar_one()
+            if version != EXPECTED_ALEMBIC_HEAD:
+                return
+            counts = session.execute(
+                text(
+                    """
+                    select
+                        (select count(*) from sources) as sources,
+                        (select count(*) from source_runs) as source_runs,
+                        (select count(*) from fetches) as fetches,
+                        (
+                            select count(*)
+                            from audit_log
+                            where action like '%create%' or action like '%enqueue%'
+                        ) as create_audits
+                    """
+                )
+            ).mappings().one()
+        if (
+            counts["sources"] == 0
+            and counts["source_runs"] == 0
+            and counts["fetches"] == 0
+            and counts["create_audits"] == 0
+        ):
+            append_log(
+                "warning",
+                "Database appears empty since deploy: sources, source_runs, fetches, "
+                "and create audit entries are all zero",
+                store=store,
+            )
+    except Exception as exc:  # noqa: BLE001
+        append_log(
+            "warning",
+            f"Could not run empty-database startup check: {type(exc).__name__}: {exc}",
+            store=store,
+        )
 
 
 def _active_source_run(store: Store, source_id: uuid.UUID) -> SourceRun | None:

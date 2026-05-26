@@ -1,6 +1,6 @@
 # Pinegraf
 
-Pipeline: seed alumni -> crawl public pages -> snapshot sources -> parse into
+Workflow: seed alumni -> crawl public pages -> snapshot sources -> parse into
 source-linked structured data -> resolve entities -> answer analyst questions
 from structured rows or raw-page RAG.
 
@@ -35,10 +35,10 @@ from structured rows or raw-page RAG.
   `python-dotenv`; never hardcode keys.
 - Every external API call must have a mockable interface; tests must not hit
   real APIs.
-- Pipeline stages should remain independently runnable. Keep database side
+- Workflow stages should remain independently runnable. Keep database side
   effects isolated to `backend/db/store.py` where practical.
 - Use timezone-aware UTC datetimes (`datetime.now(UTC)`).
-- New intelligence-pipeline primary keys use UUIDv4. UUIDv7 is not available in
+- New intelligence workflow primary keys use UUIDv4. UUIDv7 is not available in
   the Python/Postgres runtime without adding another dependency or extension.
 - One Alembic migration per schema change. Each migration must downgrade cleanly;
   add a round-trip migration test for non-trivial schema changes.

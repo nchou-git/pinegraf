@@ -1,7 +1,7 @@
 [project]
 name = "pinegraf"
 version = "0.3.0"
-description = "Alumni enrichment and query pipeline"
+description = "Alumni enrichment and query engine"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi",
@@ -24,6 +24,7 @@ dependencies = [
   "itsdangerous",
   "python-multipart",
   "google-cloud-run",
+  "testcontainers[postgres]",
 ]
 
 [build-system]

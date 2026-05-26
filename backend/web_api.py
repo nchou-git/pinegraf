@@ -13,6 +13,7 @@ from sqlalchemy import delete, func, or_, select
 from backend.class_year import expand_class_year_synonyms
 from backend.config import Settings, get_settings
 from backend.db.models import (
+    AuditLog,
     Chunk,
     Claim,
     ClaimConflict,
@@ -36,11 +37,65 @@ from backend.resolution.embedder import embed_texts
 
 ASK_CACHE_SECONDS = 3600
 ASK_CACHE_MAX = 100
+ACTIVE_SOURCE_RUN_STATUSES = {"queued", "running"}
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
+
+
+class ActiveSourceRunError(RuntimeError):
+    def __init__(self, run_id: uuid.UUID, status: str) -> None:
+        super().__init__("source has an active run")
+        self.run_id = run_id
+        self.status = status
 
 
 def stats(store: Store) -> dict[str, int]:
     return store.table_counts(SCHEMA_TABLES)
+
+
+def record_audit(
+    store: Store,
+    *,
+    action: str,
+    target_table: str,
+    target_id: uuid.UUID | str,
+    actor: str | None,
+    request_ip: str | None,
+    payload: dict[str, object] | None = None,
+) -> None:
+    with store.session() as session:
+        _add_audit_row(
+            session,
+            action=action,
+            target_table=target_table,
+            target_id=target_id,
+            actor=actor,
+            request_ip=request_ip,
+            payload=payload,
+        )
+        session.commit()
+
+
+def list_audit_log(store: Store, *, limit: int = 200) -> dict[str, object]:
+    limit = min(max(limit, 1), 200)
+    with store.session() as session:
+        rows = list(
+            session.execute(select(AuditLog).order_by(AuditLog.ts.desc()).limit(limit)).scalars()
+        )
+    return {
+        "entries": [
+            {
+                "id": str(row.id),
+                "ts": row.ts.isoformat(),
+                "action": row.action,
+                "target_table": row.target_table,
+                "target_id": row.target_id,
+                "actor": row.actor,
+                "request_ip": row.request_ip,
+                "payload": row.payload,
+            }
+            for row in rows
+        ]
+    }
 
 
 def list_directory(
@@ -211,7 +266,7 @@ async def ask_stream(
     answer = ""
     if not claims and not chunks:
         answer = (
-            "No extracted graph evidence is available yet. Run ingestion and the pipeline first."
+            "No extracted graph evidence is available yet. Run ingestion and parse first."
         )
         yield _sse({"kind": "token", "text": answer})
     elif settings.openai_api_key:
@@ -523,6 +578,9 @@ def update_source(
     respect_robots: bool | None = None,
     status: str | None = None,
     notes: str | None = None,
+    audit_actor: str | None = None,
+    audit_request_ip: str | None = None,
+    audit_payload: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
     with store.session() as session:
         source = session.get(Source, source_id)
@@ -538,17 +596,43 @@ def update_source(
             source.status = status
         if notes is not None:
             source.notes = notes.strip() or None
+        if audit_payload is not None:
+            _add_audit_row(
+                session,
+                action="source.update",
+                target_table="sources",
+                target_id=source_id,
+                actor=audit_actor,
+                request_ip=audit_request_ip,
+                payload=audit_payload,
+            )
         session.commit()
     return source_detail(store, source_id, include_archived=True)
 
 
-def delete_source(store: Store, source_id: uuid.UUID) -> bool:
+def delete_source(
+    store: Store,
+    source_id: uuid.UUID,
+    *,
+    audit_actor: str | None = None,
+    audit_request_ip: str | None = None,
+    audit_payload: dict[str, object] | None = None,
+) -> bool:
     """Hard-delete a source and all derived data. Returns True if deleted."""
     uploaded_filename = None
     with store.session() as session:
         source = session.get(Source, source_id)
         if source is None:
             return False
+        active_run = session.execute(
+            select(SourceRun)
+            .where(SourceRun.source_id == source_id)
+            .where(SourceRun.status.in_(ACTIVE_SOURCE_RUN_STATUSES))
+            .order_by(SourceRun.started_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_run is not None:
+            raise ActiveSourceRunError(active_run.id, active_run.status)
         uploaded_filename = source.identifier if source.kind == "file" else None
 
         fetch_ids = list(
@@ -600,6 +684,16 @@ def delete_source(store: Store, source_id: uuid.UUID) -> bool:
             )
             _delete_rows(session, delete(Fetch).where(Fetch.id.in_(fetch_ids)))
         _delete_rows(session, delete(SourceRun).where(SourceRun.source_id == source_id))
+        if audit_payload is not None:
+            _add_audit_row(
+                session,
+                action="source.delete",
+                target_table="sources",
+                target_id=source_id,
+                actor=audit_actor,
+                request_ip=audit_request_ip,
+                payload=audit_payload,
+            )
         session.delete(source)
         session.commit()
 
@@ -750,6 +844,28 @@ def _delete_uploaded_file(filename: str) -> bool:
 def _delete_rows(session, statement) -> int:
     result = session.execute(statement.execution_options(synchronize_session=False))
     return int(result.rowcount or 0)
+
+
+def _add_audit_row(
+    session,
+    *,
+    action: str,
+    target_table: str,
+    target_id: uuid.UUID | str,
+    actor: str | None,
+    request_ip: str | None,
+    payload: dict[str, object] | None,
+) -> None:
+    session.add(
+        AuditLog(
+            action=action,
+            target_table=target_table,
+            target_id=str(target_id),
+            actor=actor,
+            request_ip=request_ip,
+            payload=payload,
+        )
+    )
 
 
 def list_conflicts(store: Store, page: int = 1, page_size: int = 25) -> dict[str, object]:
@@ -989,7 +1105,7 @@ async def _answer_from_graph(
     )
     if not claims and not chunks:
         return (
-            "No extracted graph evidence is available yet. Run ingestion and the pipeline first.",
+            "No extracted graph evidence is available yet. Run ingestion and parse first.",
             [],
         )
     if settings.openai_api_key:

@@ -25,7 +25,8 @@ class Settings(BaseModel):
     pinegraf_contact: str = Field(default="ops@example.com")
     max_pages: int = Field(default=10000, ge=1)
     crawl_concurrency: int = Field(default=10, ge=1)
-    auto_pipeline: bool = Field(default=True)
+    crawl_liveness_check_interval: int = Field(default=25, ge=1)
+    auto_parse: bool = Field(default=True)
     use_mock_embeddings: bool = Field(default=False)
     cheap_model: str = Field(default="gpt-4o-mini")
     frontier_model: str = Field(default="gpt-4o")
@@ -35,7 +36,7 @@ class Settings(BaseModel):
 
     uploads_dir: str = Field(default="/tmp/pinegraf_uploads")
 
-    @field_validator("use_mock_embeddings", "secure_cookies", "auto_pipeline", mode="before")
+    @field_validator("use_mock_embeddings", "secure_cookies", "auto_parse", mode="before")
     @classmethod
     def parse_bool(_cls, value: object) -> bool:
         if isinstance(value, bool):
@@ -64,7 +65,10 @@ def get_settings() -> Settings:
             pinegraf_contact=os.getenv("PINEGRAF_CONTACT", "ops@example.com"),
             max_pages=int(os.getenv("MAX_PAGES", "10000")),
             crawl_concurrency=int(os.getenv("CRAWL_CONCURRENCY", "10")),
-            auto_pipeline=os.getenv("PINEGRAF_AUTO_PIPELINE", "true"),
+            crawl_liveness_check_interval=int(
+                os.getenv("CRAWL_LIVENESS_CHECK_INTERVAL", "25")
+            ),
+            auto_parse=os.getenv("PINEGRAF_AUTO_PARSE", "true"),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
             cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
             frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),
