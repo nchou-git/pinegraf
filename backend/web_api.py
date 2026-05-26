@@ -108,6 +108,9 @@ def list_directory(
                     "canonical_name": entity.canonical_name,
                     "kind": entity.kind,
                     "primary_attributes": summary.primary_attributes or {},
+                    "primary_attribute_claims": _primary_attribute_claims(
+                        session, entity.id, summary.primary_attributes or {}
+                    ),
                     "confidence_avg": summary.confidence_avg,
                     "connection_count": summary.connection_count,
                     "source_count": summary.source_count,
@@ -171,6 +174,12 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
                     "confidence": row.confidence,
                     "evidence_count": row.evidence_count,
                     "is_resolved": True,
+                    "claims": _connection_claims(
+                        session,
+                        entity_id,
+                        neighbor.id,
+                        row.predicates or [],
+                    ),
                 }
                 for row, neighbor in neighborhoods
             ],
@@ -269,6 +278,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "identifier": source.identifier,
                     "display_name": source.display_name or source.identifier,
                     "trust_weight": source.trust_weight,
+                    "respect_robots": source.respect_robots,
                     "status": _source_status(source),
                     "notes": source.notes,
                     "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
@@ -332,6 +342,7 @@ def source_detail(
             "identifier": source.identifier,
             "display_name": source.display_name or source.identifier,
             "trust_weight": source.trust_weight,
+            "respect_robots": source.respect_robots,
             "status": _source_status(source),
             "notes": source.notes,
             "file_size_bytes": file_size_bytes,
@@ -425,6 +436,13 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
         if document is None:
             return None
         fetch = session.get(Fetch, document.first_seen_fetch_id)
+        source = None
+        if fetch is not None:
+            source = session.execute(
+                select(Source)
+                .join(SourceRun, SourceRun.source_id == Source.id)
+                .where(SourceRun.id == fetch.source_run_id)
+            ).scalar_one_or_none()
         chunks = list(
             session.execute(
                 select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ordinal.asc())
@@ -461,6 +479,22 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
                     "object_text": raw.object_text,
                     "raw_quote": raw.raw_quote,
                     "confidence_internal": raw.confidence_internal,
+                    "evidence": [
+                        {
+                            "source_id": str(source.id),
+                            "source_identifier": source.identifier,
+                            "source_name": source.display_name or source.identifier,
+                            "document_id": str(document.id),
+                            "document_title": document.title,
+                            "document_url": document.canonical_url or (fetch.url if fetch else ""),
+                            "url": fetch.url if fetch else "",
+                            "live_url": document.canonical_url or (fetch.url if fetch else ""),
+                            "fetched_at": fetch.fetched_at.isoformat() if fetch else None,
+                            "raw_quote": raw.raw_quote,
+                        }
+                    ]
+                    if source is not None
+                    else [],
                 }
                 for raw in claims_raw
             ],
@@ -473,6 +507,7 @@ def update_source(
     *,
     display_name: str | None = None,
     trust_weight: float | None = None,
+    respect_robots: bool | None = None,
     status: str | None = None,
     notes: str | None = None,
 ) -> dict[str, object] | None:
@@ -484,6 +519,8 @@ def update_source(
             source.display_name = display_name
         if trust_weight is not None:
             source.trust_weight = trust_weight
+        if respect_robots is not None:
+            source.respect_robots = respect_robots
         if status is not None:
             existing_notes = source.notes or ""
             note_body = existing_notes
@@ -736,6 +773,8 @@ def list_conflicts(store: Store, page: int = 1, page_size: int = 25) -> dict[str
                     "id": str(row.id),
                     "claim_a_id": str(row.claim_a_id),
                     "claim_b_id": str(row.claim_b_id),
+                    "claim_a": _claim_to_dict(session, row.claim_a_id),
+                    "claim_b": _claim_to_dict(session, row.claim_b_id),
                     "detected_at": row.detected_at.isoformat(),
                     "resolution": row.resolution,
                     "notes": row.notes,
@@ -823,31 +862,121 @@ def _attribute_claims(session, entity_id: uuid.UUID) -> dict[str, list[dict[str,
     return grouped
 
 
+def _primary_attribute_claims(
+    session,
+    entity_id: uuid.UUID,
+    primary_attributes: dict[str, object],
+) -> dict[str, dict[str, object]]:
+    if not primary_attributes:
+        return {}
+    grouped = _attribute_claims(session, entity_id)
+    output: dict[str, dict[str, object]] = {}
+    for key, value in primary_attributes.items():
+        if value in (None, ""):
+            continue
+        claims = grouped.get(key) or []
+        if claims:
+            output[key] = claims[0]
+    return output
+
+
+def _connection_claims(
+    session,
+    entity_id: uuid.UUID,
+    neighbor_id: uuid.UUID,
+    predicates: list[str],
+) -> list[dict[str, object]]:
+    query = select(Claim).where(
+        or_(
+            (Claim.subject_entity_id == entity_id) & (Claim.object_entity_id == neighbor_id),
+            (Claim.subject_entity_id == neighbor_id) & (Claim.object_entity_id == entity_id),
+        )
+    )
+    if predicates:
+        query = query.where(Claim.predicate.in_(predicates))
+    claims = list(
+        session.execute(query.order_by(Claim.confidence_score.desc()).limit(10)).scalars()
+    )
+    return [claim for claim in (_claim_to_dict(session, row.id) for row in claims) if claim]
+
+
+def _claim_to_dict(session, claim_id: uuid.UUID) -> dict[str, object] | None:
+    claim = session.get(Claim, claim_id)
+    if claim is None:
+        return None
+    subject = session.get(Entity, claim.subject_entity_id)
+    object_entity = session.get(Entity, claim.object_entity_id) if claim.object_entity_id else None
+    object_value = object_entity.canonical_name if object_entity else claim.object_value
+    return {
+        "claim_id": str(claim.id),
+        "subject": subject.canonical_name if subject else str(claim.subject_entity_id),
+        "predicate": claim.predicate,
+        "object": object_value,
+        "object_value": claim.object_value,
+        "confidence_score": claim.confidence_score,
+        "statement": _claim_statement(
+            subject.canonical_name if subject else str(claim.subject_entity_id),
+            claim.predicate,
+            object_value,
+        ),
+        "evidence": _claim_evidence(session, claim.id),
+    }
+
+
+def _claim_statement(subject: str, predicate: str, object_value: object) -> str:
+    return " ".join(
+        part
+        for part in [
+            str(subject or "").strip(),
+            str(predicate or "").replace("_", " ").strip(),
+            str(object_value or "").strip(),
+        ]
+        if part
+    )
+
+
 def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
     rows = list(
         session.execute(
-            select(ClaimEvidence, Source, ClaimRaw, Fetch)
+            select(ClaimEvidence, Source, ClaimRaw, Document, Fetch)
             .join(Source, Source.id == ClaimEvidence.source_id)
             .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
             .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
             .join(Document, Document.id == Chunk.document_id)
             .join(DocumentFetch, DocumentFetch.document_id == Document.id)
             .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
+            .join(SourceRun, SourceRun.id == Fetch.source_run_id)
             .where(ClaimEvidence.claim_id == claim_id)
+            .where(SourceRun.source_id == ClaimEvidence.source_id)
+            .order_by(ClaimEvidence.added_at.desc(), Fetch.fetched_at.desc())
         ).all()
     )
-    return [
-        {
-            "source_id": str(source.id),
-            "source_identifier": source.identifier,
-            "url": fetch.url,
-            "weight": evidence.weight,
-            "raw_quote": raw.raw_quote,
-            "added_at": evidence.added_at.isoformat(),
-            "audit_verdict": None,
-        }
-        for evidence, source, raw, fetch in rows
-    ]
+    output = []
+    seen: set[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = set()
+    for evidence, source, raw, document, fetch in rows:
+        key = (source.id, raw.id, document.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        document_url = document.canonical_url or fetch.url
+        output.append(
+            {
+                "source_id": str(source.id),
+                "source_identifier": source.identifier,
+                "source_name": source.display_name or source.identifier,
+                "document_id": str(document.id),
+                "document_title": document.title,
+                "document_url": document_url,
+                "url": fetch.url,
+                "live_url": document_url,
+                "fetched_at": fetch.fetched_at.isoformat(),
+                "weight": evidence.weight,
+                "raw_quote": raw.raw_quote,
+                "added_at": evidence.added_at.isoformat(),
+                "audit_verdict": None,
+            }
+        )
+    return output
 
 
 async def _answer_from_graph(
@@ -877,7 +1006,13 @@ async def _answer_from_graph(
                     {
                         "claim_id": str(claim.id),
                         "source_id": evidence[0]["source_id"],
+                        "source_name": evidence[0]["source_name"],
+                        "title": evidence[0]["source_name"],
+                        "document_id": evidence[0]["document_id"],
+                        "document_url": evidence[0]["document_url"],
+                        "fetched_at": evidence[0]["fetched_at"],
                         "quote": evidence[0]["raw_quote"],
+                        "evidence": evidence,
                     }
                 )
     if not claims and not chunks:

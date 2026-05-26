@@ -174,7 +174,11 @@ function renderShell() {
 }
 
 function navTabs() {
-  return state.me?.is_admin ? [...TAB_DEFS, LOGS_TAB] : TAB_DEFS;
+  return isAdmin() ? [...TAB_DEFS, LOGS_TAB] : TAB_DEFS;
+}
+
+function isAdmin() {
+  return Boolean(state.me?.is_admin);
 }
 
 function workspaceInitials(name) {
@@ -742,6 +746,7 @@ function directoryTable(rows) {
 
 function directoryTableRow(row) {
   const attrs = row.primary_attributes || {};
+  const attrClaims = row.primary_attribute_claims || {};
   const initials = (row.canonical_name || "")
     .split(/\s+/)
     .slice(0, 2)
@@ -764,9 +769,9 @@ function directoryTableRow(row) {
           </div>
         </div>
       </td>
-      <td>${escapeHtml(attrs.current_title || "")}</td>
-      <td>${escapeHtml(attrs.current_employer || "")}</td>
-      <td>${escapeHtml(attrs.class_year || "")}</td>
+      <td>${claimValueWithAttribution(attrs.current_title, attrClaims.current_title)}</td>
+      <td>${claimValueWithAttribution(attrs.current_employer, attrClaims.current_employer)}</td>
+      <td>${claimValueWithAttribution(attrs.class_year, attrClaims.class_year)}</td>
       <td>
         <div class="directory-source-cell">
           ${
@@ -787,6 +792,51 @@ function directoryTableRow(row) {
 function sourceLabel(identifier) {
   const source = (state.sourcesCache || []).find((item) => item.identifier === identifier);
   return source?.display_name || source?.identifier || identifier;
+}
+
+function claimValueWithAttribution(value, claim) {
+  if (!value) return "";
+  return `<span class="claim-value">${escapeHtml(value)}</span>${claimAttribution(claim)}`;
+}
+
+function claimAttribution(claimOrEvidence) {
+  const evidence = claimEvidenceList(claimOrEvidence);
+  if (!evidence.length) return "";
+  const uniqueSourceIds = new Set(evidence.map((item) => item.source_id || item.source_identifier || item.source_name));
+  const first = evidence[0];
+  const label = uniqueSourceIds.size > 1
+    ? `${uniqueSourceIds.size} sources`
+    : `${first.source_name || first.source_identifier || "Source"}${first.fetched_at ? ` · ${formatDate(first.fetched_at)}` : ""}`;
+  return `
+    <details class="claim-attribution">
+      <summary><i class="ti ti-link" aria-hidden="true"></i><span>${escapeHtml(label)}</span></summary>
+      <div class="claim-attribution-panel">
+        ${evidence.map(claimEvidenceRow).join("")}
+      </div>
+    </details>
+  `;
+}
+
+function claimEvidenceList(claimOrEvidence) {
+  if (Array.isArray(claimOrEvidence)) return claimOrEvidence;
+  if (Array.isArray(claimOrEvidence?.evidence)) return claimOrEvidence.evidence;
+  return [];
+}
+
+function claimEvidenceRow(evidence) {
+  const sourceName = evidence.source_name || evidence.source_identifier || "Source";
+  const url = evidence.document_url || evidence.live_url || evidence.url || "";
+  const fetched = evidence.fetched_at ? formatDate(evidence.fetched_at) : "";
+  return `
+    <div class="claim-evidence-row">
+      <div class="claim-evidence-head">
+        <strong>${escapeHtml(sourceName)}</strong>
+        ${fetched ? `<span>${escapeHtml(fetched)}</span>` : ""}
+      </div>
+      ${url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>` : ""}
+      ${evidence.raw_quote ? `<blockquote>${escapeHtml(evidence.raw_quote)}</blockquote>` : ""}
+    </div>
+  `;
 }
 
 function rowBio(row) {
@@ -1024,11 +1074,12 @@ function renderAskSources(item) {
             ? citations
                 .map(
                   (c, i) => `
-                    <button class="btn-ghost ask-citation-card" type="button" data-ask-id="${escapeAttr(item.id)}" data-citation-index="${i}">
+                    <article class="ask-citation-card" role="button" tabindex="0" data-ask-id="${escapeAttr(item.id)}" data-citation-index="${i}">
                       <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
-                      <strong>${escapeHtml(c.title || c.source_title || `Source ${i + 1}`)}</strong>
+                      <strong>${escapeHtml(c.source_name || c.title || c.source_title || `Source ${i + 1}`)}</strong>
+                      ${claimAttribution(c)}
                       <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
-                    </button>`,
+                    </article>`,
                 )
                 .join("")
             : `<div class="ask-citations-empty">Answered from corpus-level patterns, no specific citations.</div>`
@@ -1047,11 +1098,18 @@ function refreshAskSources(itemId) {
 }
 
 function attachAskCitationHandlers() {
-  document.querySelectorAll(".ask-citation-card").forEach((button) => {
-    button.onclick = () => {
-      const item = state.askSession.find((candidate) => candidate.id === button.dataset.askId);
-      const citation = item?.citations?.[Number(button.dataset.citationIndex)] || {};
+  document.querySelectorAll(".ask-citation-card").forEach((card) => {
+    const open = (event) => {
+      if (event?.target?.closest?.(".claim-attribution, a")) return;
+      const item = state.askSession.find((candidate) => candidate.id === card.dataset.askId);
+      const citation = item?.citations?.[Number(card.dataset.citationIndex)] || {};
       openCitationDrawer(citation);
+    };
+    card.onclick = open;
+    card.onkeydown = (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open(event);
     };
   });
 }
@@ -1069,7 +1127,7 @@ function openCitationDrawer(citation) {
   drawer.innerHTML = `
     <div class="side-drawer-header">
       <div>
-        <div class="side-drawer-title">${escapeHtml(citation.title || citation.source_title || "Source")}</div>
+        <div class="side-drawer-title">${escapeHtml(citation.source_name || citation.title || citation.source_title || "Source")}</div>
         <div class="side-drawer-subtitle">${escapeHtml(citation.source_id || citation.claim_id || "Citation")}</div>
       </div>
       <button class="btn-icon-only modal-close" type="button" onclick="closeSideDrawer()" aria-label="Close">×</button>
@@ -1078,7 +1136,7 @@ function openCitationDrawer(citation) {
       <div class="field-label">Snippet</div>
       <blockquote>${escapeHtml(citation.quote || "No snippet returned for this citation.")}</blockquote>
       <div class="field-label">Source reference</div>
-      <div class="side-drawer-meta">${escapeHtml(citation.source_id || "No source id returned.")}</div>
+      ${claimAttribution(citation) || `<div class="side-drawer-meta">${escapeHtml(citation.source_id || "No source id returned.")}</div>`}
       ${
         citation.document_id
           ? `<button class="btn-secondary" type="button" data-document-id="${escapeAttr(citation.document_id)}"><i class="ti ti-file-text" aria-hidden="true"></i> Open document</button>`
@@ -1290,6 +1348,7 @@ function renderEntityPanel(data) {
         </div>
       </div>
     </div>
+    ${renderEntityAttributeClaims(data.attributes || {})}
     <section class="graph-split">
       <div class="panel">
         <div class="panel-header">
@@ -1317,6 +1376,34 @@ function renderEntityPanel(data) {
   drawGraph(data);
 }
 
+function renderEntityAttributeClaims(attributes) {
+  const rows = Object.entries(attributes || {}).flatMap(([predicate, claims]) =>
+    (claims || []).map((claim) => ({ predicate, claim })),
+  );
+  if (!rows.length) return "";
+  return `
+    <section class="panel entity-claims-panel">
+      <div class="panel-header">
+        <div class="panel-title">Attributes</div>
+      </div>
+      <div class="entity-claim-list">
+        ${rows
+          .map(
+            ({ predicate, claim }) => `
+              <div class="entity-claim-row">
+                <div>
+                  <span class="claim-predicate">${escapeHtml(predicate.replace(/_/g, " "))}</span>
+                  <strong>${escapeHtml(claim.object_value || "")}</strong>
+                </div>
+                ${claimAttribution(claim)}
+              </div>`,
+          )
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function drawGraph(data) {
   if (typeof d3 === "undefined") return;
   const svg = d3.select("#graph-svg");
@@ -1339,6 +1426,7 @@ function drawGraph(data) {
       confidence: conn.confidence,
       evidence_count: conn.evidence_count,
       is_resolved: conn.is_resolved,
+      claims: conn.claims || [],
     };
   });
 
@@ -1454,6 +1542,7 @@ function loadClaimForEdge(edge) {
   const panel = byId("claim-panel");
   const subject = edge.source.name || edge.source;
   const object = edge.target.name || edge.target;
+  const claims = edge.claims || [];
   panel.innerHTML = `
     <div class="claim-statement">
       <span class="entity">${escapeHtml(subject)}</span>
@@ -1465,6 +1554,21 @@ function loadClaimForEdge(edge) {
       <span>·</span>
       <span>${Math.round((edge.confidence || 0) * 100)}% corroborated</span>
     </div>
+    ${
+      claims.length
+        ? `<div class="edge-claim-list">
+            ${claims
+              .map(
+                (claim) => `
+                  <div class="edge-claim-row">
+                    <div>${escapeHtml(claim.statement || "")}</div>
+                    ${claimAttribution(claim)}
+                  </div>`,
+              )
+              .join("")}
+          </div>`
+        : ""
+    }
     <div class="muted small">Click the names in this graph to drill into each entity.</div>
   `;
 }
@@ -1473,12 +1577,16 @@ function loadClaimForEdge(edge) {
 
 async function renderSources(parts) {
   if (parts[0] === "archive") {
+    if (!isAdmin()) {
+      location.hash = "#sources";
+      return;
+    }
     return renderSourcesArchive();
   }
   if (parts[0]) {
     return renderSourceDetail(parts[0], parts[1]);
   }
-  const adminActions = state.me?.is_admin
+  const adminActions = isAdmin()
     ? `<div class="source-actions">
          <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
        </div>`
@@ -1491,7 +1599,7 @@ async function renderSources(parts) {
       ${sourceSkeletonRow()}
     </div>
     ${
-      state.me?.is_admin
+      isAdmin()
         ? `<details class="conflicts" open>
              <summary class="conflicts-header">
                <div class="conflicts-title-row">
@@ -1505,14 +1613,14 @@ async function renderSources(parts) {
         : ""
     }
   `;
-  if (state.me?.is_admin) {
+  if (isAdmin()) {
     byId("add-source").onclick = openAddSourceModal;
   }
   setupStatInfoButtons();
   await Promise.all([
     loadSourcesStats(),
     loadSourcesList(),
-    state.me?.is_admin ? loadAdminConflicts() : Promise.resolve(),
+    isAdmin() ? loadAdminConflicts() : Promise.resolve(),
   ]);
 }
 
@@ -1577,48 +1685,48 @@ async function loadSourcesList() {
   }
   try {
     const data = await getJSON("/api/sources");
+    const archivedData = isAdmin() ? await getJSON("/api/sources/archived") : { sources: [] };
     const sources = data.sources || [];
+    const archivedSources = archivedData.sources || [];
     state.sourcesCache = sources;
     const active = sources.filter((s) => s.status === "active");
     const paused = sources.filter((s) => s.status === "paused");
-    const archivedCount = Number(data.archived_count || 0);
+    const archivedCount = archivedSources.length;
     const pageSubtitle = byId("page-subtitle");
     if (pageSubtitle) {
-      pageSubtitle.innerHTML = `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused · <a href="#sources/archive">${formatNumber(archivedCount)} archived</a>`;
+      pageSubtitle.textContent = isAdmin()
+        ? `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused · ${formatNumber(archivedCount)} archived`
+        : `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused`;
     }
-    if (!sources.length) {
+    if (!sources.length && (!isAdmin() || !archivedSources.length)) {
       list.innerHTML = sourceEmptyState();
       const emptyAddSource = byId("empty-add-source");
       if (emptyAddSource) emptyAddSource.onclick = openAddSourceModal;
       return;
     }
-    list.innerHTML = sources.map((s) => sourceRow(s)).join("");
-    list.querySelectorAll(".source-row").forEach((row) => {
-      const id = row.dataset.sourceId;
-      const source = sources.find((item) => item.id === id);
-      row.onclick = (e) => {
-        if (e.target.closest("button")) return;
-        location.hash = `#sources/${id}`;
-      };
-      const crawl = row.querySelector("[data-action=crawl]");
-      const parse = row.querySelector("[data-action=parse]");
-      const resume = row.querySelector("[data-action=resume]");
-      const menuBtn = row.querySelector("[data-action=menu]");
-      if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(id, "crawl"); };
-      if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(id, "parse"); };
-      if (resume) resume.onclick = (e) => {
-        e.stopPropagation();
-        updateSourceStatus(id, "active");
-      };
-      if (menuBtn) menuBtn.onclick = (e) => {
-        e.stopPropagation();
-        toggleMenu(row, id);
-      };
-      if (source?.active_run_id && state.me?.is_admin) {
-        trackRun(source.id, sourceDisplayName(source), "run", source.active_run_id);
+    list.innerHTML = `
+      ${
+        sources.length
+          ? sources.map((source) => sourceRow(source)).join("")
+          : `<div class="empty-state sources-empty compact"><i class="ti ti-database-off" aria-hidden="true"></i><div>No active sources.</div></div>`
       }
-      if (state.runProgress[id]) updateRunProgressDom(id);
-    });
+      ${
+        isAdmin()
+          ? `<details class="archived-sources">
+              <summary>Archived (${formatNumber(archivedCount)})</summary>
+              <div class="archived-sources-list">
+                ${
+                  archivedSources.length
+                    ? archivedSources.map((source) => sourceRow(source, { archived: true })).join("")
+                    : `<div class="empty-state sources-empty compact"><i class="ti ti-archive-off" aria-hidden="true"></i><div>No archived sources.</div></div>`
+                }
+              </div>
+            </details>`
+          : ""
+      }
+    `;
+    setupSourceRows(list, sources, { archived: false });
+    if (isAdmin()) setupSourceRows(list, archivedSources, { archived: true });
   } catch (e) {
     state.sourcesCache = [];
     const pageSubtitle = byId("page-subtitle");
@@ -1634,6 +1742,51 @@ async function loadSourcesList() {
       if (retry) retry.onclick = loadSourcesList;
     }
   }
+}
+
+function setupSourceRows(root, sources, { archived }) {
+  sources.forEach((source) => {
+    const row = root.querySelector(`[data-source-id="${CSS.escape(source.id)}"]`);
+    if (!row) return;
+    if (!archived) {
+      row.onclick = (e) => {
+        if (e.target.closest("button")) return;
+        location.hash = `#sources/${source.id}`;
+      };
+    }
+    if (!isAdmin()) {
+      if (state.runProgress[source.id]) updateRunProgressDom(source.id);
+      return;
+    }
+    const crawl = row.querySelector("[data-action=crawl]");
+    const parse = row.querySelector("[data-action=parse]");
+    const resume = row.querySelector("[data-action=resume]");
+    const unarchive = row.querySelector("[data-action=unarchive]");
+    const destroy = row.querySelector("[data-action=delete]");
+    const menuBtn = row.querySelector("[data-action=menu]");
+    if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
+    if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
+    if (resume) resume.onclick = (e) => {
+      e.stopPropagation();
+      updateSourceStatus(source.id, "active");
+    };
+    if (unarchive) unarchive.onclick = (e) => {
+      e.stopPropagation();
+      updateSourceStatus(source.id, "active");
+    };
+    if (destroy) destroy.onclick = (e) => {
+      e.stopPropagation();
+      confirmDeleteSource(source);
+    };
+    if (menuBtn) menuBtn.onclick = (e) => {
+      e.stopPropagation();
+      toggleMenu(row, source.id);
+    };
+    if (source?.active_run_id && isAdmin()) {
+      trackRun(source.id, sourceDisplayName(source), "run", source.active_run_id);
+    }
+    if (state.runProgress[source.id]) updateRunProgressDom(source.id);
+  });
 }
 
 function sourceSkeletonRow() {
@@ -1655,16 +1808,16 @@ function sourceSkeletonRow() {
 }
 
 function sourceEmptyState() {
-  const body = state.me?.is_admin
+  const body = isAdmin()
     ? "Add a source to start ingesting documents and building your graph."
-    : "Sign in as admin to add sources.";
+    : "No active sources are available yet.";
   return `
     <div class="empty-state sources-empty">
       <i class="ti ti-database-off" aria-hidden="true"></i>
       <h2>No sources yet</h2>
       <p>${escapeHtml(body)}</p>
       ${
-        state.me?.is_admin
+        isAdmin()
           ? `<button class="btn-primary" id="empty-add-source" type="button"><i class="ti ti-plus" aria-hidden="true"></i> Add source</button>`
           : ""
       }
@@ -1682,7 +1835,7 @@ function sourceErrorState(error) {
       <p class="sources-error-message ${isStack ? "is-stack" : ""}">${escapeHtml(message)}</p>
       <button class="btn-secondary" id="sources-retry" type="button"><i class="ti ti-refresh" aria-hidden="true"></i> Retry</button>
       ${
-        state.me?.is_admin
+        isAdmin()
           ? `<div class="sources-log-note">
                <div class="muted small">Check Cloud Run logs:</div>
                <code>gcloud run services logs read pinegraf --region=us-east4 --limit=50</code>
@@ -1704,6 +1857,10 @@ function normalizeErrorMessage(error) {
 }
 
 async function renderSourcesArchive() {
+  if (!isAdmin()) {
+    location.hash = "#sources";
+    return;
+  }
   setPageHeader({
     title: "Archived sources",
     subtitle: "Hidden from the main Sources list",
@@ -1784,33 +1941,27 @@ async function restoreArchivedSource(sourceId) {
 }
 
 async function deleteArchivedSource(source) {
-  if (!source) return;
-  const message = `${sourceDisplayName(source)} and all of its derived data (documents, claims, entities tied only to it) will be permanently removed. This can't be undone.`;
-  if (!confirm(message)) return;
-  try {
-    const response = await fetch(`/admin/sources/${source.id}`, { method: "DELETE" });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.detail || response.statusText);
-    }
-    loadArchivedSourcesList();
-  } catch (_) {}
+  confirmDeleteSource(source);
 }
 
-function sourceRow(source) {
+function sourceRow(source, options = {}) {
+  const archived = Boolean(options.archived);
   const paused = source.status === "paused";
   const kindLabel = sourceKindLabel(source);
   const kindIcon = sourceKindIcon(source);
   const progress = state.runProgress[source.id];
-  const actions = paused
-    ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
-    : `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
-       <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>`;
-  const menuButton = state.me?.is_admin
+  const actions = archived
+    ? `<button class="btn-secondary" data-action="unarchive" type="button">Unarchive</button>
+       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`
+    : paused
+      ? `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`
+      : `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
+         <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>`;
+  const menuButton = !archived && isAdmin()
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
   return `
-    <article class="source-row ${paused ? "paused" : ""}" data-source-id="${escapeAttr(source.id)}">
+    <article class="source-row ${paused ? "paused" : ""} ${archived ? "archived" : ""}" data-source-id="${escapeAttr(source.id)}">
       <div class="source-row-main">
         <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
         <div class="source-row-copy">
@@ -1827,7 +1978,7 @@ function sourceRow(source) {
         <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
         <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
       </div>
-      ${state.me?.is_admin ? `<div class="source-row-actions">${progress ? runProgressMarkup(progress) : `${actions}${menuButton}`}</div>` : ""}
+      ${isAdmin() ? `<div class="source-row-actions">${progress && !archived ? runProgressMarkup(progress) : `${actions}${menuButton}`}</div>` : ""}
     </article>
   `;
 }
@@ -1879,6 +2030,7 @@ function sourceKindIcon(source) {
 }
 
 function toggleMenu(container, sourceId) {
+  if (!isAdmin()) return;
   const existing = container.querySelector(".menu");
   if (existing) {
     existing.remove();
@@ -1894,6 +2046,7 @@ function toggleMenu(container, sourceId) {
     ${source && source.kind === "file" ? `<button class="menu-item" data-act="download"><i class="ti ti-download"></i> Download original</button>` : ""}
     ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
     <button class="menu-item" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
+    <button class="menu-item danger" data-act="delete"><i class="ti ti-trash"></i> Delete permanently</button>
   `;
   container.querySelector(".source-row-actions").appendChild(menu);
   menu.querySelectorAll("button").forEach((b) => {
@@ -1916,6 +2069,7 @@ function toggleMenu(container, sourceId) {
 }
 
 async function handleMenuAction(action, sourceId) {
+  if (!isAdmin()) return;
   const source = (state.sourcesCache || []).find((s) => s.id === sourceId);
   if (!source) return;
   if (action === "rename") {
@@ -1927,17 +2081,44 @@ async function handleMenuAction(action, sourceId) {
     await patchSource(sourceId, { status: "paused" });
     loadSourcesList();
   } else if (action === "archive") {
-    if (!confirm(`${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`)) return;
     try {
       await patchSource(sourceId, { status: "archived" });
       loadSourcesList();
     } catch (_) {}
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
+  } else if (action === "delete") {
+    confirmDeleteSource(source);
   }
 }
 
+function confirmDeleteSource(source) {
+  if (!source || !isAdmin()) return;
+  openConfirmModal({
+    title: "Delete permanently",
+    body: `Delete ${sourceDisplayName(source)} and all its data? This cannot be undone.`,
+    danger: true,
+    confirmLabel: "Delete permanently",
+    onConfirm: async () => {
+      const response = await fetch(`/admin/sources/${source.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || response.statusText);
+      }
+      await loadSourcesStats();
+      if (byId("sources-list")) {
+        await loadSourcesList();
+      } else if (byId("archived-sources-list")) {
+        await loadArchivedSourcesList();
+      } else {
+        await renderRoute();
+      }
+    },
+  });
+}
+
 async function patchSource(id, body) {
+  if (!isAdmin()) return;
   await fetch(`/admin/sources/${id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -1951,6 +2132,7 @@ async function updateSourceStatus(id, status) {
 }
 
 async function runSourceAction(sourceId, action) {
+  if (!isAdmin()) return;
   const source = (state.sourcesCache || []).find((item) => item.id === sourceId);
   let keepDisabled = false;
   setSourceActionButtonsDisabled(sourceId, true);
@@ -2075,7 +2257,9 @@ async function renderSourceDetail(sourceId, tab) {
   `;
   try {
     const detail = await getJSON(`/api/sources/${sourceId}`);
-    const normalizedTab = detail.kind === "file" || activeTab !== "files" ? activeTab : "documents";
+    const normalizedTab = activeTab === "files" && (!isAdmin() || detail.kind !== "file")
+      ? "documents"
+      : activeTab;
     setPageHeader({
       title: detail.display_name || detail.identifier,
       subtitle: sourceMetaLine(detail),
@@ -2095,7 +2279,7 @@ async function renderSourceDetail(sourceId, tab) {
 function renderSourceDetailTabs(source, activeTab) {
   const tabs = [
     ["documents", "Documents"],
-    ...(source.kind === "file" ? [["files", "Files"]] : []),
+    ...(source.kind === "file" && isAdmin() ? [["files", "Files"]] : []),
     ["runs", "Runs"],
     ["config", "Config"],
   ];
@@ -2119,7 +2303,7 @@ function renderSourceDetailHead(source) {
       <i class="ti ${sourceKindIcon(source)} source-detail-icon"></i>
       <div class="entity-hero-main">
         <h1 id="source-name-title">${
-          state.me?.is_admin
+          isAdmin()
             ? `<button class="btn-ghost source-title-edit" type="button" data-action="edit-source-name">${escapeHtml(title)}</button>`
             : escapeHtml(title)
         }</h1>
@@ -2133,7 +2317,7 @@ function renderSourceDetailHead(source) {
       </div>
     </div>
   `;
-  if (state.me?.is_admin) {
+  if (isAdmin()) {
     head.querySelector("[data-action=edit-source-name]").onclick = () => startSourceNameEdit(source);
   }
 }
@@ -2207,7 +2391,14 @@ async function renderSourceDocuments(sourceId) {
               <td class="num">${d.word_count}</td>
               <td class="num">${d.chunks}</td>
               <td class="num">${d.claims_extracted}</td>
-              <td><button class="btn-ghost" data-doc="${escapeAttr(d.document_id)}"><i class="ti ti-eye"></i> View</button></td>
+              <td class="document-actions">
+                <button class="btn-ghost" data-doc="${escapeAttr(d.document_id)}"><i class="ti ti-eye"></i> View</button>
+                ${
+                  isAdmin()
+                    ? `<button class="btn-icon-only" data-delete-doc="${escapeAttr(d.document_id)}" type="button" aria-label="Delete document" title="Delete document"><i class="ti ti-trash"></i></button>`
+                    : ""
+                }
+              </td>
             </tr>`,
             )
             .join("")}
@@ -2218,9 +2409,30 @@ async function renderSourceDocuments(sourceId) {
     wrap.querySelectorAll("[data-doc]").forEach((b) => {
       b.onclick = () => openDocumentModal(b.dataset.doc);
     });
+    wrap.querySelectorAll("[data-delete-doc]").forEach((button) => {
+      button.onclick = () => confirmDeleteDocument(sourceId, button.dataset.deleteDoc);
+    });
   } catch (e) {
     wrap.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+function confirmDeleteDocument(sourceId, documentId) {
+  if (!isAdmin()) return;
+  openConfirmModal({
+    title: "Delete document",
+    body: "Delete this document? Its claims and chunks will also be removed.",
+    danger: true,
+    confirmLabel: "Delete document",
+    onConfirm: async () => {
+      const response = await fetch(`/admin/documents/${documentId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || response.statusText);
+      }
+      await Promise.all([loadStats(), renderSourceDocuments(sourceId)]);
+    },
+  });
 }
 
 async function openDocumentModal(documentId) {
@@ -2229,7 +2441,7 @@ async function openDocumentModal(documentId) {
     const data = await getJSON(`/api/document/${documentId}`);
     const claimsHtml = (data.claims_raw || [])
       .map(
-        (c) => `<li><strong>${escapeHtml(c.subject_text)}</strong> ${escapeHtml(c.predicate)} ${escapeHtml(c.object_text || "")}</li>`,
+        (c) => `<li><strong>${escapeHtml(c.subject_text)}</strong> ${escapeHtml(c.predicate)} ${escapeHtml(c.object_text || "")} ${claimAttribution(c)}</li>`,
       )
       .join("");
     openModal(`
@@ -2253,12 +2465,12 @@ async function openDocumentModal(documentId) {
 
 function renderSourceFiles(detail) {
   const wrap = byId("source-tab-content");
-  const isAdmin = Boolean(state.me?.is_admin);
+  const canAdmin = isAdmin();
   const fileAvailable = detail.file_size_bytes != null;
   wrap.innerHTML = `
     <div class="panel panel-flush source-files-panel">
       ${
-        isAdmin
+        canAdmin
           ? `<div class="file-upload-zone" id="file-upload-zone" role="button" tabindex="0">
                <i class="ti ti-upload" aria-hidden="true"></i>
                <div>Drop file to replace, or click to browse</div>
@@ -2291,7 +2503,7 @@ function renderSourceFiles(detail) {
                      <div class="file-actions">
                        <a class="btn-secondary" href="/api/sources/${escapeAttr(detail.id)}/download"><i class="ti ti-download" aria-hidden="true"></i> Download</a>
                        ${
-                         isAdmin
+                         canAdmin
                            ? `<button class="btn-secondary" id="file-archive" type="button" title="Archive this source; derived data is preserved"><i class="ti ti-archive" aria-hidden="true"></i> Archive</button>`
                            : ""
                        }
@@ -2303,12 +2515,12 @@ function renderSourceFiles(detail) {
           : `<div class="empty-state source-file-empty">
                <i class="ti ti-file-off" aria-hidden="true"></i>
                <div>Original file no longer available.</div>
-               ${isAdmin ? `<div class="muted small">Use the replacement upload above to attach a new file.</div>` : ""}
+               ${canAdmin ? `<div class="muted small">Use the replacement upload above to attach a new file.</div>` : ""}
              </div>`
       }
     </div>
   `;
-  if (!isAdmin) return;
+  if (!canAdmin) return;
   setupSourceFileUpload(detail);
   const archive = byId("file-archive");
   if (archive) {
@@ -2361,7 +2573,7 @@ async function replaceSourceFile(sourceId, file) {
 }
 
 function archiveSourceFromDetail(source) {
-  if (!confirm(`${sourceDisplayName(source)} will be hidden from the main Sources list. ${ARCHIVE_SOURCE_CONFIRM}`)) return;
+  if (!isAdmin()) return;
   patchSource(source.id, { status: "archived" })
     .then(() => {
       location.hash = "#sources";
@@ -2408,7 +2620,7 @@ function renderSourceRuns(detail) {
 
 function renderSourceConfig(detail) {
   const wrap = byId("source-tab-content");
-  const adminOnly = !state.me?.is_admin;
+  const adminOnly = !isAdmin();
   wrap.innerHTML = `
     <div class="panel panel-flush">
       <div class="modal-body">
@@ -2427,6 +2639,13 @@ function renderSourceConfig(detail) {
           <span class="field-label">Notes</span>
           <textarea class="input" id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripSourceMetaLines(detail.notes || ""))}</textarea>
         </label>
+        <label class="field checkbox-field">
+          <span class="checkbox-row">
+            <input id="cfg-respect-robots" type="checkbox" ${detail.respect_robots !== false ? "checked" : ""} ${adminOnly ? "disabled" : ""} />
+            <span>Respect robots.txt</span>
+          </span>
+          <span class="field-hint warning">Disable only with explicit permission from the site owner.</span>
+        </label>
         ${
           !adminOnly
             ? `<div class="form-actions"><button class="btn-primary" id="cfg-save"><i class="ti ti-device-floppy"></i> Save</button></div>`
@@ -2440,6 +2659,7 @@ function renderSourceConfig(detail) {
       const body = {
         display_name: byId("cfg-name").value.trim() || null,
         notes: byId("cfg-notes").value.trim() || null,
+        respect_robots: byId("cfg-respect-robots").checked,
       };
       await patchSource(detail.id, body);
       renderSourceDetail(detail.id, "config");
@@ -2460,6 +2680,7 @@ function stripSourceMetaLines(notes) {
 let modalKind = "domain";
 
 function openAddSourceModal() {
+  if (!isAdmin()) return;
   modalKind = "domain";
   renderAddSourceModal();
 }
@@ -2523,6 +2744,7 @@ function renderAddSourceModal() {
 }
 
 async function submitAddSource() {
+  if (!isAdmin()) return;
   const selected = SOURCE_KINDS.find((k) => k.id === modalKind) || SOURCE_KINDS[0];
   const kind = selected.kind;
   const display_name = byId("new-name").value.trim();
@@ -2582,9 +2804,9 @@ async function loadAdminConflicts() {
       <div class="conflict-row">
         <div class="stmt"><strong>Conflict ${escapeHtml(c.id.slice(0, 8))}</strong></div>
         <div class="versus">
-          <span>Claim A: ${escapeHtml(c.claim_a_id.slice(0, 8))}</span>
+          ${renderConflictClaim("Claim A", c.claim_a, c.claim_a_id)}
           <span>vs</span>
-          <span>Claim B: ${escapeHtml(c.claim_b_id.slice(0, 8))}</span>
+          ${renderConflictClaim("Claim B", c.claim_b, c.claim_b_id)}
         </div>
         <div class="conflict-actions">
           <button class="btn-source" data-resolve="${escapeAttr(c.id)}" data-side="claim_a_wins">Pick A</button>
@@ -2611,6 +2833,16 @@ async function loadAdminConflicts() {
   } catch (e) {
     byId("conflicts-body").innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function renderConflictClaim(label, claim, claimId) {
+  return `
+    <div class="conflict-claim">
+      <span class="muted small">${escapeHtml(label)}: ${escapeHtml(String(claimId || "").slice(0, 8))}</span>
+      <strong>${escapeHtml(claim?.statement || "Claim unavailable")}</strong>
+      ${claimAttribution(claim)}
+    </div>
+  `;
 }
 
 /* ───── Admin auth ───── */
@@ -2673,6 +2905,34 @@ function stopLogsViewStream() {
 }
 
 /* ───── Modal ───── */
+
+function openConfirmModal({ title, body, danger = false, confirmLabel = "Confirm", onConfirm }) {
+  openModal(`
+    <div class="modal-header">
+      <div>
+        <div class="modal-title">${escapeHtml(title)}</div>
+      </div>
+      <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p>${escapeHtml(body)}</p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="${danger ? "btn-danger" : "btn-primary"}" id="confirm-submit">${escapeHtml(confirmLabel)}</button>
+    </div>
+  `);
+  byId("confirm-submit").onclick = async () => {
+    const button = byId("confirm-submit");
+    button.disabled = true;
+    try {
+      await onConfirm();
+      closeModal();
+    } catch (_) {
+      button.disabled = false;
+    }
+  };
+}
 
 function openModal(html) {
   const root = document.getElementById("modal-root");

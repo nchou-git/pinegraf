@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -56,6 +57,7 @@ class Source(Base):
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     identifier: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     trust_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    respect_robots: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     display_name: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

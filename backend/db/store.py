@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, delete, func, inspect, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,6 +14,10 @@ from backend.config import get_settings
 from backend.db.models import (
     Base,
     Chunk,
+    Claim,
+    ClaimConflict,
+    ClaimEvidence,
+    ClaimRaw,
     Document,
     DocumentFetch,
     Fetch,
@@ -86,6 +90,7 @@ class Store:
         kind: str,
         identifier: str,
         trust_weight: float = 0.5,
+        respect_robots: bool = True,
         display_name: str | None = None,
         notes: str | None = None,
     ) -> Source:
@@ -96,6 +101,7 @@ class Store:
             if existing is not None:
                 existing.kind = kind
                 existing.trust_weight = trust_weight
+                existing.respect_robots = respect_robots
                 existing.display_name = display_name
                 existing.notes = notes
                 session.commit()
@@ -104,6 +110,7 @@ class Store:
                 kind=kind,
                 identifier=identifier,
                 trust_weight=trust_weight,
+                respect_robots=respect_robots,
                 display_name=display_name,
                 notes=notes,
             )
@@ -162,6 +169,51 @@ class Store:
     def get_source_run(self, run_id: uuid.UUID) -> SourceRun | None:
         with self.session() as session:
             return session.get(SourceRun, run_id)
+
+    def delete_document(self, document_id: uuid.UUID) -> bool:
+        with self.session() as session:
+            document = session.get(Document, document_id)
+            if document is None:
+                return False
+            impacted_claim_ids = list(
+                session.execute(
+                    select(ClaimEvidence.claim_id)
+                    .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
+                    .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+                    .where(Chunk.document_id == document_id)
+                ).scalars()
+            )
+            session.delete(document)
+            session.flush()
+            orphan_claim_ids = list(
+                session.execute(
+                    select(Claim.id)
+                    .where(Claim.id.in_(impacted_claim_ids))
+                    .where(
+                        ~select(ClaimEvidence.claim_id)
+                        .where(ClaimEvidence.claim_id == Claim.id)
+                        .exists()
+                    )
+                ).scalars()
+            )
+            if orphan_claim_ids:
+                session.execute(
+                    delete(ClaimConflict)
+                    .where(
+                        or_(
+                            ClaimConflict.claim_a_id.in_(orphan_claim_ids),
+                            ClaimConflict.claim_b_id.in_(orphan_claim_ids),
+                        )
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                session.execute(
+                    delete(Claim)
+                    .where(Claim.id.in_(orphan_claim_ids))
+                    .execution_options(synchronize_session=False)
+                )
+            session.commit()
+            return True
 
     def add_fetch(
         self,
@@ -306,6 +358,7 @@ def source_to_dict(source: Source) -> dict[str, object]:
         "kind": source.kind,
         "identifier": source.identifier,
         "trust_weight": source.trust_weight,
+        "respect_robots": source.respect_robots,
         "display_name": source.display_name,
         "notes": source.notes,
         "created_at": source.created_at.isoformat(),

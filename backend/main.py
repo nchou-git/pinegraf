@@ -56,6 +56,7 @@ class SourceCreate(BaseModel):
     kind: Literal["domain", "file"]
     identifier: str
     trust_weight: float = Field(default=0.5, ge=0, le=1)
+    respect_robots: bool = True
     display_name: str | None = None
     notes: str | None = None
 
@@ -63,6 +64,7 @@ class SourceCreate(BaseModel):
 class SourceUpdate(BaseModel):
     display_name: str | None = None
     trust_weight: float | None = Field(default=None, ge=0, le=1)
+    respect_robots: bool | None = None
     status: Literal["active", "paused", "archived"] | None = None
     notes: str | None = None
 
@@ -84,6 +86,14 @@ class ConflictResolveRequest(BaseModel):
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_HTML_HEADERS = {
+    "Cache-Control": "no-cache, max-age=0, must-revalidate",
+    "CDN-Cache-Control": "no-store",
+}
+FRONTEND_ASSET_HEADERS = {
+    "Cache-Control": "public, max-age=1, must-revalidate",
+    "CDN-Cache-Control": "max-age=1",
+}
 SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
@@ -136,22 +146,22 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "index.html")
+        return FileResponse(FRONTEND_DIR / "index.html", headers=FRONTEND_HTML_HEADERS)
 
     @app.get("/app.js")
     async def app_js() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "app.js")
+        return FileResponse(FRONTEND_DIR / "app.js", headers=FRONTEND_ASSET_HEADERS)
 
     @app.get("/styles.css")
     async def styles_css() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "styles.css")
+        return FileResponse(FRONTEND_DIR / "styles.css", headers=FRONTEND_ASSET_HEADERS)
 
     @app.get("/styles/{filename}")
     async def nested_style(filename: str) -> FileResponse:
         path = FRONTEND_DIR / "styles" / filename
         if path.parent != FRONTEND_DIR / "styles" or not path.is_file():
             raise HTTPException(status_code=404, detail="style not found")
-        return FileResponse(path)
+        return FileResponse(path, headers=FRONTEND_ASSET_HEADERS)
 
     @app.get("/api/logs/stream")
     async def api_logs_stream(request: Request) -> StreamingResponse:
@@ -166,7 +176,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/favicon.svg")
     async def favicon() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "favicon.svg")
+        return FileResponse(FRONTEND_DIR / "favicon.svg", headers=FRONTEND_ASSET_HEADERS)
 
     @app.get("/admin/login")
     async def admin_login_form() -> HTMLResponse:
@@ -294,6 +304,13 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="document not found")
         return detail
 
+    @app.delete("/admin/documents/{document_id}")
+    async def admin_delete_document(request: Request, document_id: uuid.UUID) -> dict[str, str]:
+        require_admin(request)
+        if not _store(request).delete_document(document_id):
+            raise HTTPException(status_code=404, detail="document not found")
+        return {"status": "deleted"}
+
     @app.get("/api/directory")
     async def api_directory(
         request: Request,
@@ -419,6 +436,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             source_id,
             display_name=payload.display_name,
             trust_weight=payload.trust_weight,
+            respect_robots=payload.respect_robots,
             status=payload.status,
             notes=payload.notes,
         )

@@ -227,6 +227,22 @@ input[type="file"]::file-selector-button {
   color: var(--text-faint);
 }
 
+.field-hint.warning {
+  color: var(--conflict);
+}
+
+.checkbox-field {
+  gap: var(--space-1);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
 .input-with-icon {
   position: relative;
 }
@@ -350,6 +366,9 @@ input[type="file"]::file-selector-button {
 
 .menu-item:hover {
   background-color: var(--surface);
+}
+.menu-item.danger {
+  color: var(--conflict);
 }
 
 .menu-header {

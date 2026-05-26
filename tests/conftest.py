@@ -13,9 +13,14 @@ from backend.ingestion import fetcher
 
 
 class FakeResponse:
-    def __init__(self, url: str, status_code: int, body: bytes,
-                 headers: dict[str, str] | None = None,
-                 history: list["FakeResponse"] | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        status_code: int,
+        body: bytes,
+        headers: dict[str, str] | None = None,
+        history: list["FakeResponse"] | None = None,
+    ) -> None:
         self.url = url
         self.status_code = status_code
         self.content = body
@@ -87,6 +92,7 @@ def fake_httpx(monkeypatch) -> type[FakeAsyncClient]:
 
     FakeAsyncClient.responses = {}
     fetcher._ROBOTS_CACHE.clear()
+    fetcher._ROBOTS_LOAD_LOCKS.clear()
     monkeypatch.setattr(fetcher.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(sitemap_runner.httpx, "AsyncClient", FakeAsyncClient)
     return FakeAsyncClient

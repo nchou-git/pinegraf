@@ -72,17 +72,26 @@ a:hover {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
+  background-color: transparent;
   color: var(--text);
   text-decoration: none;
   transition:
     background-color var(--motion),
+    border-color var(--motion),
     color var(--motion);
 }
 
 .sidebar-header:hover {
-  background-color: var(--green-tint);
+  background-color: var(--bg);
   text-decoration: none;
+}
+
+.sidebar-header:focus-visible {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px var(--green-tint);
 }
 
 .sidebar-header svg {

@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=logs-fit";
-@import "./styles/components.css?v=logs-fit";
-@import "./styles/layout.css?v=logs-fit";
+@import "./styles/tokens.css?v=sidebar-bookends";
+@import "./styles/components.css?v=sidebar-bookends";
+@import "./styles/layout.css?v=sidebar-bookends";
 
 /* page-specific rules below */
 
@@ -536,6 +536,12 @@
   border-color: var(--line);
 }
 
+.ask-citation-card:focus-visible {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px var(--green-tint);
+}
+
 .ask-citation-card strong {
   font-size: var(--fs-sm);
   font-weight: 500;
@@ -546,6 +552,95 @@
   grid-column: 1 / -1;
   color: var(--text-muted);
   font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+.claim-value {
+  display: inline-block;
+  margin-right: var(--space-2);
+}
+
+.claim-attribution {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.claim-attribution summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--space-5);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background-color: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+.claim-attribution summary::-webkit-details-marker {
+  display: none;
+}
+
+.claim-attribution summary:hover,
+.claim-attribution summary:focus-visible {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.claim-attribution summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--green-tint);
+}
+
+.claim-attribution-panel {
+  display: grid;
+  gap: var(--space-2);
+  min-width: min(calc(var(--space-16) * 5), 82vw);
+  max-width: min(calc(var(--space-16) * 8), 82vw);
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background-color: var(--bg);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  z-index: var(--z-dropdown);
+}
+
+.claim-evidence-row {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.claim-evidence-row + .claim-evidence-row {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+
+.claim-evidence-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.claim-evidence-head span,
+.claim-evidence-row a {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.claim-evidence-row blockquote {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-muted);
   line-height: var(--lh-snug);
 }
 
@@ -905,6 +1000,9 @@
 .source-row.paused {
   opacity: 0.72;
 }
+.source-row.archived {
+  cursor: default;
+}
 .source-row-main {
   display: flex;
   align-items: center;
@@ -1024,6 +1122,30 @@
   color: var(--text-muted);
   font-size: var(--fs-xs);
   white-space: nowrap;
+}
+.archived-sources {
+  margin-top: var(--space-4);
+}
+.archived-sources summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--row-h-compact);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.archived-sources-list {
+  display: flex;
+  flex-direction: column;
+}
+.empty-state.compact {
+  min-height: var(--row-h-data);
+  padding: var(--space-3) 0;
+}
+.document-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 details.conflicts {
@@ -1176,11 +1298,43 @@ details.conflicts[open] summary .chevron {
   justify-content: flex-start;
   margin-top: var(--space-2);
 }
+.conflict-claim {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
 .kind-label {
   margin-bottom: var(--space-2);
 }
 .table-note {
   padding: var(--space-3);
+}
+
+.entity-claims-panel {
+  margin: 0 var(--space-6) var(--space-4);
+}
+
+.entity-claim-list,
+.edge-claim-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.entity-claim-row,
+.edge-claim-row {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background-color: var(--surface);
+}
+
+.claim-predicate {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  text-transform: capitalize;
 }
 .doc-claims-title {
   margin-bottom: var(--space-2);

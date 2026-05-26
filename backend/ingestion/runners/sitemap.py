@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 import uuid
 from html.parser import HTMLParser
 from typing import NamedTuple
@@ -109,17 +111,26 @@ async def run_sitemap(
             error_message=f"invalid source input: {source_input!r}",
             finished=True,
         )
-        await emit_progress(
-            run_id, ProgressEvent("crawl", "failed", "invalid source input", 100.0)
-        )
+        await emit_progress(run_id, ProgressEvent("crawl", "failed", "invalid source input", 100.0))
         return stats
 
     await emit_progress(run_id, ProgressEvent("crawl", "running", "Starting crawl", 0.0))
 
-    queue: list[tuple[str, str]] = []
+    queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
     seen: set[str] = set()
-    cap = get_settings().max_pages
+    settings = get_settings()
+    cap = settings.max_pages
+    concurrency = settings.crawl_concurrency
+    semaphore = asyncio.Semaphore(concurrency)
+    stats_lock = asyncio.Lock()
+    seen_lock = asyncio.Lock()
+    host_lock = asyncio.Lock()
+    host_active: dict[str, int] = {}
+    host_limits: dict[str, int] = {}
+    host_backoff_until: dict[str, float] = {}
     highest_percent = 0.0
+    last_running_stats_fetched = 0
+    reserved = 0
 
     source_url = source_input.strip()
     if "://" not in source_url:
@@ -129,123 +140,219 @@ async def run_sitemap(
     seed_urls = [source_url]
     if seed_method == "sitemap":
         try:
-            seed_urls = await _collect_from_sitemap(source_url, seen=set())
+            seed_urls = await _collect_from_sitemap(
+                source_url, seen=set(), store=store, run_id=run_id
+            )
         except Exception:  # noqa: BLE001
             stats["errors"] += 1
 
     for url in seed_urls:
         _enqueue(url, seed_method, queue=queue, seen=seen, root_host=root_host)
 
-    while queue and stats["fetched"] < cap:
-        url, method = queue.pop(0)
-        try:
-            result = await _retrieve(url)
-        except Exception as exc:  # noqa: BLE001
-            stats["errors"] += 1
-            message = (
-                str(exc)
-                if isinstance(exc, PermissionError)
-                else f"{type(exc).__name__}: {exc}"
-            )
-            _log_fetch_decision(
-                f"Error retrieving {_display_url(url)} — {message}",
-                event="error",
-                url=url,
-                error_type=type(exc).__name__,
-                error=message,
-            )
-            store.add_fetch(
-                source_run_id=run_id,
-                url=url,
-                body_bytes=None,
-                error_message=message,
-                original_url=url,
-                discovery_method=method,
-            )
-            continue
+    async def reserve_fetch_slot() -> bool:
+        nonlocal reserved
+        async with stats_lock:
+            if stats["fetched"] + reserved >= cap:
+                return False
+            reserved += 1
+            return True
 
-        final_url = result.final_url
-        if not _in_scope(final_url, root_host):
-            _log_fetch_decision(
-                f"Skipped {_display_url(final_url)} — out of scope",
-                event="skipped",
-                reason="out_of_scope",
-                url=final_url,
-                original_url=url,
-            )
-            continue
+    async def release_fetch_slot() -> None:
+        nonlocal reserved
+        async with stats_lock:
+            reserved = max(0, reserved - 1)
 
-        stats["fetched"] += 1
-        store.add_fetch(
-            source_run_id=run_id,
-            url=final_url,
-            body_bytes=result.body,
-            http_status=result.status,
-            content_type=result.content_type,
-            original_url=url,
-            redirect_chain=result.chain if len(result.chain) > 1 else None,
-            discovery_method=method,
-        )
+    async def enter_host(host: str) -> None:
+        while True:
+            async with host_lock:
+                now = time.monotonic()
+                until = host_backoff_until.get(host, 0.0)
+                if until and now >= until:
+                    host_backoff_until.pop(host, None)
+                    host_limits[host] = concurrency
+                limit = host_limits.get(host, concurrency)
+                active = host_active.get(host, 0)
+                if active < limit:
+                    host_active[host] = active + 1
+                    return
+            await asyncio.sleep(0.05)
 
-        discovered_count = 0
-        if result.is_html:
-            for discovered in _discover_links(result.body, base_url=final_url):
-                if _enqueue(
-                    discovered,
-                    "link_follow",
-                    queue=queue,
-                    seen=seen,
-                    root_host=root_host,
-                ):
-                    discovered_count += 1
-            if discovered_count:
-                _log_fetch_decision(
-                    f"Discovered {discovered_count} in-scope links on {_display_url(final_url)}",
-                    event="discovered",
-                    url=final_url,
-                    discovered=discovered_count,
-                    fetched=stats["fetched"],
-                    known=stats["fetched"] + len(queue),
-                )
+    async def leave_host(host: str) -> None:
+        async with host_lock:
+            active = max(0, host_active.get(host, 0) - 1)
+            if active:
+                host_active[host] = active
+            else:
+                host_active.pop(host, None)
 
-        known = stats["fetched"] + len(queue)
-        raw_percent = round(100.0 * stats["fetched"] / known, 1)
-        displayed_percent = round(min(99.9, max(highest_percent, raw_percent)), 1)
-        highest_percent = displayed_percent
-        await emit_progress(
-            run_id,
-            ProgressEvent(
-                "crawl",
-                "running",
-                "Retrieving documents",
-                displayed_percent,
-                {
-                    "fetched": stats["fetched"],
-                    "known": known,
-                    "raw_percent": raw_percent,
-                },
-            ),
-        )
+    async def backoff_host(host: str, status_code: int, url: str) -> None:
+        reduced = max(1, concurrency // 2)
+        until = time.monotonic() + 30
+        async with host_lock:
+            host_limits[host] = reduced
+            host_backoff_until[host] = max(host_backoff_until.get(host, 0.0), until)
         _log_fetch_decision(
             (
-                f"Retrieved {_display_url(final_url)} — "
-                f"{stats['fetched']}/{known} known ({raw_percent}%)"
+                f"Reducing crawl concurrency for {host} to {reduced} for 30s "
+                f"after HTTP {status_code}"
             ),
-            event="retrieved",
-            url=final_url,
-            original_url=url,
-            discovery_method=method,
-            http_status=result.status,
-            fetched=stats["fetched"],
-            known=known,
-            raw_percent=raw_percent,
-            displayed_percent=displayed_percent,
+            event="host_backoff",
+            host=host,
+            url=url,
+            http_status=status_code,
+            effective_concurrency=reduced,
         )
+
+    async def worker() -> None:
+        nonlocal highest_percent, last_running_stats_fetched
+        while True:
+            url, method = await queue.get()
+            slot_reserved = False
+            try:
+                slot_reserved = await reserve_fetch_slot()
+                if not slot_reserved:
+                    continue
+                host = _host_key(url)
+                try:
+                    async with semaphore:
+                        await enter_host(host)
+                        try:
+                            result = await _retrieve(url, store=store, run_id=run_id)
+                        finally:
+                            await leave_host(host)
+                except Exception as exc:  # noqa: BLE001
+                    async with stats_lock:
+                        stats["errors"] += 1
+                    message = (
+                        str(exc)
+                        if isinstance(exc, PermissionError)
+                        else f"{type(exc).__name__}: {exc}"
+                    )
+                    _log_fetch_decision(
+                        f"Error retrieving {_display_url(url)} — {message}",
+                        event="error",
+                        url=url,
+                        error_type=type(exc).__name__,
+                        error=message,
+                    )
+                    store.add_fetch(
+                        source_run_id=run_id,
+                        url=url,
+                        body_bytes=None,
+                        error_message=message,
+                        original_url=url,
+                        discovery_method=method,
+                    )
+                    continue
+
+                final_url = result.final_url
+                if result.status in {429, 503}:
+                    await backoff_host(_host_key(final_url), result.status, final_url)
+                if not _in_scope(final_url, root_host):
+                    _log_fetch_decision(
+                        f"Skipped {_display_url(final_url)} — out of scope",
+                        event="skipped",
+                        reason="out_of_scope",
+                        url=final_url,
+                        original_url=url,
+                    )
+                    continue
+
+                store.add_fetch(
+                    source_run_id=run_id,
+                    url=final_url,
+                    body_bytes=result.body,
+                    http_status=result.status,
+                    content_type=result.content_type,
+                    original_url=url,
+                    redirect_chain=result.chain if len(result.chain) > 1 else None,
+                    discovery_method=method,
+                )
+
+                discovered_count = 0
+                if result.is_html:
+                    for discovered in _discover_links(result.body, base_url=final_url):
+                        async with seen_lock:
+                            if _enqueue(
+                                discovered,
+                                "link_follow",
+                                queue=queue,
+                                seen=seen,
+                                root_host=root_host,
+                            ):
+                                discovered_count += 1
+
+                update_running_stats = False
+                async with stats_lock:
+                    stats["fetched"] += 1
+                    known = stats["fetched"] + queue.qsize() + max(reserved - 1, 0)
+                    raw_percent = round(100.0 * stats["fetched"] / known, 1) if known else 0.0
+                    displayed_percent = round(min(99.9, max(highest_percent, raw_percent)), 1)
+                    highest_percent = displayed_percent
+                    fetched = stats["fetched"]
+                    stats_snapshot = dict(stats)
+                    if fetched > 0 and fetched % 10 == 0 and fetched != last_running_stats_fetched:
+                        update_running_stats = True
+                        last_running_stats_fetched = fetched
+
+                if discovered_count:
+                    _log_fetch_decision(
+                        (
+                            f"Discovered {discovered_count} in-scope links on "
+                            f"{_display_url(final_url)}"
+                        ),
+                        event="discovered",
+                        url=final_url,
+                        discovered=discovered_count,
+                        fetched=fetched,
+                        known=known,
+                    )
+                await emit_progress(
+                    run_id,
+                    ProgressEvent(
+                        "crawl",
+                        "running",
+                        "Retrieving documents",
+                        displayed_percent,
+                        {
+                            "fetched": fetched,
+                            "known": known,
+                            "raw_percent": raw_percent,
+                        },
+                    ),
+                )
+                if update_running_stats:
+                    store.update_source_run(run_id, stats=stats_snapshot)
+                _log_fetch_decision(
+                    (
+                        f"Retrieved {_display_url(final_url)} — "
+                        f"{fetched}/{known} known ({raw_percent}%)"
+                    ),
+                    event="retrieved",
+                    url=final_url,
+                    original_url=url,
+                    discovery_method=method,
+                    http_status=result.status,
+                    fetched=fetched,
+                    known=known,
+                    raw_percent=raw_percent,
+                    displayed_percent=displayed_percent,
+                )
+            finally:
+                if slot_reserved:
+                    await release_fetch_slot()
+                queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+    await queue.join()
+    for task in workers:
+        task.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
 
     status = "complete" if stats["errors"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["errors"] > 0:
         status = "failed"
-    final_known = stats["fetched"] + len(queue)
+    final_known = stats["fetched"] + queue.qsize()
     final_raw_percent = round(100.0 * stats["fetched"] / final_known, 1) if final_known else 0.0
     store.update_source_run(run_id, status=status, stats=stats, finished=True)
     await emit_progress(
@@ -274,8 +381,8 @@ class _Result(NamedTuple):
     is_html: bool
 
 
-async def _retrieve(url: str) -> _Result:
-    if not await robots_allowed(url):
+async def _retrieve(url: str, *, store: Store, run_id: uuid.UUID) -> _Result:
+    if not await robots_allowed(url, store=store, source_run_id=run_id):
         raise PermissionError(f"robots.txt disallows fetching {url}")
 
     headers = {"User-Agent": user_agent()}
@@ -302,11 +409,13 @@ async def _collect_from_sitemap(
     sitemap_url: str,
     *,
     seen: set[str],
+    store: Store,
+    run_id: uuid.UUID,
 ) -> list[str]:
     if sitemap_url in seen:
         return []
     seen.add(sitemap_url)
-    raw = await fetch_url(sitemap_url)
+    raw = await fetch_url(sitemap_url, store=store, source_run_id=run_id)
     try:
         root = ElementTree.fromstring(raw)
     except ElementTree.ParseError:
@@ -324,7 +433,7 @@ async def _collect_from_sitemap(
             remaining = cap - len(urls)
             if remaining <= 0:
                 break
-            child_urls = await _collect_from_sitemap(loc, seen=seen)
+            child_urls = await _collect_from_sitemap(loc, seen=seen, store=store, run_id=run_id)
             urls.extend(child_urls[:remaining])
         return urls
     if root_name != "urlset":
@@ -457,6 +566,11 @@ def _in_scope(url: str, root_host: str) -> bool:
     return host == root_host or host.endswith("." + root_host)
 
 
+def _host_key(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.netloc.lower().split(":")[0]
+
+
 def _passes_filters(url: str) -> bool:
     parsed = urlparse(url)
     return not parsed.path.lower().endswith(tuple(_BINARY_EXTENSIONS))
@@ -472,7 +586,8 @@ def _canonicalize(url: str) -> str:
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/")
     query_pairs = [
-        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
         if k.lower() not in _TRACKING_PARAMS
     ]
     query_pairs.sort()
@@ -486,7 +601,7 @@ def _enqueue(
     url: str,
     method: str,
     *,
-    queue: list[tuple[str, str]],
+    queue: asyncio.Queue[tuple[str, str]],
     seen: set[str],
     root_host: str,
 ) -> bool:
@@ -521,7 +636,7 @@ def _enqueue(
         seen.add(canonical)
         return False
     seen.add(canonical)
-    queue.append((canonical, method))
+    queue.put_nowait((canonical, method))
     return True
 
 

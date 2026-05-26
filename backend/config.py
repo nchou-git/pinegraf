@@ -23,7 +23,8 @@ class Settings(BaseModel):
     secure_cookies: bool = Field(default=True)
 
     pinegraf_contact: str = Field(default="ops@example.com")
-    max_pages: int = Field(default=1000, ge=1)
+    max_pages: int = Field(default=10000, ge=1)
+    crawl_concurrency: int = Field(default=10, ge=1)
     use_mock_embeddings: bool = Field(default=False)
     cheap_model: str = Field(default="gpt-4o-mini")
     frontier_model: str = Field(default="gpt-4o")
@@ -60,7 +61,8 @@ def get_settings() -> Settings:
             admin_session_max_age_seconds=int(os.getenv("ADMIN_SESSION_MAX_AGE_SECONDS", "28800")),
             secure_cookies=os.getenv("SECURE_COOKIES", "true"),
             pinegraf_contact=os.getenv("PINEGRAF_CONTACT", "ops@example.com"),
-            max_pages=int(os.getenv("MAX_PAGES", "1000")),
+            max_pages=int(os.getenv("MAX_PAGES", "10000")),
+            crawl_concurrency=int(os.getenv("CRAWL_CONCURRENCY", "10")),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
             cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
             frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),

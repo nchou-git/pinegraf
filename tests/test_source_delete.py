@@ -222,6 +222,119 @@ def test_delete_source_repoints_shared_document_first_seen_fetch(store) -> None:
     assert remaining_document.first_seen_fetch_id == second_fetch.id
 
 
+def test_delete_document_removes_derived_rows_but_keeps_entities(store, admin_headers) -> None:
+    source = store.upsert_source(kind="domain", identifier="doc-delete.example")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="adhoc",
+        spec={},
+        triggered_by="test",
+    )
+    fetch = store.add_fetch(
+        source_run_id=run.id,
+        url="https://doc-delete.example/story",
+        body_bytes=b"Errik Anderson founded Example.",
+    )
+    document = store.create_document_with_chunks(
+        content_hash=content_digest(b"Errik Anderson founded Example."),
+        cleaned_text="Errik Anderson founded Example.",
+        title="Story",
+        canonical_url="https://doc-delete.example/story",
+        language="en",
+        word_count=4,
+        first_seen_fetch_id=fetch.id,
+        chunks=[("Errik Anderson founded Example.", 4, None)],
+    )
+
+    with store.session() as session:
+        chunk_id = session.execute(
+            select(Chunk.id).where(Chunk.document_id == document.id)
+        ).scalar_one()
+        extractor_run = ExtractorRun(model="test", prompt_version="v1")
+        errik = Entity(kind="person", canonical_name="Errik Anderson")
+        company = Entity(kind="org", canonical_name="Example")
+        session.add_all([extractor_run, errik, company])
+        session.flush()
+        raw = ClaimRaw(
+            chunk_id=chunk_id,
+            extractor_run_id=extractor_run.id,
+            subject_text="Errik Anderson",
+            predicate="founded",
+            object_text="Example",
+            object_type="org",
+            raw_quote="Errik Anderson founded Example.",
+        )
+        session.add(raw)
+        session.flush()
+        claim = Claim(
+            subject_entity_id=errik.id,
+            predicate="founded",
+            object_entity_id=company.id,
+            confidence_score=0.9,
+        )
+        session.add(claim)
+        session.flush()
+        session.add_all(
+            [
+                ClaimEvidence(
+                    claim_id=claim.id,
+                    claim_raw_id=raw.id,
+                    source_id=source.id,
+                    weight=1.0,
+                ),
+                EntityMention(
+                    claim_raw_id=raw.id,
+                    position="subject",
+                    entity_id=errik.id,
+                    mention_text="Errik Anderson",
+                    resolution_method="new_entity",
+                    resolution_confidence=1.0,
+                ),
+            ]
+        )
+        session.commit()
+        entity_ids = {errik.id, company.id}
+
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.delete(f"/admin/documents/{document.id}", headers=admin_headers)
+        missing = client.get(f"/api/document/{document.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "deleted"}
+    assert missing.status_code == 404
+    counts = store.table_counts(
+        [
+            "sources",
+            "source_runs",
+            "fetches",
+            "documents",
+            "document_fetches",
+            "chunks",
+            "claims_raw",
+            "entities",
+            "entity_mentions",
+            "claims",
+            "claim_evidence",
+        ]
+    )
+    assert counts == {
+        "sources": 1,
+        "source_runs": 1,
+        "fetches": 1,
+        "documents": 0,
+        "document_fetches": 0,
+        "chunks": 0,
+        "claims_raw": 0,
+        "entities": 2,
+        "entity_mentions": 0,
+        "claims": 0,
+        "claim_evidence": 0,
+    }
+    with store.session() as session:
+        remaining_entity_ids = set(session.execute(select(Entity.id)).scalars())
+    assert remaining_entity_ids == entity_ids
+
+
 def test_archive_status_hides_source_without_deleting_data(
     store,
     admin_headers,

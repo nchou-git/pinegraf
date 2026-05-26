@@ -25,6 +25,7 @@ async def run_seed(
     stats = {"queried": 0, "found": 0, "fetched": 0, "missed": 0}
     await emit_progress(run_id, ProgressEvent("crawl", "running", "Crawling seed rows", 0.0))
     total = len(rows)
+    last_running_stats_fetched = 0
     for index, row in enumerate(rows, start=1):
         stats["queried"] += 1
         candidates = _candidate_urls(row)
@@ -51,6 +52,13 @@ async def run_seed(
             run_id,
             ProgressEvent("crawl", "running", "Crawling seed rows", index / max(total, 1) * 100),
         )
+        if (
+            stats["fetched"] > 0
+            and stats["fetched"] % 10 == 0
+            and stats["fetched"] != last_running_stats_fetched
+        ):
+            store.update_source_run(run_id, stats=stats)
+            last_running_stats_fetched = stats["fetched"]
 
     status = "complete" if stats["missed"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["missed"] > 0:
