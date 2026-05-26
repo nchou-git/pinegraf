@@ -5,18 +5,65 @@ import os
 import subprocess
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import httpx
 import pytest
+from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
-from backend.config import get_settings
-from backend.db.store import SCHEMA_TABLES, Store
-from backend.ingestion import fetcher
+PROD_LIKE_DATABASE_NAMES = {"pinegraf"}
+TEST_DATABASE_HOSTS = {
+    "::1",
+    "0.0.0.0",
+    "127.0.0.1",
+    "host.docker.internal",
+    "localhost",
+}
+TEST_DATABASE_HOSTS.update(
+    host.strip()
+    for host in os.getenv("PINEGRAF_TEST_DATABASE_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+)
 
-PROD_DATABASE_HOSTS = {"34.181.200.174"}
-PROD_DATABASE_NAMES = {"pinegraf"}
+
+def _assert_not_production_database(database_url: str) -> None:
+    parsed = make_url(database_url)
+    host = parsed.host or ""
+    database = parsed.database or ""
+    if host not in TEST_DATABASE_HOSTS or database in PROD_LIKE_DATABASE_NAMES:
+        pytest.exit(
+            "Refusing to run tests against production-like database configuration: "
+            f"host={host!r}, database={database!r}. "
+            "Set TEST_DATABASE_URL to an isolated Postgres database on an allowed test host.",
+            returncode=2,
+        )
+
+
+def _guard_configured_database() -> None:
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    test_database_url = os.getenv("TEST_DATABASE_URL")
+    if test_database_url:
+        _assert_not_production_database(test_database_url)
+        os.environ["DATABASE_URL"] = test_database_url
+        return
+
+    configured_url = os.getenv("DATABASE_URL")
+    if configured_url:
+        _assert_not_production_database(configured_url)
+        return
+
+    os.environ["DATABASE_URL"] = (
+        "postgresql+psycopg://pinegraf_test:pinegraf_test@localhost:1/pinegraf_test"
+    )
+
+
+_guard_configured_database()
+
+from backend.config import get_settings  # noqa: E402
+from backend.db.store import SCHEMA_TABLES, Store  # noqa: E402
+from backend.ingestion import fetcher  # noqa: E402
 
 
 class FakeResponse:
@@ -133,16 +180,6 @@ def clean_store(store: Store) -> None:
     tables = ", ".join(f'"{table}"' for table in SCHEMA_TABLES)
     with store.engine.begin() as connection:
         connection.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
-
-
-def _assert_not_production_database(database_url: str) -> None:
-    parsed = make_url(database_url)
-    if parsed.host in PROD_DATABASE_HOSTS and parsed.database in PROD_DATABASE_NAMES:
-        pytest.exit(
-            "Refusing to run tests against the production Pinegraf database. "
-            "Set TEST_DATABASE_URL to an isolated Postgres database.",
-            returncode=2,
-        )
 
 
 def _restore_database_url(previous: str | None) -> None:
