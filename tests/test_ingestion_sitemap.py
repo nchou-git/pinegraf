@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from backend.db.models import Fetch
+from backend.config import get_settings
+from backend.db.models import Fetch, SourceRun
 from backend.ingestion.runners.sitemap import run_sitemap
 
 
@@ -61,16 +62,20 @@ async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx
     )
     fake_httpx.responses = {
         "https://example.com/robots.txt": fake_httpx.Response(
-            "https://example.com/robots.txt", 200, b"User-agent: *\nAllow: /\n",
+            "https://example.com/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
         ),
         "https://example.com/sitemap.xml": fake_httpx.Response(
-            "https://example.com/sitemap.xml", 200,
+            "https://example.com/sitemap.xml",
+            200,
             b"""<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
               <url><loc>https://example.com/seed</loc></url>
             </urlset>""",
         ),
         "https://example.com/seed": fake_httpx.Response(
-            "https://example.com/seed", 200,
+            "https://example.com/seed",
+            200,
             b"""<html><body>
                 <a href="/discovered">in-scope</a>
                 <a href="https://other.com/out">out-of-scope</a>
@@ -80,7 +85,9 @@ async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx
             </body></html>""",
         ),
         "https://example.com/discovered": fake_httpx.Response(
-            "https://example.com/discovered", 200, b"<html>leaf</html>",
+            "https://example.com/discovered",
+            200,
+            b"<html>leaf</html>",
         ),
     }
 
@@ -107,17 +114,24 @@ async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None
     )
     fake_httpx.responses = {
         "https://tuck.dartmouth.edu/robots.txt": fake_httpx.Response(
-            "https://tuck.dartmouth.edu/robots.txt", 200, b"User-agent: *\nAllow: /\n",
+            "https://tuck.dartmouth.edu/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
         ),
         "https://mba.tuck.dartmouth.edu/robots.txt": fake_httpx.Response(
-            "https://mba.tuck.dartmouth.edu/robots.txt", 200, b"User-agent: *\nAllow: /\n",
+            "https://mba.tuck.dartmouth.edu/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
         ),
         "https://tuck.dartmouth.edu/": fake_httpx.Response(
-            "https://tuck.dartmouth.edu/", 200,
+            "https://tuck.dartmouth.edu/",
+            200,
             b'<html><a href="https://mba.tuck.dartmouth.edu/page">mba</a></html>',
         ),
         "https://mba.tuck.dartmouth.edu/page": fake_httpx.Response(
-            "https://mba.tuck.dartmouth.edu/page", 200, b"<html>mba</html>",
+            "https://mba.tuck.dartmouth.edu/page",
+            200,
+            b"<html>mba</html>",
         ),
     }
 
@@ -128,3 +142,54 @@ async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None
     with store.session() as session:
         urls = sorted(session.execute(select(Fetch.url)).scalars())
     assert "https://mba.tuck.dartmouth.edu/page" in urls
+
+
+@pytest.mark.asyncio
+async def test_sitemap_runner_auto_queues_pipeline_on_completion(
+    store,
+    fake_httpx,
+    monkeypatch,
+) -> None:
+    queued: list[tuple[str, str]] = []
+
+    async def fake_execute_cloud_run_job(run_id, mode: str) -> None:
+        queued.append((str(run_id), mode))
+
+    from backend.jobs import run as jobs_run
+
+    monkeypatch.setenv("PINEGRAF_AUTO_PIPELINE", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(jobs_run, "execute_cloud_run_job", fake_execute_cloud_run_job)
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": "https://example.com/sitemap.xml"},
+        triggered_by="test",
+    )
+    fake_httpx.responses = {
+        "https://example.com/robots.txt": fake_httpx.Response(
+            "https://example.com/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
+        ),
+        "https://example.com/sitemap.xml": fake_httpx.Response(
+            "https://example.com/sitemap.xml",
+            200,
+            b"""<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+              <url><loc>https://example.com/a</loc></url>
+            </urlset>""",
+        ),
+        "https://example.com/a": fake_httpx.Response(
+            "https://example.com/a", 200, b"<html>A</html>"
+        ),
+    }
+
+    await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
+
+    with store.session() as session:
+        pipeline_run = session.execute(
+            select(SourceRun).where(SourceRun.kind == "pipeline")
+        ).scalar_one()
+    assert pipeline_run.spec["pipeline_source_run_id"] == str(run.id)
+    assert queued == [(str(pipeline_run.id), "pipeline")]

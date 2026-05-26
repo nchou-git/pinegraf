@@ -14,6 +14,7 @@ import httpx
 
 from backend.config import get_settings
 from backend.db.store import Store
+from backend.ingestion.auto_pipeline import enqueue_pipeline_after_crawl
 from backend.ingestion.fetcher import TIMEOUT_SECONDS, fetch_url, robots_allowed, user_agent
 from backend.live_logs import append_log
 from backend.progress import progress_stats
@@ -374,6 +375,7 @@ async def run_sitemap(
         ),
         finished=True,
     )
+    await enqueue_pipeline_after_crawl(store=store, crawl_run_id=run_id, crawl_status=status)
     return stats
 
 

@@ -1117,7 +1117,16 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
 
 
 def _source_coverage(session, source_id: uuid.UUID) -> dict[str, int]:
-    documents = session.execute(
+    pages_fetched = session.execute(
+        select(func.count())
+        .select_from(Fetch)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id == source_id)
+        .where(Fetch.http_status >= 200)
+        .where(Fetch.http_status < 300)
+        .where(Fetch.body_bytes.is_not(None))
+    ).scalar_one()
+    documents_parsed = session.execute(
         select(func.count(func.distinct(DocumentFetch.document_id)))
         .select_from(DocumentFetch)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
@@ -1138,7 +1147,13 @@ def _source_coverage(session, source_id: uuid.UUID) -> dict[str, int]:
             )
         )
     ).scalar_one()
-    return {"documents": documents, "claims": claims, "conflicts": conflicts}
+    return {
+        "pages_fetched": pages_fetched,
+        "documents_parsed": documents_parsed,
+        "documents": documents_parsed,
+        "claims": claims,
+        "conflicts": conflicts,
+    }
 
 
 def _sse(payload: dict[str, object]) -> bytes:

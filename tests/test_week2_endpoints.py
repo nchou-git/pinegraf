@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from backend import main as main_module
 from backend.db.models import Entity, EntitySummary
+from backend.web_api import list_sources
 
 
 def test_user_api_is_public_and_lists_directory(store) -> None:
@@ -34,6 +35,29 @@ def test_user_api_is_public_and_lists_directory(store) -> None:
         payload = directory_response.json()
         assert payload["total"] == 1
         assert payload["results"][0]["canonical_name"] == "Errik Anderson"
+
+
+def test_source_coverage_separates_pages_fetched_from_documents_parsed(store) -> None:
+    source = store.upsert_source(kind="domain", identifier="coverage.example")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": source.identifier},
+        triggered_by="test",
+        status="complete",
+    )
+    store.add_fetch(
+        source_run_id=run.id,
+        url="https://coverage.example/page",
+        body_bytes=b"<html>ok</html>",
+        http_status=200,
+    )
+
+    [payload] = list_sources(store)
+
+    assert payload["coverage"]["pages_fetched"] == 1
+    assert payload["coverage"]["documents_parsed"] == 0
+    assert payload["coverage"]["documents"] == 0
 
 
 def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypatch) -> None:

@@ -1922,7 +1922,8 @@ function sourceArchiveRow(source) {
         </div>
       </div>
       <div class="source-row-stats">
-        <span><strong>${formatNumber(source.coverage.documents)}</strong> docs</span>
+        <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+        <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
         <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
         <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
         <span class="status-pill archived">Archived</span>
@@ -1973,14 +1974,27 @@ function sourceRow(source, options = {}) {
         </div>
       </div>
       <div class="source-row-stats">
-        <span><strong>${formatNumber(source.coverage.documents)}</strong> docs</span>
+        <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+        <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
         <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
         <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
         <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
       </div>
-      ${isAdmin() ? `<div class="source-row-actions">${progress && !archived ? runProgressMarkup(progress) : `${actions}${menuButton}`}</div>` : ""}
+      ${
+        isAdmin()
+          ? `<div class="source-row-actions">${progress && !archived ? runProgressMarkup(progress) : `${actions}${menuButton}${parseHint(source)}`}</div>`
+          : ""
+      }
     </article>
   `;
+}
+
+function parseHint(source) {
+  const coverage = source.coverage || {};
+  if ((coverage.pages_fetched || 0) > 0 && (coverage.documents_parsed || 0) === 0) {
+    return `<span class="source-action-message">Crawl complete. Run parse to extract documents.</span>`;
+  }
+  return "";
 }
 
 function runProgressMarkup(progress) {
@@ -2020,6 +2034,7 @@ function sourceRunKindLabel(kind) {
   if (kind === "sitemap") return "Website";
   if (kind === "seed") return "File upload";
   if (kind === "adhoc") return "Manual URLs";
+  if (kind === "pipeline") return "Parse";
   return capitalize(kind || "");
 }
 
@@ -2309,7 +2324,8 @@ function renderSourceDetailHead(source) {
         }</h1>
         <div class="subtitle">${escapeHtml(sourceMetaLine(source))}</div>
         <div class="meta">
-          <span><strong>${source.coverage.documents}</strong> documents</span>
+          <span><strong>${source.coverage.pages_fetched}</strong> pages fetched</span>
+          <span><strong>${source.coverage.documents_parsed}</strong> documents parsed</span>
           <span><strong>${source.coverage.claims}</strong> claims</span>
           ${source.coverage.conflicts ? `<span class="conflict-pill"><i class="ti ti-alert-triangle"></i>${source.coverage.conflicts} conflicts</span>` : ""}
           <span class="muted">Created ${escapeHtml(formatDate(source.created_at))}</span>

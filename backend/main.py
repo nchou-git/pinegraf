@@ -520,6 +520,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             latest = session.execute(
                 select(SourceRun)
                 .where(SourceRun.source_id == source_id)
+                .where(SourceRun.kind != "pipeline")
                 .order_by(SourceRun.started_at.desc())
                 .limit(1)
             ).scalar_one_or_none()
@@ -528,7 +529,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         try:
             run = store.create_source_run(
                 source_id=source.id,
-                kind=latest.kind,
+                kind="pipeline",
                 spec={
                     "source_id": str(source.id),
                     "pipeline_source_run_id": str(latest.id),
