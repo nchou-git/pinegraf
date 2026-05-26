@@ -51,6 +51,10 @@ class Source(Base):
             "trust_weight >= 0 and trust_weight <= 1",
             name="ck_sources_trust_weight",
         ),
+        CheckConstraint(
+            "status in ('active','paused','archived')",
+            name="ck_sources_status",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -58,6 +62,7 @@ class Source(Base):
     identifier: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     trust_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     respect_robots: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     display_name: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

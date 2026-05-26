@@ -38,8 +38,6 @@ from backend.resolution.embedder import embed_texts
 ASK_CACHE_SECONDS = 3600
 ASK_CACHE_MAX = 100
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
-ARCHIVED_STATUS_PREFIX = "status:archived"
-PAUSED_STATUS_PREFIX = "status:paused"
 
 
 def stats(store: Store) -> dict[str, int]:
@@ -222,25 +220,18 @@ _KIND_ICONS = {
 
 
 def _source_status(source: Source) -> str:
-    notes = source.notes or ""
-    if notes.startswith(ARCHIVED_STATUS_PREFIX):
-        return "archived"
-    if notes.startswith(PAUSED_STATUS_PREFIX):
-        return "paused"
-    return "active"
+    return source.status
 
 
 def _source_is_archived(source: Source) -> bool:
-    return bool(source.notes and source.notes.startswith(ARCHIVED_STATUS_PREFIX))
+    return source.status == "archived"
 
 
 def archived_source_count(store: Store) -> int:
     with store.session() as session:
         return int(
             session.execute(
-                select(func.count())
-                .select_from(Source)
-                .where(Source.notes.startswith(ARCHIVED_STATUS_PREFIX))
+                select(func.count()).select_from(Source).where(Source.status == "archived")
             ).scalar_one()
         )
 
@@ -519,23 +510,9 @@ def update_source(
         if respect_robots is not None:
             source.respect_robots = respect_robots
         if status is not None:
-            existing_notes = source.notes or ""
-            note_body = existing_notes
-            if existing_notes.startswith("status:"):
-                _, _, after = existing_notes.partition("\n")
-                note_body = after
-            if status == "active":
-                source.notes = note_body or None
-            else:
-                source.notes = (
-                    f"status:{status}\n{note_body}".strip() if note_body else f"status:{status}"
-                )
-        if notes is not None and status is None:
-            existing_status_line = ""
-            if source.notes and source.notes.startswith("status:"):
-                first_line, _, _ = source.notes.partition("\n")
-                existing_status_line = first_line + "\n"
-            source.notes = f"{existing_status_line}{notes}".strip() or None
+            source.status = status
+        if notes is not None:
+            source.notes = notes.strip() or None
         session.commit()
     return source_detail(store, source_id, include_archived=True)
 

@@ -92,6 +92,7 @@ class Store:
         identifier: str,
         trust_weight: float = 0.5,
         respect_robots: bool = True,
+        status: str = "active",
         display_name: str | None = None,
         notes: str | None = None,
     ) -> Source:
@@ -106,6 +107,7 @@ class Store:
                 existing.kind = kind
                 existing.trust_weight = trust_weight
                 existing.respect_robots = respect_robots
+                existing.status = status
                 existing.display_name = display_name
                 existing.notes = notes
                 session.commit()
@@ -115,6 +117,7 @@ class Store:
                 identifier=identifier,
                 trust_weight=trust_weight,
                 respect_robots=respect_robots,
+                status=status,
                 display_name=display_name,
                 notes=notes,
             )
@@ -363,6 +366,7 @@ def source_to_dict(source: Source) -> dict[str, object]:
         "identifier": source.identifier,
         "trust_weight": source.trust_weight,
         "respect_robots": source.respect_robots,
+        "status": source.status,
         "display_name": source.display_name,
         "notes": source.notes,
         "created_at": source.created_at.isoformat(),

@@ -2653,7 +2653,7 @@ function renderSourceConfig(detail) {
         </div>
         <label class="field">
           <span class="field-label">Notes</span>
-          <textarea class="input" id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(stripSourceMetaLines(detail.notes || ""))}</textarea>
+          <textarea class="input" id="cfg-notes" rows="3" ${adminOnly ? "disabled" : ""}>${escapeHtml(detail.notes || "")}</textarea>
         </label>
         <label class="field checkbox-field">
           <span class="checkbox-row">
@@ -2681,14 +2681,6 @@ function renderSourceConfig(detail) {
       renderSourceDetail(detail.id, "config");
     };
   }
-}
-
-function stripSourceMetaLines(notes) {
-  return String(notes || "")
-    .split("\n")
-    .filter((line) => !line.startsWith("status:"))
-    .join("\n")
-    .trim();
 }
 
 /* ───── Add source modal ───── */

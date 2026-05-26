@@ -398,3 +398,25 @@ def test_archive_status_hides_source_without_deleting_data(
         "documents": 1,
         "chunks": 1,
     }
+
+
+def test_source_status_does_not_parse_user_notes(store, admin_headers) -> None:
+    source = store.upsert_source(
+        kind="domain",
+        identifier="notes.example",
+        notes="status:archived\nThis is user-authored text.",
+    )
+
+    with TestClient(main_module.create_app(store)) as client:
+        listed = client.get("/api/sources").json()
+        update = client.patch(
+            f"/admin/sources/{source.id}",
+            headers=admin_headers,
+            json={"status": "paused", "notes": "status:active is just a note"},
+        )
+
+    assert listed["sources"][0]["status"] == "active"
+    assert listed["sources"][0]["notes"].startswith("status:archived")
+    assert update.status_code == 200
+    assert update.json()["status"] == "paused"
+    assert update.json()["notes"] == "status:active is just a note"
