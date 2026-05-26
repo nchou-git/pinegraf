@@ -417,7 +417,7 @@ async function loadDirectory() {
           <i class="ti ti-database-off" aria-hidden="true"></i>
           <h2>No sources yet</h2>
           <p>Add your first source to start ingesting people, projects, and connections.</p>
-          <a class="btn-primary" href="#sources"><i class="ti ti-arrow-right" aria-hidden="true"></i> Go to Sources</a>
+          <a class="btn-primary" href="#sources">Go to Sources <i class="ti ti-arrow-right" aria-hidden="true"></i></a>
         </div>`;
       byId("pagination").innerHTML = "";
       return;
@@ -430,7 +430,7 @@ async function loadDirectory() {
             <i class="ti ti-route-off" aria-hidden="true"></i>
             <h2>Pipeline hasn't run yet</h2>
             <p>Go to Sources to crawl your first source.</p>
-            <a class="btn-primary" href="#sources"><i class="ti ti-arrow-right" aria-hidden="true"></i> Open Sources</a>
+            <a class="btn-primary" href="#sources">Open Sources <i class="ti ti-arrow-right" aria-hidden="true"></i></a>
           </div>`;
         byId("pagination").innerHTML = "";
         return;
