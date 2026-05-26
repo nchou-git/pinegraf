@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from backend import main as main_module
-from backend.db.models import Entity, EntitySummary
+from backend.db.models import Entity, EntitySummary, SourceRun
 from backend.web_api import list_sources
 
 
@@ -95,3 +96,9 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
         pipeline_response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
         assert pipeline_response.status_code == 200
         assert pipeline_response.json()["status"] == "queued"
+
+    with store.session() as session:
+        pipeline_run = session.execute(
+            select(SourceRun).where(SourceRun.source_id == source.id, SourceRun.kind == "pipeline")
+        ).scalar_one()
+    assert pipeline_run.spec["pipeline_source_run_id"]
