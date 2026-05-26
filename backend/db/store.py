@@ -29,6 +29,7 @@ from backend.source_identifiers import normalize_identifier
 SCHEMA_TABLES = [
     "sources",
     "source_runs",
+    "live_logs",
     "fetches",
     "documents",
     "document_fetches",

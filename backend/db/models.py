@@ -110,6 +110,25 @@ class SourceRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
 
+class LiveLog(Base):
+    __tablename__ = "live_logs"
+    __table_args__ = (
+        Index("ix_live_logs_timestamp", "timestamp"),
+        Index("ix_live_logs_source_run_id", "source_run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    level: Mapped[str] = mapped_column(Text, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    source_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("source_runs.id", ondelete="SET NULL"),
+    )
+
+
 class Fetch(Base):
     __tablename__ = "fetches"
     __table_args__ = (

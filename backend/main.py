@@ -142,7 +142,7 @@ def create_app(store: Store | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.store.ensure_initial_sources()
         os.makedirs(get_settings().uploads_dir, exist_ok=True)
-        append_log("info", "Pinegraf started")
+        append_log("info", "Pinegraf started", store=app_store)
         yield
 
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
@@ -177,7 +177,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="admin auth required")
 
         async def events() -> AsyncIterator[str]:
-            async for line in subscribe_logs():
+            async for line in subscribe_logs(store=_store(request)):
                 yield f"data: {json.dumps(line)}\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream")
