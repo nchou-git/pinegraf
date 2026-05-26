@@ -140,7 +140,6 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.store.ensure_initial_sources()
         os.makedirs(get_settings().uploads_dir, exist_ok=True)
         append_log("info", "Pinegraf started", store=app_store)
         yield

@@ -219,10 +219,6 @@ _KIND_ICONS = {
 }
 
 
-def _source_status(source: Source) -> str:
-    return source.status
-
-
 def _source_is_archived(source: Source) -> bool:
     return source.status == "archived"
 
@@ -267,7 +263,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "display_name": source.display_name or source.identifier,
                     "trust_weight": source.trust_weight,
                     "respect_robots": source.respect_robots,
-                    "status": _source_status(source),
+                    "status": source.status,
                     "notes": source.notes,
                     "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
                     "last_run_at": last_run.started_at.isoformat() if last_run else None,
@@ -331,7 +327,7 @@ def source_detail(
             "display_name": source.display_name or source.identifier,
             "trust_weight": source.trust_weight,
             "respect_robots": source.respect_robots,
-            "status": _source_status(source),
+            "status": source.status,
             "notes": source.notes,
             "file_size_bytes": file_size_bytes,
             "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),

@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.config import get_settings
 from backend.db.models import (
-    Base,
     Chunk,
     Claim,
     ClaimConflict,
@@ -47,8 +46,6 @@ SCHEMA_TABLES = [
     "entity_neighborhood",
 ]
 
-INITIAL_SOURCES = []
-
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -72,15 +69,8 @@ class Store:
             expire_on_commit=False,
         )
 
-    def create_schema(self) -> None:
-        Base.metadata.create_all(self.engine)
-
     def session(self) -> Session:
         return self._session_factory()
-
-    def ensure_initial_sources(self) -> None:
-        for source in INITIAL_SOURCES:
-            self.upsert_source(**source)
 
     def get_source(self, source_id: uuid.UUID) -> Source | None:
         with self.session() as session:

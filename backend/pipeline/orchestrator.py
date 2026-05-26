@@ -20,7 +20,8 @@ async def run_full_pipeline(
     fetch_run_id = uuid.UUID(str(source_run_id))
     run_id = uuid.UUID(str(progress_run_id or source_run_id))
     touched: set[uuid.UUID] = set()
-    stats = dict(store.get_source_run(run_id).stats or {}) if store.get_source_run(run_id) else {}
+    run = store.get_source_run(run_id)
+    stats = dict(run.stats or {}) if run else {}
     try:
         _write_progress(store, run_id, stats, "normalization", "Normalizing fetches", 0.0)
         documents = await normalize_pending(
