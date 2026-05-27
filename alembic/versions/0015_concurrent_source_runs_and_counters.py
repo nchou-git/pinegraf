@@ -1,6 +1,6 @@
 """allow concurrent source run kinds and add crawl counters
 
-Revision ID: 0015_concurrent_source_runs_and_counters
+Revision ID: 0015_run_kinds_counters
 Revises: 0014_remove_paused_sources
 Create Date: 2026-05-27 02:10:00.000000
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0015_concurrent_source_runs_and_counters"
+revision: str = "0015_run_kinds_counters"
 down_revision: str | None = "0014_remove_paused_sources"
 branch_labels: str | None = None
 depends_on: str | None = None
