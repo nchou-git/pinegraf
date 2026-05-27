@@ -79,6 +79,86 @@ async def enqueue_parse_after_crawl(
     append_log("info", f"Auto-parse queued for crawl run {crawl_run_id}")
 
 
+async def enqueue_parse_after_parse(
+    *,
+    store: Store,
+    parse_run_id: uuid.UUID,
+) -> None:
+    if not get_settings().auto_parse:
+        return
+    parse_run = store.get_source_run(parse_run_id)
+    if parse_run is None or parse_run.kind != "parse":
+        return
+    spec = dict(parse_run.spec or {})
+    if spec.get("scope", "unparsed") != "unparsed":
+        return
+    pending_fetch_ids = store.pending_fetch_ids(source_id=parse_run.source_id)
+    if not pending_fetch_ids:
+        return
+    if _active_parse_run_exists(store, parse_run.source_id):
+        _record_auto_parse_skipped(
+            store,
+            parse_run,
+            reason="parse already in progress",
+            pending_fetches=len(pending_fetch_ids),
+        )
+        append_log(
+            "info",
+            f"Skipped follow-up auto-parse for {parse_run_id}: parse already in progress",
+        )
+        return
+    try:
+        next_run = store.create_source_run(
+            source_id=parse_run.source_id,
+            kind="parse",
+            spec={
+                "source_id": str(parse_run.source_id),
+                "scope": "unparsed",
+            },
+            triggered_by="auto",
+            status="queued",
+            audit_action="run.auto_enqueue_parse",
+            audit_actor="system",
+            audit_payload={
+                "source_id": str(parse_run.source_id),
+                "parse_run_id": str(parse_run.id),
+                "pending_fetches": len(pending_fetch_ids),
+                "reason": "unparsed fetches remain after parse",
+            },
+        )
+    except IntegrityError:
+        _record_auto_parse_skipped(
+            store,
+            parse_run,
+            reason="parse already in progress",
+            pending_fetches=len(pending_fetch_ids),
+        )
+        append_log(
+            "info",
+            f"Skipped follow-up auto-parse for {parse_run_id}: parse already in progress",
+        )
+        return
+
+    try:
+        from backend.jobs.run import execute_cloud_run_job
+
+        await execute_cloud_run_job(next_run.id, "parse")
+    except Exception as exc:  # noqa: BLE001
+        store.update_source_run(
+            next_run.id,
+            status="failed",
+            error_message=f"{type(exc).__name__}: {exc}",
+            finished=True,
+        )
+        append_log(
+            "error",
+            f"Failed to queue follow-up auto-parse for {parse_run_id}: {type(exc).__name__}: {exc}",
+        )
+        return
+
+    append_log("info", f"Follow-up auto-parse queued for parse run {parse_run_id}")
+
+
 def _active_parse_run_exists(store: Store, source_id: uuid.UUID) -> bool:
     with store.session() as session:
         return bool(
@@ -92,19 +172,31 @@ def _active_parse_run_exists(store: Store, source_id: uuid.UUID) -> bool:
         )
 
 
-def _record_auto_parse_skipped(store: Store, crawl_run: SourceRun) -> None:
+def _record_auto_parse_skipped(
+    store: Store,
+    run: SourceRun,
+    *,
+    reason: str = "parse already in progress",
+    pending_fetches: int | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "source_id": str(run.source_id),
+        "reason": reason,
+    }
+    if run.kind == "parse":
+        payload["parse_run_id"] = str(run.id)
+    else:
+        payload["crawl_run_id"] = str(run.id)
+    if pending_fetches is not None:
+        payload["pending_fetches"] = pending_fetches
     with store.session() as session:
         session.add(
             AuditLog(
                 action="run.auto_enqueue_parse.skipped",
                 target_table="source_runs",
-                target_id=str(crawl_run.id),
+                target_id=str(run.id),
                 actor="system",
-                payload={
-                    "source_id": str(crawl_run.source_id),
-                    "crawl_run_id": str(crawl_run.id),
-                    "reason": "parse already in progress",
-                },
+                payload=payload,
             )
         )
         session.commit()

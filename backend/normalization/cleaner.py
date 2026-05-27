@@ -10,7 +10,7 @@ from langdetect import LangDetectException, detect
 def clean_html(raw_bytes: bytes) -> tuple[str, str | None]:
     html = raw_bytes.decode("utf-8", errors="replace")
     metadata = trafilatura.extract_metadata(html)
-    title = metadata.title if metadata is not None else None
+    title = _normalize_text_field(metadata.title) if metadata is not None else None
     extracted = trafilatura.extract(
         html,
         include_comments=False,
@@ -39,4 +39,10 @@ def _basic_html_to_text(html: str) -> str:
 
 
 def _normalize_whitespace(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", _normalize_text_field(text)).strip()
+
+
+def _normalize_text_field(text: str | None) -> str | None:
+    if text is None:
+        return None
+    return text.replace("\x00", "")

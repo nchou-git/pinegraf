@@ -9,6 +9,7 @@ from backend.db.models import Document, DocumentFetch, Fetch
 from backend.db.store import utc_now
 from backend.normalization import normalizer
 from backend.normalization.chunker import Chunk
+from backend.normalization.cleaner import clean_html
 
 
 @pytest.mark.asyncio
@@ -49,6 +50,13 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
         link_count = session.execute(select(func.count()).select_from(DocumentFetch)).scalar_one()
     assert document_count == 1
     assert link_count == 2
+
+
+def test_clean_html_removes_nul_bytes() -> None:
+    cleaned, title = clean_html(b"<html><title>A\x00B</title><body>One\x00Two</body></html>")
+
+    assert "\x00" not in cleaned
+    assert title is None or "\x00" not in title
 
 
 def test_pending_fetch_ids_are_source_scoped_and_snapshot_filtered(store) -> None:

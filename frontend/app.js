@@ -1806,7 +1806,8 @@ function setupSourceRows(root, sources, { archived }) {
     const parse = row.querySelector("[data-action=parse]");
     const unarchive = row.querySelector("[data-action=unarchive]");
     const destroy = row.querySelector("[data-action=delete]");
-    const cancelButtons = row.querySelectorAll("[data-action=cancel]");
+    const pauseButtons = row.querySelectorAll("[data-action=pause]");
+    const resumeButtons = row.querySelectorAll("[data-action=resume]");
     const menuBtn = row.querySelector("[data-action=menu]");
     if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
@@ -1819,10 +1820,16 @@ function setupSourceRows(root, sources, { archived }) {
       const listKind = row.closest("[data-source-list]")?.dataset.sourceList || (archived ? "archived" : "active");
       confirmDeleteSource(source, listKind);
     };
-    cancelButtons.forEach((cancel) => {
-      cancel.onclick = async (e) => {
+    pauseButtons.forEach((pause) => {
+      pause.onclick = async (e) => {
         e.stopPropagation();
-        await cancelSourceRun(source, cancel.dataset.runKind);
+        await pauseSourceRun(source, pause.dataset.runKind);
+      };
+    });
+    resumeButtons.forEach((resume) => {
+      resume.onclick = async (e) => {
+        e.stopPropagation();
+        await runSourceAction(source.id, resume.dataset.runKind);
       };
     });
     if (menuBtn) menuBtn.onclick = (e) => {
@@ -2057,17 +2064,21 @@ function sourceRowActions(source, { archived }) {
       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
   }
   const runs = activeRuns(source);
+  const paused = pausedRuns(source);
   const menuButton = isAdmin()
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
-  return `${sourceActionButton("crawl", Boolean(runs.crawl))}
-    ${sourceActionButton("parse", Boolean(runs.parse))}
+  return `${sourceActionButton("crawl", runs.crawl ? "pause" : paused.crawl ? "resume" : "start")}
+    ${sourceActionButton("parse", runs.parse ? "pause" : paused.parse ? "resume" : "start")}
     ${menuButton}`;
 }
 
-function sourceActionButton(kind, isCancel) {
-  if (isCancel) {
-    return `<button class="btn-danger-outline" data-action="cancel" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-x"></i> Cancel</button>`;
+function sourceActionButton(kind, state = "start") {
+  if (state === "pause") {
+    return `<button class="btn-danger-outline" data-action="pause" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-pause"></i> Pause</button>`;
+  }
+  if (state === "resume") {
+    return `<button class="btn-source" data-action="resume" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-play"></i> Resume</button>`;
   }
   if (kind === "parse") {
     return `<button class="btn-source" data-action="parse" title="Parse fetched documents that have not been parsed yet"><i class="ti ti-cpu"></i> Parse</button>`;
@@ -2095,8 +2106,14 @@ function activeRuns(source) {
   };
 }
 
+function pausedRuns(source) {
+  if (source?.paused_runs && typeof source.paused_runs === "object") return source.paused_runs;
+  return {};
+}
+
 function sourceRunStatusText(source, progress) {
   const runs = activeRuns(source);
+  const paused = pausedRuns(source);
   const parts = [];
   if (runs.crawl) {
     parts.push(runProgressText(progressForRun(source, "crawl", runs.crawl)));
@@ -2105,6 +2122,12 @@ function sourceRunStatusText(source, progress) {
     parts.push(runProgressText(progressForRun(source, "parse", runs.parse)));
   }
   if (parts.length) return parts.join(" · ");
+  if (paused.crawl || paused.parse) {
+    return ["crawl", "parse"]
+      .filter((action) => paused[action])
+      .map((action) => `${capitalize(action)} paused`)
+      .join(" · ");
+  }
   if (!source.active_run_id) {
     return source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run";
   }
@@ -2318,12 +2341,12 @@ async function runSourceAction(sourceId, action) {
   }
 }
 
-async function cancelSourceRun(source, kind) {
+async function pauseSourceRun(source, kind) {
   const run = activeRuns(source)[kind] || (source.active_run_id ? { id: source.active_run_id } : null);
   if (!run?.id || !isAdmin()) return;
   setSourceActionButtonsDisabled(source.id, true);
   try {
-    await expectOk(fetch(`/admin/runs/${run.id}/cancel`, { method: "POST" }));
+    await expectOk(fetch(`/admin/runs/${run.id}/pause`, { method: "POST" }));
     const stream = state.runStreams[run.id];
     if (stream) {
       stream.close();
@@ -2334,7 +2357,7 @@ async function cancelSourceRun(source, kind) {
       if (!Object.keys(state.runProgress[source.id]).length) delete state.runProgress[source.id];
     }
     await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
-    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} cancelled`, {
+    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} paused`, {
       level: "success",
     });
   } catch (error) {
@@ -2353,7 +2376,8 @@ function sourceActionButtons(sourceId) {
   return document.querySelectorAll(
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=cancel]`,
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=pause], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=resume]`,
   );
 }
 
@@ -2394,7 +2418,12 @@ function trackRun(sourceId, sourceName, action, runId, initial = {}) {
     state.runProgress[sourceId] = current;
     persistRunProgress();
     updateRunProgressDom(sourceId);
-    if (data.status === "complete" || data.status === "failed" || data.status === "cancelled") {
+    if (
+      data.status === "complete" ||
+      data.status === "failed" ||
+      data.status === "cancelled" ||
+      data.status === "paused"
+    ) {
       stream.close();
       delete state.runStreams[runId];
       delete current[action];

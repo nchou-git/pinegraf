@@ -115,7 +115,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0015_run_kinds_counters"
+EXPECTED_ALEMBIC_HEAD = "0016_run_pause"
 
 
 def _slugify(value: str) -> str:
@@ -662,46 +662,13 @@ def create_app(store: Store | None = None) -> FastAPI:
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
+    @app.post("/admin/runs/{run_id}/pause")
+    async def admin_pause_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
+        return await _stop_run(request, run_id, status="paused", audit_action="run.pause")
+
     @app.post("/admin/runs/{run_id}/cancel")
     async def admin_cancel_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
-        require_admin(request)
-        store = _store(request)
-        run = store.get_source_run(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail="run not found")
-
-        cloud_cancelled = False
-        warning = None
-        status = run.status
-        if run.status in ACTIVE_SOURCE_RUN_STATUSES:
-            try:
-                await asyncio.to_thread(cancel_cloud_run_execution, run)
-                cloud_cancelled = True
-            except Exception as exc:  # noqa: BLE001
-                warning = f"{type(exc).__name__}: {exc}"
-            status = "cancelled"
-        with store.session() as session:
-            db_run = session.get(SourceRun, run_id)
-            if db_run is not None:
-                if run.status in ACTIVE_SOURCE_RUN_STATUSES:
-                    db_run.status = "cancelled"
-                    db_run.error_message = warning
-                    db_run.finished_at = db_run.finished_at or utc_now()
-                    db_source = session.get(Source, db_run.source_id)
-                    if db_source is not None:
-                        db_source.status = "active"
-                session.add(
-                    AuditLog(
-                        action="run.cancel",
-                        target_table="source_runs",
-                        target_id=str(run_id),
-                        actor=_admin_actor(request),
-                        request_ip=_request_ip(request),
-                        payload={"cloud_cancelled": cloud_cancelled, "warning": warning},
-                    )
-                )
-                session.commit()
-        return {"status": status, "cloud_cancelled": cloud_cancelled, "warning": warning}
+        return await _stop_run(request, run_id, status="cancelled", audit_action="run.cancel")
 
     @app.get("/admin/audit")
     async def admin_audit(request: Request) -> dict[str, object]:
@@ -814,6 +781,53 @@ def _active_source_run(
         if kind is not None:
             query = query.where(SourceRun.kind == kind)
         return session.execute(query).scalar_one_or_none()
+
+
+async def _stop_run(
+    request: Request,
+    run_id: uuid.UUID,
+    *,
+    status: str,
+    audit_action: str,
+) -> dict[str, object]:
+    require_admin(request)
+    store = _store(request)
+    run = store.get_source_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    cloud_cancelled = False
+    warning = None
+    result_status = run.status
+    if run.status in ACTIVE_SOURCE_RUN_STATUSES:
+        try:
+            await asyncio.to_thread(cancel_cloud_run_execution, run)
+            cloud_cancelled = True
+        except Exception as exc:  # noqa: BLE001
+            warning = f"{type(exc).__name__}: {exc}"
+        result_status = status
+    with store.session() as session:
+        db_run = session.get(SourceRun, run_id)
+        if db_run is not None:
+            if run.status in ACTIVE_SOURCE_RUN_STATUSES:
+                db_run.status = status
+                db_run.error_message = warning
+                db_run.finished_at = db_run.finished_at or utc_now()
+                db_source = session.get(Source, db_run.source_id)
+                if db_source is not None:
+                    db_source.status = "active"
+            session.add(
+                AuditLog(
+                    action=audit_action,
+                    target_table="source_runs",
+                    target_id=str(run_id),
+                    actor=_admin_actor(request),
+                    request_ip=_request_ip(request),
+                    payload={"cloud_cancelled": cloud_cancelled, "warning": warning},
+                )
+            )
+            session.commit()
+    return {"status": result_status, "cloud_cancelled": cloud_cancelled, "warning": warning}
 
 
 def _already_running_from_integrity_error(

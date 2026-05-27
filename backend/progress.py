@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from backend.db.store import Store
 
 PROGRESS_KEYS = {"stage", "status", "message", "percent"}
-TERMINAL_RUN_STATUSES = {"complete", "failed", "partial", "cancelled"}
+TERMINAL_RUN_STATUSES = {"complete", "failed", "partial", "cancelled", "paused"}
 
 
 @dataclass

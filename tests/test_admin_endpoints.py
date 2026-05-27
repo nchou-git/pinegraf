@@ -259,6 +259,36 @@ def test_cancel_run_marks_cancelled_and_audits(store, admin_headers, monkeypatch
     ]
 
 
+def test_pause_run_marks_paused_and_audits(store, admin_headers, monkeypatch) -> None:
+    cancelled = []
+
+    def cancel_cloud_run_execution(run) -> str:
+        cancelled.append(run.id)
+        return "projects/p/locations/r/jobs/pinegraf-parse/executions/e"
+
+    monkeypatch.setattr(main_module, "cancel_cloud_run_execution", cancel_cloud_run_execution)
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="parse",
+        spec={"source_id": str(source.id), "scope": "unparsed"},
+        triggered_by="test",
+        status="running",
+    )
+
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.post(f"/admin/runs/{run.id}/pause", headers=admin_headers)
+        audit_response = client.get("/admin/audit", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "paused"
+    assert response.json()["cloud_cancelled"] is True
+    assert cancelled == [run.id]
+    assert store.get_source_run(run.id).status == "paused"
+    assert audit_response.status_code == 200
+    assert audit_response.json()["entries"][0]["action"] == "run.pause"
+
+
 def test_source_create_and_update_are_audited(store, admin_headers) -> None:
     with TestClient(main_module.create_app(store)) as client:
         create = client.post(
