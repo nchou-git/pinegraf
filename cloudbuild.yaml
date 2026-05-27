@@ -42,13 +42,13 @@ steps:
       - DATABASE_URL=postgresql+psycopg://pinegraf_test:pinegraf_test@pinegraf-test-postgres:5432/pinegraf_test
       - PINEGRAF_ADMIN_PASSWORD=test-admin-password
       - ADMIN_SESSION_SECRET=test-session-secret
-      - OPENAI_API_KEY=test-openai-key
       - USE_MOCK_EMBEDDINGS=true
       - PINEGRAF_TEST_DATABASE_ALLOWED_HOSTS=pinegraf-test-postgres
     entrypoint: bash
     args:
       - -c
       - |
+        set -euo pipefail
         pip install --no-cache-dir -e .
         python -m alembic upgrade head
         pytest -q

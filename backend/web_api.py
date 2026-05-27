@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections import OrderedDict
@@ -8,7 +9,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from openai import AsyncOpenAI
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 
 from backend.class_year import expand_class_year_synonyms
 from backend.config import Settings, get_settings
@@ -31,7 +32,12 @@ from backend.db.models import (
     Source,
     SourceRun,
 )
-from backend.db.store import SCHEMA_TABLES, Store, utc_now
+from backend.db.stats_queries import (
+    documents_for_source,
+    global_stats,
+    source_coverage,
+)
+from backend.db.store import Store, utc_now
 from backend.resolution.embedder import embed_texts
 from backend.util.vector import cosine, vector_values
 
@@ -91,7 +97,8 @@ def _paused_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
 
 
 def stats(store: Store) -> dict[str, int]:
-    return store.table_counts(SCHEMA_TABLES)
+    with store.session() as session:
+        return global_stats(session)
 
 
 def list_audit_log(store: Store, *, limit: int = 200) -> dict[str, object]:
@@ -263,6 +270,116 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
         }
 
 
+def list_claims(
+    store: Store,
+    *,
+    predicate: str = "",
+    subject_entity_id: uuid.UUID | None = None,
+    object_entity_id: uuid.UUID | None = None,
+    source_id: uuid.UUID | None = None,
+    min_confidence: float = 0.0,
+    status: str = "current",
+    q: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, object]:
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    status = status if status in {"all", "current", "superseded"} else "current"
+    with store.session() as session:
+        subject_alias = Entity.__table__.alias("subject_entity")
+        object_alias = Entity.__table__.alias("object_entity")
+        query = (
+            select(Claim)
+            .join(subject_alias, subject_alias.c.id == Claim.subject_entity_id)
+            .outerjoin(object_alias, object_alias.c.id == Claim.object_entity_id)
+        )
+        conditions = []
+        if predicate:
+            conditions.append(Claim.predicate == predicate)
+        if subject_entity_id is not None:
+            conditions.append(Claim.subject_entity_id == subject_entity_id)
+        if object_entity_id is not None:
+            conditions.append(Claim.object_entity_id == object_entity_id)
+        if source_id is not None:
+            conditions.append(
+                select(ClaimEvidence.claim_id)
+                .where(ClaimEvidence.claim_id == Claim.id)
+                .where(ClaimEvidence.source_id == source_id)
+                .exists()
+            )
+        if min_confidence:
+            conditions.append(Claim.confidence_score >= min_confidence)
+        if status == "current":
+            conditions.append(Claim.valid_to.is_(None))
+        elif status == "superseded":
+            conditions.append(Claim.valid_to.is_not(None))
+        if q:
+            pattern = f"%{q}%"
+            conditions.append(
+                or_(
+                    subject_alias.c.canonical_name.ilike(pattern),
+                    object_alias.c.canonical_name.ilike(pattern),
+                    Claim.object_value.ilike(pattern),
+                )
+            )
+        if conditions:
+            query = query.where(and_(*conditions))
+        total = session.execute(
+            select(func.count()).select_from(query.order_by(None).subquery())
+        ).scalar_one()
+        rows = list(
+            session.execute(
+                query.order_by(Claim.confidence_score.desc(), Claim.first_seen_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).scalars()
+        )
+        return {
+            "claims": [_claim_response(session, claim, include_sources=True) for claim in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "filters_applied": {
+                "predicate": predicate or None,
+                "subject_entity_id": str(subject_entity_id) if subject_entity_id else None,
+                "object_entity_id": str(object_entity_id) if object_entity_id else None,
+                "source_id": str(source_id) if source_id else None,
+                "min_confidence": min_confidence,
+                "status": status,
+                "q": q or None,
+            },
+        }
+
+
+def claim_detail(store: Store, claim_id: uuid.UUID) -> dict[str, object] | None:
+    with store.session() as session:
+        claim = session.get(Claim, claim_id)
+        if claim is None:
+            return None
+        response = _claim_response(session, claim, include_sources=True)
+        response["evidence"] = _claim_evidence(session, claim.id)
+        response["subject_entity"] = _entity_record(session, claim.subject_entity_id)
+        response["object_entity"] = (
+            _entity_record(session, claim.object_entity_id) if claim.object_entity_id else None
+        )
+        response["superseded_by"] = (
+            _claim_response(session, session.get(Claim, claim.superseded_by_claim_id))
+            if claim.superseded_by_claim_id
+            else None
+        )
+        return response
+
+
+def claim_predicates(store: Store) -> list[str]:
+    with store.session() as session:
+        return list(
+            session.execute(
+                select(Claim.predicate).distinct().order_by(Claim.predicate.asc())
+            ).scalars()
+        )
+
+
 async def ask_stream(
     store: Store,
     *,
@@ -361,6 +478,9 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
             )
             active_runs = _active_runs_payload(runs)
             paused_runs = _paused_runs_payload(runs)
+            coverage = source_coverage(session, source.id)
+            if active_runs.get("parse"):
+                coverage["pending_parse_count"] = 0
             output.append(
                 {
                     "id": str(source.id),
@@ -372,6 +492,12 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "status": source.status,
                     "pages_fetched_total": source.pages_fetched_total,
                     "urls_known_total": source.urls_known_total,
+                    "recrawl_interval_days": source.recrawl_interval_days,
+                    "last_full_recrawl_at": (
+                        source.last_full_recrawl_at.isoformat()
+                        if source.last_full_recrawl_at
+                        else None
+                    ),
                     "notes": source.notes,
                     "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
                     "last_run_at": last_run.started_at.isoformat() if last_run else None,
@@ -394,7 +520,8 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                         }
                         for run in runs
                     ],
-                    "coverage": _source_coverage(session, source.id),
+                    "pending_parse_count": coverage["pending_parse_count"],
+                    "coverage": coverage,
                 }
             )
         return output
@@ -429,14 +556,11 @@ def source_detail(
         )
         active_runs = _active_runs_payload(runs)
         paused_runs = _paused_runs_payload(runs)
-        coverage = _source_coverage(session, source.id)
-        document_count = session.execute(
-            select(func.count(func.distinct(DocumentFetch.document_id)))
-            .select_from(DocumentFetch)
-            .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
-            .join(SourceRun, SourceRun.id == Fetch.source_run_id)
-            .where(SourceRun.source_id == source.id)
-        ).scalar_one()
+        coverage = source_coverage(session, source.id)
+        if active_runs.get("parse"):
+            coverage["pending_parse_count"] = 0
+        document_count = documents_for_source(session, source.id)
+        latest_parse = next((run for run in runs if run.kind == "parse" and run.finished_at), None)
         return {
             "id": str(source.id),
             "kind": source.kind,
@@ -447,6 +571,10 @@ def source_detail(
             "status": source.status,
             "pages_fetched_total": source.pages_fetched_total,
             "urls_known_total": source.urls_known_total,
+            "recrawl_interval_days": source.recrawl_interval_days,
+            "last_full_recrawl_at": (
+                source.last_full_recrawl_at.isoformat() if source.last_full_recrawl_at else None
+            ),
             "notes": source.notes,
             "file_size_bytes": file_size_bytes,
             "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
@@ -458,6 +586,12 @@ def source_detail(
             "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
             "active_runs": active_runs,
             "paused_runs": paused_runs,
+            "pending_parse_count": coverage["pending_parse_count"],
+            "latest_parse_finished_at": (
+                latest_parse.finished_at.isoformat()
+                if latest_parse and latest_parse.finished_at
+                else None
+            ),
             "coverage": coverage,
             "runs": [
                 {
@@ -620,6 +754,7 @@ def update_source(
     respect_robots: bool | None = None,
     status: str | None = None,
     notes: str | None = None,
+    recrawl_interval_days: int | None = None,
     audit_actor: str | None = None,
     audit_request_ip: str | None = None,
     audit_payload: dict[str, object] | None = None,
@@ -638,6 +773,8 @@ def update_source(
             source.status = status
         if notes is not None:
             source.notes = notes.strip() or None
+        if recrawl_interval_days is not None:
+            source.recrawl_interval_days = max(1, int(recrawl_interval_days))
         if audit_payload is not None:
             _add_audit_row(
                 session,
@@ -1061,22 +1198,73 @@ def _claim_to_dict(session, claim_id: uuid.UUID) -> dict[str, object] | None:
     claim = session.get(Claim, claim_id)
     if claim is None:
         return None
+    return _claim_response(session, claim, include_sources=False)
+
+
+def _claim_response(
+    session,
+    claim: Claim | None,
+    *,
+    include_sources: bool = False,
+) -> dict[str, object] | None:
+    if claim is None:
+        return None
     subject = session.get(Entity, claim.subject_entity_id)
     object_entity = session.get(Entity, claim.object_entity_id) if claim.object_entity_id else None
-    object_value = object_entity.canonical_name if object_entity else claim.object_value
-    return {
+    subject_ref = _entity_ref(subject, claim.subject_entity_id)
+    object_ref = (
+        _entity_ref(object_entity, claim.object_entity_id)
+        if object_entity is not None and claim.object_entity_id is not None
+        else {"id": None, "name": claim.object_value or ""}
+    )
+    confidence = claim.confidence if claim.confidence is not None else claim.confidence_score
+    evidence = _claim_evidence(session, claim.id)
+    response = {
+        "id": str(claim.id),
         "claim_id": str(claim.id),
-        "subject": subject.canonical_name if subject else str(claim.subject_entity_id),
         "predicate": claim.predicate,
-        "object": object_value,
-        "object_value": claim.object_value,
+        "confidence": confidence,
         "confidence_score": claim.confidence_score,
-        "statement": _claim_statement(
-            subject.canonical_name if subject else str(claim.subject_entity_id),
-            claim.predicate,
-            object_value,
-        ),
-        "evidence": _claim_evidence(session, claim.id),
+        "subject": subject_ref,
+        "object": object_ref,
+        "object_value": claim.object_value,
+        "valid_from": claim.valid_from.isoformat() if claim.valid_from else None,
+        "valid_to": claim.valid_to.isoformat() if claim.valid_to else None,
+        "status": claim.status,
+        "evidence_count": len(evidence),
+        "statement": _claim_statement(subject_ref["name"], claim.predicate, object_ref["name"]),
+        "evidence": evidence,
+    }
+    if include_sources:
+        response["sources"] = _claim_sources_from_evidence(evidence)[:3]
+    return response
+
+
+def _entity_ref(entity: Entity | None, entity_id: uuid.UUID) -> dict[str, str]:
+    name = entity.canonical_name if entity and entity.canonical_name else None
+    return {
+        "id": str(entity_id),
+        "name": name or f"Unknown entity {str(entity_id)[:8]}",
+    }
+
+
+def _entity_record(session, entity_id: uuid.UUID | None) -> dict[str, object] | None:
+    if entity_id is None:
+        return None
+    entity = session.get(Entity, entity_id)
+    if entity is None:
+        return {"id": str(entity_id), "name": f"Unknown entity {str(entity_id)[:8]}"}
+    aliases = list(
+        session.execute(
+            select(EntityAlias.alias).where(EntityAlias.entity_id == entity_id)
+        ).scalars()
+    )
+    return {
+        "id": str(entity.id),
+        "display_name": entity.canonical_name,
+        "canonical_name": entity.canonical_name,
+        "type": entity.kind,
+        "aliases": aliases,
     }
 
 
@@ -1095,7 +1283,7 @@ def _claim_statement(subject: str, predicate: str, object_value: object) -> str:
 def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
     rows = list(
         session.execute(
-            select(ClaimEvidence, Source, ClaimRaw, Document, Fetch)
+            select(ClaimEvidence, Source, ClaimRaw, Chunk, Document, Fetch)
             .join(Source, Source.id == ClaimEvidence.source_id)
             .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
             .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
@@ -1110,12 +1298,17 @@ def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
     )
     output = []
     seen: set[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = set()
-    for evidence, source, raw, document, fetch in rows:
+    for evidence, source, raw, chunk, document, fetch in rows:
         key = (source.id, raw.id, document.id)
         if key in seen:
             continue
         seen.add(key)
         document_url = document.canonical_url or fetch.url
+        snippet = _snippet(
+            raw.raw_quote or chunk.text,
+            chunk.text,
+            max_chars=get_settings().snippet_max_chars,
+        )
         output.append(
             {
                 "source_id": str(source.id),
@@ -1128,12 +1321,70 @@ def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
                 "live_url": document_url,
                 "fetched_at": fetch.fetched_at.isoformat(),
                 "weight": evidence.weight,
-                "raw_quote": raw.raw_quote,
+                "raw_quote": snippet,
+                "snippet": snippet,
                 "added_at": evidence.added_at.isoformat(),
                 "audit_verdict": None,
             }
         )
     return output
+
+
+def _claim_sources_from_evidence(evidence: list[dict[str, object]]) -> list[dict[str, object]]:
+    sources: list[dict[str, object]] = []
+    seen_documents: set[str] = set()
+    for row in evidence:
+        document_id = str(row.get("document_id") or "")
+        url = str(row.get("document_url") or row.get("url") or "")
+        key = document_id or url
+        if not key or key in seen_documents:
+            continue
+        seen_documents.add(key)
+        sources.append(
+            {
+                "id": str(row.get("source_id") or ""),
+                "name": str(row.get("source_name") or row.get("source_identifier") or "Source"),
+                "url": url,
+                "document_id": document_id,
+                "title": row.get("document_title") or row.get("source_name") or url,
+                "fetched_at": row.get("fetched_at"),
+                "snippet": row.get("snippet") or row.get("raw_quote"),
+            }
+        )
+    return sources
+
+
+def _snippet(anchor: str | None, chunk_text: str, *, max_chars: int) -> str:
+    text = " ".join((chunk_text or anchor or "").split())
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    anchor_text = " ".join((anchor or "").split())
+    index = text.casefold().find(anchor_text.casefold()) if anchor_text else -1
+    if index < 0:
+        return _sentence_trim(text, max_chars=max_chars)
+    start = max(0, text.rfind(". ", 0, index) + 2)
+    end = index + len(anchor_text)
+    for _ in range(2):
+        next_stop = text.find(". ", end)
+        if next_stop < 0:
+            end = len(text)
+            break
+        end = next_stop + 1
+        if end - start >= max_chars:
+            break
+    return _sentence_trim(text[start:end].strip(), max_chars=max_chars)
+
+
+def _sentence_trim(text: str, *, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    window = text[:max_chars].rstrip()
+    stop = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+    if stop >= max_chars // 3:
+        return window[: stop + 1].strip()
+    return f"{window.rstrip(' ,.;:')}..."
 
 
 async def _answer_from_graph(
@@ -1170,45 +1421,71 @@ async def _answer_materials(
     question: str,
     *,
     max_results: int,
-) -> tuple[Settings, list[Chunk], list[Claim], list[dict[str, object]]]:
+) -> tuple[Settings, list[Chunk], list[dict[str, object]], list[dict[str, object]]]:
     settings = get_settings()
     question_variants = expand_class_year_synonyms(question)
     question_vectors = await embed_texts(question_variants)
+    query_terms = _query_terms(question)
     with store.session() as session:
-        chunks = _rank_chunks(
-            list(session.execute(select(Chunk).limit(200)).scalars()),
-            question_vectors,
-        )[:8]
-        claims = list(
-            session.execute(
-                select(Claim).order_by(Claim.confidence_score.desc()).limit(max_results)
-            ).scalars()
+        lexical_chunks = _lexical_chunks(session, query_terms, limit=50)
+        candidate_chunks = lexical_chunks or list(
+            session.execute(select(Chunk).limit(1000)).scalars()
         )
+        chunks = _rank_chunks(candidate_chunks, question_vectors, query_terms)[:8]
+        claims = _claims_for_question(session, query_terms, max_results=max_results)
+        claim_payloads = [
+            payload for payload in (_claim_response(session, claim) for claim in claims) if payload
+        ]
         citations = []
-        for claim in claims[:3]:
-            evidence = _claim_evidence(session, claim.id)
-            if evidence:
+        seen_source_urls: set[str] = set()
+        for claim in claims:
+            claim_payload = next(
+                (payload for payload in claim_payloads if payload["id"] == str(claim.id)),
+                None,
+            )
+            for evidence in _claim_evidence(session, claim.id):
+                document_id = str(evidence["document_id"])
+                source_url = str(evidence.get("document_url") or document_id)
+                if source_url in seen_source_urls:
+                    continue
+                seen_source_urls.add(source_url)
                 citations.append(
                     {
                         "claim_id": str(claim.id),
-                        "source_id": evidence[0]["source_id"],
-                        "source_name": evidence[0]["source_name"],
-                        "title": evidence[0]["source_name"],
-                        "document_id": evidence[0]["document_id"],
-                        "document_url": evidence[0]["document_url"],
-                        "fetched_at": evidence[0]["fetched_at"],
-                        "quote": evidence[0]["raw_quote"],
-                        "evidence": evidence,
+                        "claim": claim_payload,
+                        "source_id": evidence["source_id"],
+                        "source_name": evidence["source_name"],
+                        "title": evidence["document_title"] or evidence["source_name"],
+                        "document_id": document_id,
+                        "document_url": evidence["document_url"],
+                        "fetched_at": evidence["fetched_at"],
+                        "quote": evidence["snippet"] or evidence["raw_quote"],
+                        "evidence": [evidence],
                     }
                 )
-    return settings, chunks, claims, citations
+                if len(citations) >= max_results:
+                    break
+            if len(citations) >= max_results:
+                break
+        for chunk in chunks:
+            citation = _chunk_citation(session, chunk, query_terms)
+            if citation is None:
+                continue
+            source_url = str(citation.get("document_url") or citation.get("document_id"))
+            if source_url in seen_source_urls:
+                continue
+            seen_source_urls.add(source_url)
+            citations.append(citation)
+            if len(citations) >= max_results:
+                break
+    return settings, chunks, claim_payloads, citations
 
 
 async def _llm_answer(
     *,
     question: str,
     chunks: list[Chunk],
-    claims: list[Claim],
+    claims: list[dict[str, object]],
     citations: list[dict[str, object]],
     model: str,
     api_key: str,
@@ -1231,7 +1508,7 @@ async def _llm_answer_tokens(
     *,
     question: str,
     chunks: list[Chunk],
-    claims: list[Claim],
+    claims: list[dict[str, object]],
     model: str,
     api_key: str,
 ) -> AsyncIterator[str]:
@@ -1240,12 +1517,10 @@ async def _llm_answer_tokens(
     )
     claim_context = "\n".join(
         (
-            f"- claim_id={claim.id} predicate={claim.predicate} "
-            f"confidence={claim.confidence_score:.2f} "
-            f"subject={claim.subject_entity_id} "
-            f"object={claim.object_entity_id or claim.object_value}"
+            f"- {payload['statement']} "
+            f"(claim_id={payload['id']}, confidence={float(payload.get('confidence') or 0):.2f})"
         )
-        for claim in claims
+        for payload in claims
     )
     client = AsyncOpenAI(api_key=api_key)
     stream = await client.chat.completions.create(
@@ -1279,65 +1554,151 @@ async def _llm_answer_tokens(
             yield token
 
 
-def _rank_chunks(chunks: list[Chunk], question_vectors: list[list[float]]) -> list[Chunk]:
-    if not chunks:
+def _query_terms(question: str) -> list[str]:
+    stopwords = {
+        "about",
+        "from",
+        "have",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "who",
+        "worked",
+        "work",
+        "with",
+    }
+    terms = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", question):
+        folded = token.casefold()
+        if len(folded) < 4 or folded in stopwords:
+            continue
+        if folded not in terms:
+            terms.append(folded)
+    return terms
+
+
+def _lexical_chunks(session, query_terms: list[str], *, limit: int) -> list[Chunk]:
+    if not query_terms:
         return []
-    if not question_vectors or not any(any(vector) for vector in question_vectors):
-        return chunks
-    return sorted(
-        chunks,
-        key=lambda chunk: max(
-            cosine(question_vector, vector_values(chunk.embedding))
-            for question_vector in question_vectors
-        ),
-        reverse=True,
+    conditions = [Chunk.text.ilike(f"%{term}%") for term in query_terms]
+    return list(
+        session.execute(
+            select(Chunk).where(or_(*conditions)).order_by(Chunk.created_at.desc()).limit(limit)
+        ).scalars()
     )
 
 
-def _source_coverage(session, source_id: uuid.UUID) -> dict[str, int]:
-    source = session.get(Source, source_id)
-    pages_fetched = int(source.pages_fetched_total or 0) if source else 0
-    if pages_fetched == 0:
-        pages_fetched = session.execute(
-            select(func.count(func.distinct(Fetch.url)))
-            .select_from(Fetch)
-            .join(SourceRun, SourceRun.id == Fetch.source_run_id)
-            .where(SourceRun.source_id == source_id)
-            .where(Fetch.http_status >= 200)
-            .where(Fetch.http_status < 300)
-            .where(Fetch.body_bytes.is_not(None))
-        ).scalar_one()
-    documents_parsed = session.execute(
-        select(func.count(func.distinct(DocumentFetch.document_id)))
-        .select_from(DocumentFetch)
+def _claims_for_question(session, query_terms: list[str], *, max_results: int) -> list[Claim]:
+    query = select(Claim).order_by(Claim.confidence_score.desc()).limit(max_results)
+    if not query_terms:
+        return list(session.execute(query).scalars())
+    subject = Entity.__table__.alias("ask_claim_subject")
+    obj = Entity.__table__.alias("ask_claim_object")
+    conditions = []
+    for term in query_terms:
+        pattern = f"%{term}%"
+        conditions.extend(
+            [
+                subject.c.canonical_name.ilike(pattern),
+                obj.c.canonical_name.ilike(pattern),
+                Claim.object_value.ilike(pattern),
+                ClaimRaw.raw_quote.ilike(pattern),
+                Chunk.text.ilike(pattern),
+            ]
+        )
+    return list(
+        session.execute(
+            select(Claim)
+            .outerjoin(subject, subject.c.id == Claim.subject_entity_id)
+            .outerjoin(obj, obj.c.id == Claim.object_entity_id)
+            .outerjoin(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
+            .outerjoin(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
+            .outerjoin(Chunk, Chunk.id == ClaimRaw.chunk_id)
+            .where(or_(*conditions))
+            .order_by(Claim.confidence_score.desc())
+            .limit(max_results)
+        )
+        .unique()
+        .scalars()
+    )
+
+
+def _chunk_citation(
+    session,
+    chunk: Chunk,
+    query_terms: list[str],
+) -> dict[str, object] | None:
+    row = session.execute(
+        select(Document, Source, Fetch)
+        .join(DocumentFetch, DocumentFetch.document_id == Document.id)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
         .join(SourceRun, SourceRun.id == Fetch.source_run_id)
-        .where(SourceRun.source_id == source_id)
-    ).scalar_one()
-    claims = session.execute(
-        select(func.count()).select_from(ClaimEvidence).where(ClaimEvidence.source_id == source_id)
-    ).scalar_one()
-    claim_ids = select(ClaimEvidence.claim_id).where(ClaimEvidence.source_id == source_id)
-    conflicts = session.execute(
-        select(func.count())
-        .select_from(ClaimConflict)
-        .where(
-            or_(
-                ClaimConflict.claim_a_id.in_(claim_ids),
-                ClaimConflict.claim_b_id.in_(claim_ids),
-            )
-        )
-    ).scalar_one()
+        .join(Source, Source.id == SourceRun.source_id)
+        .where(Document.id == chunk.document_id)
+        .order_by(Fetch.fetched_at.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    document, source, fetch = row
+    document_url = document.canonical_url or fetch.url
+    anchor = next((term for term in query_terms if term in chunk.text.casefold()), None)
+    snippet = _snippet(anchor, chunk.text, max_chars=get_settings().snippet_max_chars)
     return {
-        "pages_fetched": pages_fetched,
-        "urls_known": max(int(source.urls_known_total or 0), pages_fetched)
-        if source
-        else pages_fetched,
-        "documents_parsed": documents_parsed,
-        "documents": documents_parsed,
-        "claims": claims,
-        "conflicts": conflicts,
+        "claim_id": None,
+        "claim": None,
+        "source_id": str(source.id),
+        "source_name": source.display_name or source.identifier,
+        "title": document.title or document_url,
+        "document_id": str(document.id),
+        "document_url": document_url,
+        "fetched_at": fetch.fetched_at.isoformat(),
+        "quote": snippet,
+        "evidence": [
+            {
+                "source_id": str(source.id),
+                "source_identifier": source.identifier,
+                "source_name": source.display_name or source.identifier,
+                "document_id": str(document.id),
+                "document_title": document.title,
+                "document_url": document_url,
+                "url": fetch.url,
+                "live_url": document_url,
+                "fetched_at": fetch.fetched_at.isoformat(),
+                "raw_quote": chunk.text,
+                "snippet": snippet,
+            }
+        ],
     }
+
+
+def _rank_chunks(
+    chunks: list[Chunk],
+    question_vectors: list[list[float]],
+    query_terms: list[str] | None = None,
+) -> list[Chunk]:
+    if not chunks:
+        return []
+    query_terms = query_terms or []
+
+    def score(chunk: Chunk) -> tuple[int, float]:
+        text = str(getattr(chunk, "text", "") or "").casefold()
+        lexical = sum(1 for term in query_terms if term in text)
+        vector_score = 0.0
+        if question_vectors and any(any(vector) for vector in question_vectors):
+            vector_score = max(
+                cosine(question_vector, vector_values(chunk.embedding))
+                for question_vector in question_vectors
+            )
+        return lexical, vector_score
+
+    return sorted(
+        chunks,
+        key=score,
+        reverse=True,
+    )
 
 
 def _sse(payload: dict[str, object]) -> bytes:

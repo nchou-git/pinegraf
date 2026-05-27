@@ -66,6 +66,8 @@ class Source(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     pages_fetched_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     urls_known_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recrawl_interval_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
+    last_full_recrawl_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     display_name: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -111,6 +113,7 @@ class SourceRun(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     stats: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
+    stats_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
 
 
@@ -155,8 +158,10 @@ class Fetch(Base):
     __table_args__ = (
         Index("ix_fetches_source_run_id", "source_run_id"),
         Index("ix_fetches_url", "url"),
+        Index("ix_fetches_url_source_run", "source_run_id", "url"),
         Index("ix_fetches_content_hash", "content_hash"),
         Index("ix_fetches_fetched_at_desc", "fetched_at"),
+        Index("ix_fetches_body_unchanged_since", "body_unchanged_since"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -172,6 +177,11 @@ class Fetch(Base):
     http_status: Mapped[int | None] = mapped_column(Integer)
     content_hash: Mapped[bytes | None] = mapped_column(LargeBinary)
     body_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    body_unchanged_since: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("fetches.id", ondelete="SET NULL"),
+    )
+    parse_skip_reason: Mapped[str | None] = mapped_column(Text)
     content_type: Mapped[str | None] = mapped_column(Text)
     bytes_size: Mapped[int | None] = mapped_column(Integer)
     error_message: Mapped[str | None] = mapped_column(Text)
@@ -388,6 +398,46 @@ class EntityMention(Base):
     resolved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class EntityDisambiguationCandidate(Base):
+    __tablename__ = "entity_disambiguation_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "llm_decision in ('merged','split','near_miss_review')",
+            name="ck_entity_disambiguation_candidates_llm_decision",
+        ),
+        CheckConstraint(
+            "review_decision is null or review_decision in ('confirm','merge','split')",
+            name="ck_entity_disambiguation_candidates_review_decision",
+        ),
+        Index("ix_entity_disambiguation_candidates_mention_id", "mention_id"),
+        Index(
+            "ix_entity_disambiguation_candidates_candidate_entity_id",
+            "candidate_entity_id",
+        ),
+        Index("ix_entity_disambiguation_candidates_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    mention_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entity_mentions.id", ondelete="SET NULL"),
+    )
+    candidate_entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    llm_decision: Mapped[str] = mapped_column(Text, nullable=False)
+    llm_reasoning: Mapped[str | None] = mapped_column(Text)
+    name_similarity_score: Mapped[float | None] = mapped_column(REAL)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_decision: Mapped[str | None] = mapped_column(Text)
 
 
 class Claim(Base):

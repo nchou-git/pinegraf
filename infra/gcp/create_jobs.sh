@@ -55,3 +55,4 @@ upsert_job() {
 
 upsert_job pinegraf-crawl crawl
 upsert_job pinegraf-parse parse
+upsert_job pinegraf-maintenance maintenance

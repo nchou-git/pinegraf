@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.config import get_settings
-from backend.db.models import Claim, Document
+from backend.db.models import Claim, Document, Fetch
 from backend.parse.orchestrator import run_full_parse
 
 
@@ -22,7 +22,7 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
         triggered_by="test",
         status="complete",
     )
-    store.add_fetch(
+    first_fetch = store.add_fetch(
         source_run_id=first_crawl.id,
         url="https://temporal.example/profile",
         body_bytes=b"<html><main>Errik Anderson works at Acme Corp.</main></html>",
@@ -37,6 +37,9 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
         triggered_by="test",
         status="running",
     )
+    with store.session() as session:
+        session.get(Fetch, first_fetch.id).fetched_at = first_snapshot
+        session.commit()
 
     await run_full_parse(
         source.id,
@@ -53,7 +56,7 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
         triggered_by="test",
         status="complete",
     )
-    store.add_fetch(
+    second_fetch = store.add_fetch(
         source_run_id=second_crawl.id,
         url="https://temporal.example/profile",
         body_bytes=b"<html><main>Errik Anderson works at Beta Corp.</main></html>",
@@ -68,6 +71,9 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
         triggered_by="test",
         status="running",
     )
+    with store.session() as session:
+        session.get(Fetch, second_fetch.id).fetched_at = second_snapshot
+        session.commit()
 
     await run_full_parse(
         source.id,

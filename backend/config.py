@@ -25,6 +25,8 @@ class Settings(BaseModel):
     max_pages: int = Field(default=10000, ge=1)
     crawl_concurrency: int = Field(default=10, ge=1)
     crawl_liveness_check_interval: int = Field(default=25, ge=1)
+    recrawl_default_days: int = Field(default=7, ge=1)
+    snippet_max_chars: int = Field(default=400, ge=120)
     use_mock_embeddings: bool = Field(default=False)
     cheap_model: str = Field(default="gpt-4o-mini")
     frontier_model: str = Field(default="gpt-4o")
@@ -67,6 +69,8 @@ def get_settings() -> Settings:
             max_pages=int(os.getenv("MAX_PAGES", "10000")),
             crawl_concurrency=int(os.getenv("CRAWL_CONCURRENCY", "10")),
             crawl_liveness_check_interval=int(os.getenv("CRAWL_LIVENESS_CHECK_INTERVAL", "25")),
+            recrawl_default_days=int(os.getenv("PINEGRAF_RECRAWL_DEFAULT_DAYS", "7")),
+            snippet_max_chars=int(os.getenv("PINEGRAF_SNIPPET_MAX_CHARS", "400")),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
             cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
             frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),
