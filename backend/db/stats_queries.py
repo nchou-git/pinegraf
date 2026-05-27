@@ -144,6 +144,131 @@ def source_coverage(session: Session, source_id: uuid.UUID) -> dict[str, int]:
     }
 
 
+def source_coverage_many(
+    session: Session,
+    source_ids: list[uuid.UUID] | tuple[uuid.UUID, ...],
+) -> dict[uuid.UUID, dict[str, int]]:
+    coverage = {source_id: _empty_source_coverage() for source_id in source_ids}
+    if not source_ids:
+        return coverage
+
+    for source_id, count in session.execute(
+        select(SourceRun.source_id, func.count(func.distinct(Fetch.url)))
+        .select_from(Fetch)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .where(Fetch.http_status.between(*HTTP_SUCCESS))
+        .where((Fetch.body_bytes.is_not(None)) | (Fetch.body_unchanged_since.is_not(None)))
+        .group_by(SourceRun.source_id)
+    ):
+        coverage[source_id]["pages_fetched"] = int(count or 0)
+
+    for source_id, count in session.execute(
+        select(SourceRun.source_id, func.count(func.distinct(Fetch.url)))
+        .select_from(Fetch)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .group_by(SourceRun.source_id)
+    ):
+        coverage[source_id]["urls_known"] = int(count or 0)
+
+    for source_id, count in session.execute(
+        select(SourceRun.source_id, func.count(func.distinct(Document.id)))
+        .select_from(Document)
+        .join(DocumentFetch, DocumentFetch.document_id == Document.id)
+        .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .group_by(SourceRun.source_id)
+    ):
+        documents = int(count or 0)
+        coverage[source_id]["documents"] = documents
+        coverage[source_id]["documents_parsed"] = documents
+
+    for source_id, count in session.execute(
+        select(SourceRun.source_id, func.count(func.distinct(Claim.id)))
+        .select_from(Claim)
+        .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
+        .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
+        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+        .join(Document, Document.id == Chunk.document_id)
+        .join(DocumentFetch, DocumentFetch.document_id == Document.id)
+        .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .group_by(SourceRun.source_id)
+    ):
+        coverage[source_id]["claims"] = int(count or 0)
+
+    for source_id, count in session.execute(
+        select(SourceRun.source_id, func.count(func.distinct(Entity.id)))
+        .select_from(Entity)
+        .join(EntityMention, EntityMention.entity_id == Entity.id)
+        .join(ClaimRaw, ClaimRaw.id == EntityMention.claim_raw_id)
+        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+        .join(Document, Document.id == Chunk.document_id)
+        .join(DocumentFetch, DocumentFetch.document_id == Document.id)
+        .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .group_by(SourceRun.source_id)
+    ):
+        coverage[source_id]["entities"] = int(count or 0)
+
+    for source_id, count in session.execute(
+        _pending_fetch_query(source_id=None, snapshot_at=None)
+        .with_only_columns(SourceRun.source_id, func.count(Fetch.id))
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .group_by(SourceRun.source_id)
+        .order_by(None)
+    ):
+        coverage[source_id]["pending_parse_count"] = min(int(count or 0), PENDING_PARSE_CAP)
+
+    claim_sources = (
+        select(SourceRun.source_id.label("source_id"), Claim.id.label("claim_id"))
+        .select_from(Claim)
+        .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
+        .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
+        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+        .join(Document, Document.id == Chunk.document_id)
+        .join(DocumentFetch, DocumentFetch.document_id == Document.id)
+        .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
+        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+        .where(SourceRun.source_id.in_(source_ids))
+        .distinct()
+        .subquery()
+    )
+    for source_id, count in session.execute(
+        select(claim_sources.c.source_id, func.count(func.distinct(ClaimConflict.id)))
+        .select_from(claim_sources)
+        .join(
+            ClaimConflict,
+            (ClaimConflict.claim_a_id == claim_sources.c.claim_id)
+            | (ClaimConflict.claim_b_id == claim_sources.c.claim_id),
+        )
+        .group_by(claim_sources.c.source_id)
+    ):
+        coverage[source_id]["conflicts"] = int(count or 0)
+
+    for values in coverage.values():
+        values["urls_known"] = max(values["urls_known"], values["pages_fetched"])
+    return coverage
+
+
+def _empty_source_coverage() -> dict[str, int]:
+    return {
+        "pages_fetched": 0,
+        "urls_known": 0,
+        "documents_parsed": 0,
+        "documents": 0,
+        "claims": 0,
+        "entities": 0,
+        "conflicts": 0,
+        "pending_parse_count": 0,
+    }
+
+
 def conflicts_for_source(session: Session, source_id: uuid.UUID) -> int:
     claim_ids = (
         select(Claim.id)
@@ -182,8 +307,7 @@ def global_stats(session: Session) -> dict[str, int]:
         "urls_known": 0,
         "pending_parse_count": 0,
     }
-    for source_id in source_ids:
-        coverage = source_coverage(session, source_id)
+    for coverage in source_coverage_many(session, source_ids).values():
         totals["documents"] += coverage["documents"]
         totals["claims"] += coverage["claims"]
         totals["entities"] += coverage["entities"]

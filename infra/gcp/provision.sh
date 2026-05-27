@@ -97,7 +97,7 @@ gcloud run deploy pinegraf \
   --allow-unauthenticated \
   --memory=1Gi \
   --cpu=1 \
-  --min-instances=0 \
+  --min-instances=1 \
   --max-instances=4 \
   --concurrency=80 \
   --timeout=300 \

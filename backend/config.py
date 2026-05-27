@@ -27,6 +27,10 @@ class Settings(BaseModel):
     crawl_liveness_check_interval: int = Field(default=25, ge=1)
     recrawl_default_days: int = Field(default=7, ge=1)
     snippet_max_chars: int = Field(default=400, ge=120)
+    db_pool_size: int = Field(default=5, ge=1)
+    db_max_overflow: int = Field(default=10, ge=0)
+    db_pool_recycle_seconds: int = Field(default=1800, ge=30)
+    db_pool_pre_ping: bool = Field(default=True)
     use_mock_embeddings: bool = Field(default=False)
     cheap_model: str = Field(default="gpt-4o-mini")
     frontier_model: str = Field(default="gpt-4o")
@@ -71,6 +75,10 @@ def get_settings() -> Settings:
             crawl_liveness_check_interval=int(os.getenv("CRAWL_LIVENESS_CHECK_INTERVAL", "25")),
             recrawl_default_days=int(os.getenv("PINEGRAF_RECRAWL_DEFAULT_DAYS", "7")),
             snippet_max_chars=int(os.getenv("PINEGRAF_SNIPPET_MAX_CHARS", "400")),
+            db_pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+            db_max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+            db_pool_recycle_seconds=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
+            db_pool_pre_ping=os.getenv("DB_POOL_PRE_PING", "true"),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
             cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
             frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import time
 import uuid
 from collections.abc import Iterable, Sequence
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, delete, func, inspect, or_, select
+from sqlalchemy import create_engine, delete, event, func, inspect, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -50,6 +53,11 @@ SCHEMA_TABLES = [
     "entity_summary",
     "entity_neighborhood",
 ]
+LOGGER = logging.getLogger(__name__)
+_QUERY_METRICS: ContextVar[dict[str, float | int] | None] = ContextVar(
+    "pinegraf_query_metrics",
+    default=None,
+)
 
 
 def utc_now() -> datetime:
@@ -61,7 +69,68 @@ def content_digest(body: bytes) -> bytes:
 
 
 def create_engine_for_url(database_url: str) -> Engine:
-    return create_engine(database_url, future=True)
+    settings = get_settings()
+    engine = create_engine(
+        database_url,
+        future=True,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+        pool_pre_ping=settings.db_pool_pre_ping,
+        pool_recycle=settings.db_pool_recycle_seconds,
+    )
+    _install_query_metrics(engine)
+    pool_config = engine_pool_config(engine)
+    LOGGER.info(
+        "database pool configured pool_class=%s pool_size=%s max_overflow=%s "
+        "pool_pre_ping=%s pool_recycle=%s",
+        pool_config["pool_class"],
+        pool_config["pool_size"],
+        pool_config["max_overflow"],
+        pool_config["pool_pre_ping"],
+        pool_config["pool_recycle"],
+    )
+    return engine
+
+
+def start_query_metrics():
+    return _QUERY_METRICS.set({"count": 0, "time_ms": 0.0})
+
+
+def finish_query_metrics(token) -> dict[str, float | int]:
+    metrics = _QUERY_METRICS.get() or {"count": 0, "time_ms": 0.0}
+    _QUERY_METRICS.reset(token)
+    return metrics
+
+
+def engine_pool_config(engine: Engine) -> dict[str, object]:
+    pool = engine.pool
+    pool_size = getattr(pool, "size", lambda: "unknown")()
+    return {
+        "pool_class": type(pool).__name__,
+        "pool_size": pool_size,
+        "max_overflow": getattr(pool, "_max_overflow", "unknown"),
+        "pool_pre_ping": getattr(pool, "_pre_ping", "unknown"),
+        "pool_recycle": getattr(pool, "_recycle", "unknown"),
+    }
+
+
+def _install_query_metrics(engine: Engine) -> None:
+    @event.listens_for(engine, "before_cursor_execute")
+    def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        del conn, cursor, statement, parameters, executemany
+        context._pinegraf_query_started = time.perf_counter()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        del conn, cursor, statement, parameters, executemany
+        metrics = _QUERY_METRICS.get()
+        if metrics is None:
+            return
+        started = getattr(context, "_pinegraf_query_started", None)
+        if started is None:
+            return
+        metrics["count"] = int(metrics["count"]) + 1
+        metrics["time_ms"] = float(metrics["time_ms"]) + ((time.perf_counter() - started) * 1000)
 
 
 class Store:

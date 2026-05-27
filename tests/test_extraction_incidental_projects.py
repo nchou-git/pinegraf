@@ -42,3 +42,36 @@ async def test_extracts_founder_and_ceo_project_from_pronoun_sentence(monkeypatc
 
     claims = {(claim.subject_text, claim.predicate, claim.object_text) for claim in result.claims}
     assert ("Alex Doe", "founded", "WidgetCo") in claims
+
+
+@pytest.mark.asyncio
+async def test_extracts_dean_and_school_claims_from_leadership_bio(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = await extract_claims(
+        "Avery Stone is Dean of North Valley School of Management and the "
+        "Earl Parker Professor of Business Administration."
+    )
+
+    claims = {(claim.subject_text, claim.predicate, claim.object_text) for claim in result.claims}
+    assert ("Avery Stone", "current_title", "Dean") in claims
+    assert ("Avery Stone", "employed_by", "North Valley School of Management") in claims
+    assert (
+        "Avery Stone",
+        "current_title",
+        "Earl Parker Professor of Business Administration",
+    ) in claims
+
+
+@pytest.mark.asyncio
+async def test_extracts_faculty_director_affiliation(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = await extract_claims(
+        "Mina Patel, a faculty director at River Center for Digital Strategy, "
+        "teaches entrepreneurship."
+    )
+
+    claims = {(claim.subject_text, claim.predicate, claim.object_text) for claim in result.claims}
+    assert ("Mina Patel", "current_title", "Faculty Director") in claims
+    assert ("Mina Patel", "affiliated_with", "River Center for Digital Strategy") in claims

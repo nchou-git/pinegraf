@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from openai import AsyncOpenAI
 from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.orm import aliased
 
 from backend.class_year import expand_class_year_synonyms
 from backend.config import Settings, get_settings
@@ -39,6 +40,7 @@ from backend.db.stats_queries import (
     documents_for_source,
     global_stats,
     source_coverage,
+    source_coverage_many,
 )
 from backend.db.store import Store, utc_now
 from backend.resolution.embedder import embed_texts
@@ -477,22 +479,24 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
             ).scalars()
         )
         source_query_ms = _elapsed_ms(section_started)
+        included_sources = [
+            source for source in sources if include_archived or not _source_is_archived(source)
+        ]
+        included_count = len(included_sources)
+
+        section_started = time.perf_counter()
+        source_ids = [source.id for source in included_sources]
+        runs_by_source = _recent_runs_by_source(session, source_ids, limit=5)
+        recent_runs_ms = _elapsed_ms(section_started)
+
+        section_started = time.perf_counter()
+        coverage_by_source = source_coverage_many(session, source_ids)
+        stat_queries_ms = _elapsed_ms(section_started)
+
         output = []
         loop_started = time.perf_counter()
-        for source in sources:
-            if _source_is_archived(source) and not include_archived:
-                continue
-            included_count += 1
-            section_started = time.perf_counter()
-            runs = list(
-                session.execute(
-                    select(SourceRun)
-                    .where(SourceRun.source_id == source.id)
-                    .order_by(SourceRun.started_at.desc())
-                    .limit(5)
-                ).scalars()
-            )
-            recent_runs_ms += _elapsed_ms(section_started)
+        for source in included_sources:
+            runs = runs_by_source.get(source.id, [])
             last_run = runs[0] if runs else None
             active_run = next(
                 (run for run in runs if run.status in ACTIVE_SOURCE_RUN_STATUSES),
@@ -504,9 +508,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
             section_started = time.perf_counter()
             paused_runs = _paused_runs_payload(runs)
             paused_payload_ms += _elapsed_ms(section_started)
-            section_started = time.perf_counter()
-            coverage = source_coverage(session, source.id)
-            stat_queries_ms += _elapsed_ms(section_started)
+            coverage = dict(coverage_by_source[source.id])
             if active_runs.get("parse"):
                 coverage["pending_parse_count"] = 0
             section_started = time.perf_counter()
@@ -574,6 +576,42 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
             response_build_ms,
         )
         return output
+
+
+def _recent_runs_by_source(
+    session,
+    source_ids: list[uuid.UUID],
+    *,
+    limit: int,
+) -> dict[uuid.UUID, list[SourceRun]]:
+    if not source_ids:
+        return {}
+    ranked = (
+        select(
+            SourceRun.id.label("id"),
+            func.row_number()
+            .over(
+                partition_by=SourceRun.source_id,
+                order_by=SourceRun.started_at.desc(),
+            )
+            .label("rank"),
+        )
+        .where(SourceRun.source_id.in_(source_ids))
+        .subquery()
+    )
+    run_alias = aliased(SourceRun)
+    rows = list(
+        session.execute(
+            select(run_alias)
+            .join(ranked, run_alias.id == ranked.c.id)
+            .where(ranked.c.rank <= limit)
+            .order_by(run_alias.source_id.asc(), run_alias.started_at.desc())
+        ).scalars()
+    )
+    grouped = {source_id: [] for source_id in source_ids}
+    for run in rows:
+        grouped.setdefault(run.source_id, []).append(run)
+    return grouped
 
 
 def source_detail(

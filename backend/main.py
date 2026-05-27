@@ -4,8 +4,10 @@ import asyncio
 import hashlib
 import html
 import json
+import logging
 import os
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -33,7 +35,14 @@ from backend.admin_auth import (
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
 from backend.db.models import AuditLog, Fetch, Source, SourceRun
-from backend.db.store import Store, source_to_dict, utc_now
+from backend.db.store import (
+    Store,
+    engine_pool_config,
+    finish_query_metrics,
+    source_to_dict,
+    start_query_metrics,
+    utc_now,
+)
 from backend.jobs.run import cancel_cloud_run_execution, execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
 from backend.maintenance.integrity import verify_source_integrity
@@ -128,6 +137,8 @@ FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
 EXPECTED_ALEMBIC_HEAD = "0021_identity_review"
+LOGGER = logging.getLogger(__name__)
+OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/directory"}
 
 
 def _slugify(value: str) -> str:
@@ -163,12 +174,39 @@ def create_app(store: Store | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         os.makedirs(get_settings().uploads_dir, exist_ok=True)
+        LOGGER.info("database pool startup config %s", engine_pool_config(app_store.engine))
         _warn_if_empty_database_since_deploy(app_store)
         append_log("info", "Pinegraf started", store=app_store)
         yield
 
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
     app.state.store = app_store
+
+    @app.middleware("http")
+    async def request_timing_middleware(request: Request, call_next):
+        path = request.url.path
+        should_observe = path in OBSERVED_ENDPOINTS
+        metrics_token = start_query_metrics() if should_observe else None
+        started = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            total_ms = (time.perf_counter() - started) * 1000
+            if metrics_token is not None:
+                metrics = finish_query_metrics(metrics_token)
+                LOGGER.info(
+                    "request timing path=%s method=%s status=%s total_ms=%.1f "
+                    "db_query_count=%s db_time_ms=%.1f",
+                    path,
+                    request.method,
+                    status_code,
+                    total_ms,
+                    metrics["count"],
+                    metrics["time_ms"],
+                )
 
     @app.get("/health")
     async def health() -> dict[str, bool]:

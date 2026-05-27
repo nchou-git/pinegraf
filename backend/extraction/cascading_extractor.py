@@ -17,6 +17,15 @@ PROMPT_VERSION = "week2_v1"
 LOW_CONFIDENCE_THRESHOLD = 0.6
 PERSON_PATTERN = r"[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+"
 OBJECT_PATTERN = r"[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+)*"
+ORG_PATTERN = (
+    r"(?:[Tt]he\s+)?[A-Z][A-Za-z0-9&'.-]+"
+    r"(?:\s+(?:of|for|and|the|[A-Z][A-Za-z0-9&'.-]+)){0,10}"
+)
+TITLE_PATTERN = (
+    r"(?:interim\s+|associate\s+|senior\s+|deputy\s+|assistant\s+)?"
+    r"(?:dean|professor|lecturer|faculty director|faculty member|director|chair)"
+)
+TITLE_MATCH = rf"(?i:{TITLE_PATTERN})"
 
 
 class ExtractedClaim(BaseModel):
@@ -146,19 +155,17 @@ def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
     for pattern, predicate, object_type in patterns:
         for match in re.finditer(pattern, chunk_text):
             quote = match.group(0)
-            claims.append(
-                ExtractedClaim(
-                    subject_text=match.group("s"),
-                    predicate=predicate,
-                    object_text=match.group("o"),
-                    object_type=object_type,
-                    qualifiers={},
-                    confidence_internal=0.72,
-                    raw_quote=quote,
-                    span_start=match.start(),
-                    span_end=match.end(),
-                )
+            _append_claim(
+                claims,
+                subject_text=match.group("s"),
+                predicate=predicate,
+                object_text=match.group("o"),
+                object_type=object_type,
+                raw_quote=quote,
+                span_start=match.start(),
+                span_end=match.end(),
             )
+    _extract_role_claims(chunk_text, claims)
     input_tokens = _token_count(chunk_text)
     output_tokens = max(1, sum(_token_count(claim.model_dump_json()) for claim in claims))
     return ExtractionResult(
@@ -168,6 +175,126 @@ def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+def _extract_role_claims(chunk_text: str, claims: list[ExtractedClaim]) -> None:
+    role_patterns = [
+        rf"(?P<s>{PERSON_PATTERN})\s+(?:is|serves as|served as|was named|was appointed)\s+"
+        rf"(?:the\s+|an?\s+)?(?P<t>{TITLE_MATCH})\s+(?P<link>of|at|for)\s+(?P<o>{ORG_PATTERN})",
+        rf"(?P<s>{PERSON_PATTERN}),\s+(?:the\s+|an?\s+)?(?P<t>{TITLE_MATCH})\s+"
+        rf"(?P<link>of|at|for)\s+(?P<o>{ORG_PATTERN})",
+        rf"(?P<s>{PERSON_PATTERN})\s+is\s+(?:a|an)\s+(?P<t>{TITLE_MATCH})\s+"
+        rf"(?P<link>at|in)\s+(?P<o>{ORG_PATTERN})",
+    ]
+    for pattern in role_patterns:
+        for match in re.finditer(pattern, chunk_text):
+            subject = match.group("s")
+            title = _normalize_title(match.group("t"))
+            org = _clean_org(match.group("o"))
+            quote = match.group(0)
+            _append_claim(
+                claims,
+                subject_text=subject,
+                predicate="current_title",
+                object_text=title,
+                object_type="attribute_value",
+                raw_quote=quote,
+                span_start=match.start(),
+                span_end=match.end(),
+            )
+            _append_claim(
+                claims,
+                subject_text=subject,
+                predicate=(
+                    "affiliated_with"
+                    if title.casefold().startswith("faculty director")
+                    else "employed_by"
+                ),
+                object_text=org,
+                object_type="org",
+                raw_quote=quote,
+                span_start=match.start(),
+                span_end=match.end(),
+            )
+
+    endowed_pattern = (
+        rf"(?P<s>{PERSON_PATTERN})\b.{{0,80}}?\b"
+        rf"(?P<t>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){{0,5}}\s+"
+        rf"Professor\s+of\s+[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){{0,5}})"
+    )
+    for match in re.finditer(endowed_pattern, chunk_text):
+        title = _normalize_title(match.group("t"))
+        if title.casefold() in {"director", "chair"}:
+            continue
+        _append_claim(
+            claims,
+            subject_text=match.group("s"),
+            predicate="current_title",
+            object_text=title,
+            object_type="attribute_value",
+            raw_quote=match.group(0),
+            span_start=match.start(),
+            span_end=match.end(),
+        )
+
+
+def _append_claim(
+    claims: list[ExtractedClaim],
+    *,
+    subject_text: str,
+    predicate: str,
+    object_text: str | None,
+    object_type: str | None,
+    raw_quote: str,
+    span_start: int | None,
+    span_end: int | None,
+) -> None:
+    key = (
+        subject_text.strip().casefold(),
+        predicate,
+        (object_text or "").strip().casefold(),
+        span_start,
+        span_end,
+    )
+    existing = {
+        (
+            claim.subject_text.strip().casefold(),
+            claim.predicate,
+            (claim.object_text or "").strip().casefold(),
+            claim.span_start,
+            claim.span_end,
+        )
+        for claim in claims
+    }
+    if key in existing:
+        return
+    claims.append(
+        ExtractedClaim(
+            subject_text=subject_text.strip(),
+            predicate=predicate,
+            object_text=object_text.strip() if object_text else object_text,
+            object_type=object_type,
+            qualifiers={},
+            confidence_internal=0.72,
+            raw_quote=raw_quote,
+            span_start=span_start,
+            span_end=span_end,
+        )
+    )
+
+
+def _normalize_title(value: str) -> str:
+    words = re.sub(r"\s+", " ", value.strip().strip(".,;:")).split(" ")
+    small = {"of", "and", "for", "the"}
+    return " ".join(
+        word.casefold() if word.casefold() in small else word[:1].upper() + word[1:].lower()
+        for word in words
+    )
+
+
+def _clean_org(value: str) -> str:
+    cleaned = re.split(r"\s+and\s+(?:the\s+)?", value.strip(), maxsplit=1)[0]
+    return re.sub(r"^the\s+", "", cleaned.strip(".,;:"), flags=re.IGNORECASE)
 
 
 def _parse_response(content: str) -> ExtractionResponse:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 PREDICATES = (
+    "current_title",
     "employed_by",
     "studied_at",
     "founded",
@@ -48,6 +49,14 @@ New predicates require a code change. Do not invent predicates.
 Only emit claims explicitly supported by the text. raw_quote must be an exact
 span from the source text. Prefer fewer high-quality claims over speculation.
 
+Faculty and leadership roles:
+Extract named academic and administrative roles whenever the source states them.
+Use current_title for titles such as dean, professor, lecturer, faculty
+director, chair, or center director. Also emit employed_by or affiliated_with
+when the text names the school, center, department, or organization connected
+to that role. Do not skip role claims just because the page is a directory,
+faculty bio, news article, or leadership listing.
+
 Class year normalization:
 When extracting a class_year attribute or any mention of an alumni class year,
 normalize it to a 4-digit integer year. Accept any of these surface forms and
@@ -69,6 +78,77 @@ person started. Extract the named project/product as object_text even when the
 page is not primarily about that project.
 
 Few-shot examples:
+
+Chunk: "Avery Stone is Dean of North Valley School of Management and the Earl
+Parker Professor of Business Administration."
+Expected claims:
+{{
+  "claims": [
+    {{
+      "subject_text": "Avery Stone",
+      "predicate": "current_title",
+      "object_text": "Dean",
+      "object_type": "attribute_value",
+      "qualifiers": {{}},
+      "confidence_internal": 0.9,
+      "raw_quote": "Avery Stone is Dean of North Valley School of Management",
+      "span_start": 0,
+      "span_end": 59
+    }},
+    {{
+      "subject_text": "Avery Stone",
+      "predicate": "employed_by",
+      "object_text": "North Valley School of Management",
+      "object_type": "org",
+      "qualifiers": {{}},
+      "confidence_internal": 0.9,
+      "raw_quote": "Dean of North Valley School of Management",
+      "span_start": 15,
+      "span_end": 59
+    }},
+    {{
+      "subject_text": "Avery Stone",
+      "predicate": "current_title",
+      "object_text": "Earl Parker Professor of Business Administration",
+      "object_type": "attribute_value",
+      "qualifiers": {{}},
+      "confidence_internal": 0.9,
+      "raw_quote": "Earl Parker Professor of Business Administration",
+      "span_start": 68,
+      "span_end": 113
+    }}
+  ]
+}}
+
+Chunk: "Mina Patel, a faculty director at River Center for Digital Strategy,
+teaches entrepreneurship."
+Expected claims:
+{{
+  "claims": [
+    {{
+      "subject_text": "Mina Patel",
+      "predicate": "current_title",
+      "object_text": "Faculty Director",
+      "object_type": "attribute_value",
+      "qualifiers": {{}},
+      "confidence_internal": 0.88,
+      "raw_quote": "Mina Patel, a faculty director at River Center for Digital Strategy",
+      "span_start": 0,
+      "span_end": 67
+    }},
+    {{
+      "subject_text": "Mina Patel",
+      "predicate": "affiliated_with",
+      "object_text": "River Center for Digital Strategy",
+      "object_type": "org",
+      "qualifiers": {{}},
+      "confidence_internal": 0.88,
+      "raw_quote": "faculty director at River Center for Digital Strategy",
+      "span_start": 15,
+      "span_end": 67
+    }}
+  ]
+}}
 
 Chunk: "Jordan Lee is a lecturer whose earlier work included building CampusCart,
 advising two student teams, and founding Northstar Labs."
