@@ -111,12 +111,23 @@ const STAT_CARDS = [
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
-  await Promise.all([loadMe(), loadStats()]);
   ensureToastContainer();
   setupShell();
   renderShell();
+  renderInitialRouteSkeleton();
   window.addEventListener("hashchange", renderRoute);
+  await Promise.all([loadMe(), loadStats()]);
+  renderShell();
   renderRoute();
+}
+
+function renderInitialRouteSkeleton() {
+  const rawRoute = location.hash.replace(/^#/, "") || "directory";
+  const [route] = rawRoute.split("?");
+  const [tab, ...rest] = route.split("/");
+  if (tab === "sources" && !rest.length) {
+    renderSourcesFrame("");
+  }
 }
 
 async function loadMe() {
@@ -1916,6 +1927,15 @@ async function renderSources(parts) {
          <button class="btn-primary" id="add-source"><i class="ti ti-plus"></i> Add source</button>
        </div>`
     : "";
+  renderSourcesFrame(adminActions);
+  if (isAdmin()) {
+    byId("add-source").onclick = openAddSourceModal;
+  }
+  await Promise.all([loadSourcesStats(), loadSourcesList()]);
+  if (isAdmin()) await loadAdminConflicts();
+}
+
+function renderSourcesFrame(adminActions) {
   setPageHeader({ title: "Sources", subtitle: "Loading…", actions: adminActions });
   const app = document.getElementById("app");
   app.innerHTML = `
@@ -1924,12 +1944,7 @@ async function renderSources(parts) {
       ${sourceSkeletonRow()}
     </div>
   `;
-  if (isAdmin()) {
-    byId("add-source").onclick = openAddSourceModal;
-  }
   setupStatInfoButtons();
-  await Promise.all([loadSourcesStats(), loadSourcesList()]);
-  if (isAdmin()) await loadAdminConflicts();
 }
 
 async function loadSourcesStats() {
@@ -1992,13 +2007,15 @@ async function loadSourcesList() {
     list.innerHTML = sourceSkeletonRow();
   }
   try {
-    const data = await getJSON("/api/sources");
-    const archivedData = isAdmin()
-      ? await loadAdminPanelData("/api/sources/archived", {
-          targetId: "sources-list",
-          title: "Sign in to view archived sources",
-        })
-      : { sources: [] };
+    const [data, archivedData] = await Promise.all([
+      getJSON("/api/sources"),
+      isAdmin()
+        ? loadAdminPanelData("/api/sources/archived", {
+            targetId: "sources-list",
+            title: "Sign in to view archived sources",
+          })
+        : Promise.resolve({ sources: [] }),
+    ]);
     if (!archivedData) return;
     const sources = data.sources || [];
     const archivedSources = archivedData.sources || [];

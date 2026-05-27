@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import uuid
@@ -48,6 +49,7 @@ ASK_CACHE_MAX = 100
 ACTIVE_SOURCE_RUN_STATUSES = {"queued", "running"}
 STOPPED_SOURCE_RUN_STATUS = "stopped"
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
+LOGGER = logging.getLogger(__name__)
 
 
 class ActiveSourceRunError(RuntimeError):
@@ -61,6 +63,10 @@ def _source_run_action_kind(run: SourceRun) -> str:
     if run.kind == "parse":
         return "parse"
     return "crawl"
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000
 
 
 def _active_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
@@ -453,7 +459,16 @@ def archived_source_count(store: Store) -> int:
 
 
 def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[str, object]]:
+    started = time.perf_counter()
+    source_query_ms = 0.0
+    recent_runs_ms = 0.0
+    active_payload_ms = 0.0
+    paused_payload_ms = 0.0
+    stat_queries_ms = 0.0
+    response_build_ms = 0.0
+    included_count = 0
     with store.session() as session:
+        section_started = time.perf_counter()
         sources = list(
             session.execute(
                 select(Source).order_by(
@@ -461,10 +476,14 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                 )
             ).scalars()
         )
+        source_query_ms = _elapsed_ms(section_started)
         output = []
+        loop_started = time.perf_counter()
         for source in sources:
             if _source_is_archived(source) and not include_archived:
                 continue
+            included_count += 1
+            section_started = time.perf_counter()
             runs = list(
                 session.execute(
                     select(SourceRun)
@@ -473,16 +492,24 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     .limit(5)
                 ).scalars()
             )
+            recent_runs_ms += _elapsed_ms(section_started)
             last_run = runs[0] if runs else None
             active_run = next(
                 (run for run in runs if run.status in ACTIVE_SOURCE_RUN_STATUSES),
                 None,
             )
+            section_started = time.perf_counter()
             active_runs = _active_runs_payload(runs)
+            active_payload_ms += _elapsed_ms(section_started)
+            section_started = time.perf_counter()
             paused_runs = _paused_runs_payload(runs)
+            paused_payload_ms += _elapsed_ms(section_started)
+            section_started = time.perf_counter()
             coverage = source_coverage(session, source.id)
+            stat_queries_ms += _elapsed_ms(section_started)
             if active_runs.get("parse"):
                 coverage["pending_parse_count"] = 0
+            section_started = time.perf_counter()
             output.append(
                 {
                     "id": str(source.id),
@@ -526,6 +553,26 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "coverage": coverage,
                 }
             )
+            response_build_ms += _elapsed_ms(section_started)
+        per_source_loop_ms = _elapsed_ms(loop_started)
+        total_ms = _elapsed_ms(started)
+        LOGGER.info(
+            "api.sources timing include_archived=%s sources_total=%s sources_returned=%s "
+            "total_ms=%.1f source_query_ms=%.1f per_source_loop_ms=%.1f "
+            "recent_runs_ms=%.1f stat_queries_ms=%.1f active_runs_payload_ms=%.1f "
+            "paused_runs_payload_ms=%.1f response_build_ms=%.1f",
+            include_archived,
+            len(sources),
+            included_count,
+            total_ms,
+            source_query_ms,
+            per_source_loop_ms,
+            recent_runs_ms,
+            stat_queries_ms,
+            active_payload_ms,
+            paused_payload_ms,
+            response_build_ms,
+        )
         return output
 
 
