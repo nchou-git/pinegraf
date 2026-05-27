@@ -13,6 +13,9 @@ the `SourceRun` as `stopped`.
   the latest. Each cleared run is marked `superseded` and audited with
   `run.superseded_by_resume`.
 
+Parse is never auto-triggered by crawl or parse completion. Users explicitly
+click `Parse` when pending documents should be processed.
+
 True pause would require persisting the crawl frontier or parse work queue and
 resuming the same run from that snapshot. That is intentionally out of scope for
 the current implementation.

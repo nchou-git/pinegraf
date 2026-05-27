@@ -44,6 +44,7 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
         progress_run_id=first_parse.id,
         snapshot_at=first_snapshot,
     )
+    store.update_source_run(first_parse.id, status="complete", finished=True)
 
     second_crawl = store.create_source_run(
         source_id=source.id,
@@ -74,6 +75,7 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
         progress_run_id=second_parse.id,
         snapshot_at=second_snapshot,
     )
+    store.update_source_run(second_parse.id, status="complete", finished=True)
     get_settings.cache_clear()
 
     with store.session() as session:

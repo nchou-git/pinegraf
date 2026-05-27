@@ -117,7 +117,6 @@ def isolated_settings(monkeypatch) -> Iterator[None]:
     monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$")
     monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-session-secret")
     monkeypatch.setenv("USE_MOCK_EMBEDDINGS", "true")
-    monkeypatch.setenv("PINEGRAF_AUTO_PARSE", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

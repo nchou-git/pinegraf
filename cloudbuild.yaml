@@ -44,7 +44,6 @@ steps:
       - ADMIN_SESSION_SECRET=test-session-secret
       - OPENAI_API_KEY=test-openai-key
       - USE_MOCK_EMBEDDINGS=true
-      - PINEGRAF_AUTO_PARSE=false
       - PINEGRAF_TEST_DATABASE_ALLOWED_HOSTS=pinegraf-test-postgres
     entrypoint: bash
     args:

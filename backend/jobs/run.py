@@ -6,7 +6,6 @@ import os
 import uuid
 
 from backend.db.store import Store, utc_now
-from backend.ingestion.auto_parse import enqueue_parse_after_parse
 from backend.ingestion.orchestrator import run_source_run
 from backend.parse.orchestrator import run_full_parse
 
@@ -66,7 +65,6 @@ async def run_from_env(*, store: Store | None = None) -> None:
         if current is None or current.status == "stopped":
             return
         db.update_source_run(run_id, status="complete", finished=True)
-        await enqueue_parse_after_parse(store=db, parse_run_id=run_id)
         return
     raise ValueError(f"unsupported PINEGRAF_MODE: {mode}")
 

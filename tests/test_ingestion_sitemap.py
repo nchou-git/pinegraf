@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from backend.config import get_settings
 from backend.db.models import Fetch, SourceRun
 from backend.ingestion.runners import sitemap as sitemap_runner
 from backend.ingestion.runners.sitemap import run_sitemap
@@ -153,7 +152,7 @@ async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None
 
 
 @pytest.mark.asyncio
-async def test_sitemap_runner_auto_queues_parse_on_completion(
+async def test_sitemap_runner_does_not_auto_queue_parse_on_completion(
     store,
     fake_httpx,
     monkeypatch,
@@ -165,8 +164,6 @@ async def test_sitemap_runner_auto_queues_parse_on_completion(
 
     from backend.jobs import run as jobs_run
 
-    monkeypatch.setenv("PINEGRAF_AUTO_PARSE", "true")
-    get_settings.cache_clear()
     monkeypatch.setattr(jobs_run, "execute_cloud_run_job", fake_execute_cloud_run_job)
     source = store.upsert_source(kind="domain", identifier="example.com")
     run = store.create_source_run(
@@ -196,12 +193,9 @@ async def test_sitemap_runner_auto_queues_parse_on_completion(
     await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
     with store.session() as session:
-        parse_run = session.execute(select(SourceRun).where(SourceRun.kind == "parse")).scalar_one()
-    assert parse_run.spec["source_id"] == str(source.id)
-    assert parse_run.spec["scope"] == "unparsed"
-    assert parse_run.spec["snapshot_at"]
-    assert "parse_source_run_id" not in parse_run.spec
-    assert queued == [(str(parse_run.id), "parse")]
+        parse_runs = session.execute(select(SourceRun).where(SourceRun.kind == "parse")).all()
+    assert parse_runs == []
+    assert queued == []
 
 
 def test_host_pacing_exponential_growth_with_cap(monkeypatch) -> None:
