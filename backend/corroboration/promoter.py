@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import and_, exists, select
 from sqlalchemy.exc import IntegrityError
@@ -20,7 +21,7 @@ from backend.db.models import (
 from backend.db.store import Store, utc_now
 
 
-def promote_pending(store: Store) -> set[uuid.UUID]:
+def promote_pending(store: Store, *, valid_from: datetime | None = None) -> set[uuid.UUID]:
     touched: set[uuid.UUID] = set()
     with store.session() as session:
         rows = list(
@@ -32,13 +33,18 @@ def promote_pending(store: Store) -> set[uuid.UUID]:
         )
 
     for raw in rows:
-        claim_id = promote_claim_raw(store, raw.id)
+        claim_id = promote_claim_raw(store, raw.id, valid_from=valid_from)
         if claim_id is not None:
             touched.add(claim_id)
     return touched
 
 
-def promote_claim_raw(store: Store, claim_raw_id: uuid.UUID) -> uuid.UUID | None:
+def promote_claim_raw(
+    store: Store,
+    claim_raw_id: uuid.UUID,
+    *,
+    valid_from: datetime | None = None,
+) -> uuid.UUID | None:
     with store.session() as session:
         raw = session.get(ClaimRaw, claim_raw_id)
         if raw is None:
@@ -72,6 +78,7 @@ def promote_claim_raw(store: Store, claim_raw_id: uuid.UUID) -> uuid.UUID | None
                 object_entity_id=object_entity_id,
                 object_value=object_value,
                 qualifiers=raw.qualifiers,
+                valid_from=valid_from or utc_now(),
                 last_corroborated_at=utc_now(),
             )
             session.add(claim)

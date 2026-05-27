@@ -1362,6 +1362,7 @@ function drawPlaceholderGraph() {
 }
 
 function renderEntityPanel(data) {
+  // TODO: add the temporal claim/document timeline view here once supersession lands.
   const initials = (data.identity.canonical_name || "")
     .split(/\s+/)
     .slice(0, 2)

@@ -115,7 +115,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0017_stop_supersede"
+EXPECTED_ALEMBIC_HEAD = "0018_temporal_storage"
 
 
 def _slugify(value: str) -> str:

@@ -396,6 +396,7 @@ class Store:
         word_count: int,
         first_seen_fetch_id: uuid.UUID,
         chunks: Sequence[tuple[str, int, list[float] | None]],
+        valid_from: datetime | None = None,
     ) -> Document:
         with self.session() as session:
             document = Document(
@@ -406,6 +407,7 @@ class Store:
                 language=language,
                 word_count=word_count,
                 first_seen_fetch_id=first_seen_fetch_id,
+                valid_from=valid_from,
             )
             try:
                 session.add(document)

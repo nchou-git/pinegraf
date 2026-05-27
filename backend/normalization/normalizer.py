@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from backend.db.store import Store, content_digest
 from backend.normalization.chunker import chunk_text
@@ -8,7 +9,12 @@ from backend.normalization.cleaner import clean_html, detect_language
 from backend.normalization.embedder import embed_chunks
 
 
-async def normalize_fetch(fetch_id: uuid.UUID | str, *, store: Store) -> uuid.UUID:
+async def normalize_fetch(
+    fetch_id: uuid.UUID | str,
+    *,
+    store: Store,
+    valid_from: datetime | None = None,
+) -> uuid.UUID:
     fetch_uuid = uuid.UUID(str(fetch_id))
     fetch = store.get_fetch(fetch_uuid)
     if fetch is None:
@@ -41,6 +47,7 @@ async def normalize_fetch(fetch_id: uuid.UUID | str, *, store: Store) -> uuid.UU
         word_count=len(cleaned_text.split()),
         first_seen_fetch_id=fetch_uuid,
         chunks=chunk_rows,
+        valid_from=valid_from,
     )
     store.link_document_fetch(document.id, fetch_uuid)
     return document.id

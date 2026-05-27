@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    REAL,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -193,6 +194,12 @@ class Document(Base):
     canonical_url: Mapped[str | None] = mapped_column(Text)
     language: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+    )
     word_count: Mapped[int | None] = mapped_column(Integer)
     first_seen_fetch_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -394,7 +401,17 @@ class Claim(Base):
             "object_entity_id is not null or object_value is not null",
             name="ck_claims_object_present",
         ),
+        CheckConstraint(
+            "confidence is null or (confidence >= 0 and confidence <= 1)",
+            name="ck_claims_confidence_range",
+        ),
         Index("ix_claims_subject_predicate", "subject_entity_id", "predicate"),
+        Index(
+            "ix_claims_subject_predicate_valid",
+            "subject_entity_id",
+            "predicate",
+            text("valid_to NULLS FIRST"),
+        ),
         Index("ix_claims_object_entity_id", "object_entity_id"),
         Index("ix_claims_predicate", "predicate"),
         Index("ix_claims_confidence_score_desc", "confidence_score"),
@@ -414,6 +431,13 @@ class Claim(Base):
     object_value: Mapped[str | None] = mapped_column(Text)
     qualifiers: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    confidence: Mapped[float | None] = mapped_column(REAL)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by_claim_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("claims.id", ondelete="SET NULL"),
+    )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

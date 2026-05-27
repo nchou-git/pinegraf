@@ -35,7 +35,7 @@ async def normalize_pending(
     )
     total = len(pending_fetch_ids)
     for index, fetch_id in enumerate(pending_fetch_ids, start=1):
-        document_ids.append(await normalize_fetch(fetch_id, store=store))
+        document_ids.append(await normalize_fetch(fetch_id, store=store, valid_from=snapshot_at))
         if progress is not None:
             await progress(index, total)
     return document_ids

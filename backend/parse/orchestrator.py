@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 from backend.corroboration.runner import corroborate_pending
-from backend.db.store import Store
+from backend.db.store import Store, utc_now
 from backend.extraction.runner import extract_pending
 from backend.normalization.runner import normalize_pending
 from backend.progress import progress_stats
@@ -30,7 +30,7 @@ async def run_full_parse(
     source_uuid = uuid.UUID(str(source_id))
     run_id = uuid.UUID(str(progress_run_id or source_id))
     fetch_uuid_list = [uuid.UUID(str(fetch_id)) for fetch_id in (fetch_ids or [])]
-    snapshot = _parse_snapshot(snapshot_at)
+    snapshot = _parse_snapshot(snapshot_at) or utc_now()
     touched: set[uuid.UUID] = set()
     run = store.get_source_run(run_id)
     if run is None or run.status not in ACTIVE_RUN_STATUSES:
@@ -90,7 +90,7 @@ async def run_full_parse(
 
         _ensure_run_active(store, run_id)
         _write_progress(store, run_id, stats, "corroboration", "Promoting claims", 75.0)
-        touched_claims = await corroborate_pending(store=store)
+        touched_claims = await corroborate_pending(store=store, valid_from=snapshot)
         stats["touched_claims"] = len(touched_claims)
         _ensure_run_active(store, run_id)
         _write_progress(store, run_id, stats, "corroboration", "Promoting claims", 90.0)
