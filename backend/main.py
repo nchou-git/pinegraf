@@ -836,6 +836,8 @@ async def _stop_run(
                     db_source.status = "active"
             session.add(
                 AuditLog(
+                    # Audit says "stop" because we cancel the execution;
+                    # the user-facing label is "Pause".
                     action="run.stop",
                     target_table="source_runs",
                     target_id=str(run_id),

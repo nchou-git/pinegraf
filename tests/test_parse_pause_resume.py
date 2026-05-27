@@ -68,11 +68,18 @@ def test_stop_parse_then_start_again_supersedes_old_run_and_skips_parsed_fetches
 
     with TestClient(main_module.create_app(store)) as client:
         stop = client.post(f"/admin/runs/{parse_run.id}/stop", headers=admin_headers)
+        listed_sources = client.get("/api/sources").json()["sources"]
+        detail = client.get(f"/api/sources/{source.id}").json()
         restart = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
 
     assert stop.status_code == 200
     assert stop.json()["status"] == "stopped"
     assert stopped == [str(parse_run.id)]
+    [listed_source] = listed_sources
+    assert "stopped_runs" not in listed_source
+    assert "stopped_runs" not in detail
+    assert listed_source["paused_runs"]["parse"]["id"] == str(parse_run.id)
+    assert detail["paused_runs"]["parse"]["id"] == str(parse_run.id)
     assert restart.status_code == 200
     new_run_id = restart.json()["run_id"]
     assert queued == [(new_run_id, "parse")]

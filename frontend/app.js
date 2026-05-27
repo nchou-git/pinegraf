@@ -1806,8 +1806,8 @@ function setupSourceRows(root, sources, { archived }) {
     const parse = row.querySelector("[data-action=parse]");
     const unarchive = row.querySelector("[data-action=unarchive]");
     const destroy = row.querySelector("[data-action=delete]");
-    const stopButtons = row.querySelectorAll("[data-action=stop]");
-    const startAgainButtons = row.querySelectorAll("[data-action=start-again]");
+    const pauseButtons = row.querySelectorAll("[data-action=pause]");
+    const resumeButtons = row.querySelectorAll("[data-action=resume]");
     const menuBtn = row.querySelector("[data-action=menu]");
     if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
@@ -1820,16 +1820,16 @@ function setupSourceRows(root, sources, { archived }) {
       const listKind = row.closest("[data-source-list]")?.dataset.sourceList || (archived ? "archived" : "active");
       confirmDeleteSource(source, listKind);
     };
-    stopButtons.forEach((stop) => {
-      stop.onclick = async (e) => {
+    pauseButtons.forEach((pause) => {
+      pause.onclick = async (e) => {
         e.stopPropagation();
-        await stopSourceRun(source, stop.dataset.runKind);
+        await pauseSourceRun(source, pause.dataset.runKind);
       };
     });
-    startAgainButtons.forEach((startAgain) => {
-      startAgain.onclick = async (e) => {
+    resumeButtons.forEach((resume) => {
+      resume.onclick = async (e) => {
         e.stopPropagation();
-        await runSourceAction(source.id, startAgain.dataset.runKind);
+        await runSourceAction(source.id, resume.dataset.runKind);
       };
     });
     if (menuBtn) menuBtn.onclick = (e) => {
@@ -2064,21 +2064,21 @@ function sourceRowActions(source, { archived }) {
       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
   }
   const runs = activeRuns(source);
-  const stopped = stoppedRuns(source);
+  const paused = pausedRuns(source);
   const menuButton = isAdmin()
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
-  return `${sourceActionButton("crawl", runs.crawl ? "stop" : stopped.crawl ? "start-again" : "start")}
-    ${sourceActionButton("parse", runs.parse ? "stop" : stopped.parse ? "start-again" : "start")}
+  return `${sourceActionButton("crawl", runs.crawl ? "pause" : paused.crawl ? "resume" : "start")}
+    ${sourceActionButton("parse", runs.parse ? "pause" : paused.parse ? "resume" : "start")}
     ${menuButton}`;
 }
 
 function sourceActionButton(kind, state = "start") {
-  if (state === "stop") {
-    return `<button class="btn-danger-outline" data-action="stop" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-stop"></i> Stop</button>`;
+  if (state === "pause") {
+    return `<button class="btn-danger-outline" data-action="pause" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-pause"></i> Pause</button>`;
   }
-  if (state === "start-again") {
-    return `<button class="btn-source" data-action="start-again" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-play"></i> Start again</button>`;
+  if (state === "resume") {
+    return `<button class="btn-source" data-action="resume" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-play"></i> Resume</button>`;
   }
   if (kind === "parse") {
     return `<button class="btn-source" data-action="parse" title="Parse fetched documents that have not been parsed yet"><i class="ti ti-cpu"></i> Parse</button>`;
@@ -2106,14 +2106,14 @@ function activeRuns(source) {
   };
 }
 
-function stoppedRuns(source) {
-  if (source?.stopped_runs && typeof source.stopped_runs === "object") return source.stopped_runs;
+function pausedRuns(source) {
+  if (source?.paused_runs && typeof source.paused_runs === "object") return source.paused_runs;
   return {};
 }
 
 function sourceRunStatusText(source, progress) {
   const runs = activeRuns(source);
-  const stopped = stoppedRuns(source);
+  const paused = pausedRuns(source);
   const parts = [];
   if (runs.crawl) {
     parts.push(runProgressText(progressForRun(source, "crawl", runs.crawl)));
@@ -2122,10 +2122,10 @@ function sourceRunStatusText(source, progress) {
     parts.push(runProgressText(progressForRun(source, "parse", runs.parse)));
   }
   if (parts.length) return parts.join(" · ");
-  if (stopped.crawl || stopped.parse) {
+  if (paused.crawl || paused.parse) {
     return ["crawl", "parse"]
-      .filter((action) => stopped[action])
-      .map((action) => `${capitalize(action)} stopped`)
+      .filter((action) => paused[action])
+      .map((action) => `${capitalize(action)} paused`)
       .join(" · ");
   }
   if (!source.active_run_id) {
@@ -2196,6 +2196,11 @@ function sourceRunKindLabel(kind) {
   if (kind === "adhoc") return "Manual URLs";
   if (kind === "parse") return "Parse";
   return capitalize(kind || "");
+}
+
+function sourceRunStatusLabel(status) {
+  if (status === "stopped") return "paused";
+  return status || "";
 }
 
 function sourceKindIcon(source) {
@@ -2341,7 +2346,7 @@ async function runSourceAction(sourceId, action) {
   }
 }
 
-async function stopSourceRun(source, kind) {
+async function pauseSourceRun(source, kind) {
   const run = activeRuns(source)[kind] || (source.active_run_id ? { id: source.active_run_id } : null);
   if (!run?.id || !isAdmin()) return;
   setSourceActionButtonsDisabled(source.id, true);
@@ -2357,7 +2362,7 @@ async function stopSourceRun(source, kind) {
       if (!Object.keys(state.runProgress[source.id]).length) delete state.runProgress[source.id];
     }
     await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
-    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} stopped`, {
+    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} paused`, {
       level: "success",
     });
   } catch (error) {
@@ -2376,8 +2381,8 @@ function sourceActionButtons(sourceId) {
   return document.querySelectorAll(
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=stop], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=start-again]`,
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=pause], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=resume]`,
   );
 }
 
@@ -2867,7 +2872,7 @@ function renderSourceRuns(detail) {
             (r) => `
           <tr>
             <td>${escapeHtml(sourceRunKindLabel(r.kind))}</td>
-            <td><span class="status-pill ${r.status === "complete" ? "active" : escapeAttr(r.status || "")}">${escapeHtml(r.status)}</span></td>
+            <td><span class="status-pill ${r.status === "complete" ? "active" : escapeAttr(r.status || "")}">${escapeHtml(sourceRunStatusLabel(r.status))}</span></td>
             <td class="muted small">${escapeHtml(timeAgo(r.started_at))}</td>
             <td class="muted small">${r.finished_at ? escapeHtml(timeAgo(r.finished_at)) : "—"}</td>
             <td class="num muted small">${r.stats ? escapeHtml(JSON.stringify(r.stats)) : "—"}</td>
