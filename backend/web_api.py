@@ -346,7 +346,7 @@ def list_claims(
             ).scalars()
         )
         return {
-            "claims": [_claim_response(session, claim, include_sources=True) for claim in rows],
+            "claims": _claim_list_responses(session, rows),
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -1573,6 +1573,111 @@ def _claim_response(
     if include_sources:
         response["sources"] = _claim_sources_from_evidence(evidence)[:3]
     return response
+
+
+def _claim_list_responses(session, claims: list[Claim]) -> list[dict[str, object]]:
+    if not claims:
+        return []
+    claim_ids = [claim.id for claim in claims]
+    entity_ids = {
+        entity_id
+        for claim in claims
+        for entity_id in (claim.subject_entity_id, claim.object_entity_id)
+        if entity_id is not None
+    }
+    entities = {
+        entity.id: entity
+        for entity in session.execute(select(Entity).where(Entity.id.in_(entity_ids))).scalars()
+    }
+    evidence_counts = {
+        claim_id: int(count or 0)
+        for claim_id, count in session.execute(
+            select(ClaimEvidence.claim_id, func.count(func.distinct(ClaimEvidence.claim_raw_id)))
+            .where(ClaimEvidence.claim_id.in_(claim_ids))
+            .group_by(ClaimEvidence.claim_id)
+        ).all()
+    }
+    sources_by_claim = _claim_sources_for_claims(session, claim_ids)
+    output = []
+    for claim in claims:
+        subject_ref = _entity_ref(entities.get(claim.subject_entity_id), claim.subject_entity_id)
+        object_entity = entities.get(claim.object_entity_id) if claim.object_entity_id else None
+        object_ref = (
+            _entity_ref(object_entity, claim.object_entity_id)
+            if object_entity is not None and claim.object_entity_id is not None
+            else {"id": None, "name": claim.object_value or ""}
+        )
+        confidence = claim.confidence if claim.confidence is not None else claim.confidence_score
+        output.append(
+            {
+                "id": str(claim.id),
+                "claim_id": str(claim.id),
+                "predicate": claim.predicate,
+                "confidence": confidence,
+                "confidence_score": claim.confidence_score,
+                "subject": subject_ref,
+                "object": object_ref,
+                "object_value": claim.object_value,
+                "valid_from": claim.valid_from.isoformat() if claim.valid_from else None,
+                "valid_to": claim.valid_to.isoformat() if claim.valid_to else None,
+                "status": claim.status,
+                "evidence_count": evidence_counts.get(claim.id, 0),
+                "statement": _claim_statement(
+                    subject_ref["name"],
+                    claim.predicate,
+                    object_ref["name"],
+                ),
+                "evidence": [],
+                "sources": sources_by_claim.get(claim.id, []),
+            }
+        )
+    return output
+
+
+def _claim_sources_for_claims(
+    session,
+    claim_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, list[dict[str, object]]]:
+    rows = list(
+        session.execute(
+            select(ClaimEvidence.claim_id, Source, ClaimRaw, Chunk, Document, Fetch)
+            .join(Source, Source.id == ClaimEvidence.source_id)
+            .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
+            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+            .join(Document, Document.id == Chunk.document_id)
+            .join(DocumentFetch, DocumentFetch.document_id == Document.id)
+            .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
+            .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+            .where(ClaimEvidence.claim_id.in_(claim_ids))
+            .where(SourceRun.source_id == ClaimEvidence.source_id)
+            .order_by(ClaimEvidence.claim_id.asc(), ClaimEvidence.added_at.desc())
+        ).all()
+    )
+    output: dict[uuid.UUID, list[dict[str, object]]] = {claim_id: [] for claim_id in claim_ids}
+    seen_documents: dict[uuid.UUID, set[str]] = {claim_id: set() for claim_id in claim_ids}
+    max_chars = get_settings().snippet_max_chars
+    for claim_id, source, raw, chunk, document, fetch in rows:
+        if len(output.setdefault(claim_id, [])) >= 3:
+            continue
+        document_url = document.canonical_url or fetch.url
+        document_id = str(document.id)
+        key = document_id or document_url
+        if key in seen_documents.setdefault(claim_id, set()):
+            continue
+        seen_documents[claim_id].add(key)
+        snippet = _snippet(raw.raw_quote or chunk.text, chunk.text, max_chars=max_chars)
+        output[claim_id].append(
+            {
+                "id": str(source.id),
+                "name": source.display_name or source.identifier,
+                "url": document_url,
+                "document_id": document_id,
+                "title": document.title or source.display_name or document_url,
+                "fetched_at": fetch.fetched_at.isoformat(),
+                "snippet": snippet,
+            }
+        )
+    return output
 
 
 def _entity_ref(entity: Entity | None, entity_id: uuid.UUID) -> dict[str, str]:
