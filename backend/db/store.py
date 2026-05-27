@@ -53,7 +53,7 @@ SCHEMA_TABLES = [
     "entity_summary",
     "entity_neighborhood",
 ]
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("uvicorn.error")
 _QUERY_METRICS: ContextVar[dict[str, float | int] | None] = ContextVar(
     "pinegraf_query_metrics",
     default=None,

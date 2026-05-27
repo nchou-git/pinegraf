@@ -51,7 +51,7 @@ ASK_CACHE_MAX = 100
 ACTIVE_SOURCE_RUN_STATUSES = {"queued", "running"}
 STOPPED_SOURCE_RUN_STATUS = "stopped"
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("uvicorn.error")
 
 
 class ActiveSourceRunError(RuntimeError):

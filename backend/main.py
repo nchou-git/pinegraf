@@ -137,7 +137,7 @@ FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
 EXPECTED_ALEMBIC_HEAD = "0021_identity_review"
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("uvicorn.error")
 OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/directory"}
 
 
