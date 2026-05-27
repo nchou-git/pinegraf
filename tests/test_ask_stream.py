@@ -81,9 +81,7 @@ async def test_ask_stream_uses_openai_stream_and_caches_final_answer(
         "Hello",
         " world",
     ]
-    assert [event["text"] for event in second_events if event["kind"] == "token"] == [
-        "Hello world"
-    ]
+    assert [event["text"] for event in second_events if event["kind"] == "token"] == ["Hello world"]
     assert len(create_calls) == 1
 
 

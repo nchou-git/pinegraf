@@ -220,6 +220,59 @@ class Store:
             session.commit()
             return run
 
+    def update_source_crawl_counters(
+        self,
+        source_id: uuid.UUID,
+        *,
+        pages_fetched_total: int,
+        urls_known_total: int,
+    ) -> None:
+        with self.session() as session:
+            source = session.get(Source, source_id)
+            if source is None:
+                return
+            source.pages_fetched_total = max(
+                int(source.pages_fetched_total or 0),
+                int(pages_fetched_total),
+            )
+            source.urls_known_total = max(
+                int(source.urls_known_total or 0),
+                int(urls_known_total),
+                source.pages_fetched_total,
+            )
+            session.commit()
+
+    def refresh_source_crawl_counters(
+        self,
+        source_id: uuid.UUID,
+        *,
+        urls_known_total: int | None = None,
+    ) -> tuple[int, int]:
+        with self.session() as session:
+            pages_fetched_total = int(
+                session.execute(
+                    select(func.count(func.distinct(Fetch.url)))
+                    .select_from(Fetch)
+                    .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+                    .where(SourceRun.source_id == source_id)
+                    .where(Fetch.http_status >= 200)
+                    .where(Fetch.http_status < 300)
+                    .where(Fetch.body_bytes.is_not(None))
+                ).scalar_one()
+            )
+            source = session.get(Source, source_id)
+            if source is None:
+                return pages_fetched_total, max(pages_fetched_total, int(urls_known_total or 0))
+            known = max(
+                int(source.urls_known_total or 0),
+                pages_fetched_total,
+                int(urls_known_total or 0),
+            )
+            source.pages_fetched_total = pages_fetched_total
+            source.urls_known_total = known
+            session.commit()
+            return pages_fetched_total, known
+
     def get_source_run(self, run_id: uuid.UUID) -> SourceRun | None:
         with self.session() as session:
             return session.get(SourceRun, run_id)
@@ -382,9 +435,9 @@ class Store:
     def pending_fetch_ids(
         self,
         *,
-        source_run_id: uuid.UUID | None = None,
         source_id: uuid.UUID | None = None,
         fetch_ids: Sequence[uuid.UUID] | None = None,
+        snapshot_at: datetime | None = None,
     ) -> list[uuid.UUID]:
         with self.session() as session:
             query = (
@@ -394,14 +447,14 @@ class Store:
                 .where(Fetch.body_bytes.is_not(None))
                 .order_by(Fetch.fetched_at.asc())
             )
-            if source_run_id is not None:
-                query = query.where(Fetch.source_run_id == source_run_id)
             if source_id is not None:
                 query = query.join(SourceRun, SourceRun.id == Fetch.source_run_id).where(
                     SourceRun.source_id == source_id
                 )
             if fetch_ids is not None:
                 query = query.where(Fetch.id.in_(fetch_ids))
+            if snapshot_at is not None:
+                query = query.where(Fetch.fetched_at <= snapshot_at)
             return list(session.execute(query).scalars())
 
     def fetch_ids_for_source(
@@ -409,6 +462,7 @@ class Store:
         source_id: uuid.UUID,
         *,
         fetch_ids: Sequence[uuid.UUID] | None = None,
+        snapshot_at: datetime | None = None,
     ) -> list[uuid.UUID]:
         with self.session() as session:
             query = (
@@ -420,6 +474,8 @@ class Store:
             )
             if fetch_ids is not None:
                 query = query.where(Fetch.id.in_(fetch_ids))
+            if snapshot_at is not None:
+                query = query.where(Fetch.fetched_at <= snapshot_at)
             return list(session.execute(query).scalars())
 
     def table_counts(self, tables: Iterable[str] = SCHEMA_TABLES) -> dict[str, int]:
@@ -446,6 +502,8 @@ def source_to_dict(source: Source) -> dict[str, object]:
         "trust_weight": source.trust_weight,
         "respect_robots": source.respect_robots,
         "status": source.status,
+        "pages_fetched_total": source.pages_fetched_total,
+        "urls_known_total": source.urls_known_total,
         "display_name": source.display_name,
         "notes": source.notes,
         "created_at": source.created_at.isoformat(),

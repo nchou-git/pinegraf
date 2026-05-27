@@ -10,23 +10,26 @@ from backend.normalization.normalizer import normalize_fetch
 async def normalize_pending(
     *,
     store: Store,
-    source_run_id: uuid.UUID | str | None = None,
     source_id: uuid.UUID | str | None = None,
     fetch_ids: list[uuid.UUID] | None = None,
+    snapshot_at=None,
     pending_only: bool = True,
     progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[uuid.UUID]:
-    run_uuid = uuid.UUID(str(source_run_id)) if source_run_id is not None else None
     source_uuid = uuid.UUID(str(source_id)) if source_id is not None else None
     document_ids: list[uuid.UUID] = []
     pending_fetch_ids = (
         store.pending_fetch_ids(
-            source_run_id=run_uuid,
             source_id=source_uuid,
             fetch_ids=fetch_ids,
+            snapshot_at=snapshot_at,
         )
         if pending_only
-        else store.fetch_ids_for_source(source_uuid, fetch_ids=fetch_ids)
+        else store.fetch_ids_for_source(
+            source_uuid,
+            fetch_ids=fetch_ids,
+            snapshot_at=snapshot_at,
+        )
         if source_uuid is not None
         else list(fetch_ids or [])
     )

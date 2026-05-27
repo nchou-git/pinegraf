@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from openai import AsyncOpenAI
@@ -33,6 +33,7 @@ from backend.db.models import (
 )
 from backend.db.store import SCHEMA_TABLES, Store, utc_now
 from backend.resolution.embedder import embed_texts
+from backend.util.vector import cosine, vector_values
 
 ASK_CACHE_SECONDS = 3600
 ASK_CACHE_MAX = 100
@@ -53,31 +54,24 @@ def _source_run_action_kind(run: SourceRun) -> str:
     return "crawl"
 
 
+def _active_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
+    active: dict[str, dict[str, object]] = {}
+    for run in runs:
+        if run.status not in ACTIVE_SOURCE_RUN_STATUSES:
+            continue
+        active[_source_run_action_kind(run)] = {
+            "id": str(run.id),
+            "kind": run.kind,
+            "action": _source_run_action_kind(run),
+            "status": run.status,
+            "stats": run.stats,
+            "started_at": run.started_at.isoformat(),
+        }
+    return active
+
+
 def stats(store: Store) -> dict[str, int]:
     return store.table_counts(SCHEMA_TABLES)
-
-
-def record_audit(
-    store: Store,
-    *,
-    action: str,
-    target_table: str,
-    target_id: uuid.UUID | str,
-    actor: str | None,
-    request_ip: str | None,
-    payload: dict[str, object] | None = None,
-) -> None:
-    with store.session() as session:
-        _add_audit_row(
-            session,
-            action=action,
-            target_table=target_table,
-            target_id=target_id,
-            actor=actor,
-            request_ip=request_ip,
-            payload=payload,
-        )
-        session.commit()
 
 
 def list_audit_log(store: Store, *, limit: int = 200) -> dict[str, object]:
@@ -270,9 +264,7 @@ async def ask_stream(
     )
     answer = ""
     if not claims and not chunks:
-        answer = (
-            "No extracted graph evidence is available yet. Run ingestion and parse first."
-        )
+        answer = "No extracted graph evidence is available yet. Run ingestion and parse first."
         yield _sse({"kind": "token", "text": answer})
     elif settings.openai_api_key:
         parts: list[str] = []
@@ -347,6 +339,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                 (run for run in runs if run.status in ACTIVE_SOURCE_RUN_STATUSES),
                 None,
             )
+            active_runs = _active_runs_payload(runs)
             output.append(
                 {
                     "id": str(source.id),
@@ -356,12 +349,15 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "trust_weight": source.trust_weight,
                     "respect_robots": source.respect_robots,
                     "status": source.status,
+                    "pages_fetched_total": source.pages_fetched_total,
+                    "urls_known_total": source.urls_known_total,
                     "notes": source.notes,
                     "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
                     "last_run_at": last_run.started_at.isoformat() if last_run else None,
                     "last_status": last_run.status if last_run else None,
                     "active_run_id": str(active_run.id) if active_run else None,
                     "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
+                    "active_runs": active_runs,
                     "runs": [
                         {
                             "id": str(run.id),
@@ -409,6 +405,7 @@ def source_detail(
             (run for run in runs if run.status in ACTIVE_SOURCE_RUN_STATUSES),
             None,
         )
+        active_runs = _active_runs_payload(runs)
         coverage = _source_coverage(session, source.id)
         document_count = session.execute(
             select(func.count(func.distinct(DocumentFetch.document_id)))
@@ -425,6 +422,8 @@ def source_detail(
             "trust_weight": source.trust_weight,
             "respect_robots": source.respect_robots,
             "status": source.status,
+            "pages_fetched_total": source.pages_fetched_total,
+            "urls_known_total": source.urls_known_total,
             "notes": source.notes,
             "file_size_bytes": file_size_bytes,
             "icon_hint": _KIND_ICONS.get(source.kind, "ti-database"),
@@ -434,6 +433,7 @@ def source_detail(
             "last_status": runs[0].status if runs else None,
             "active_run_id": str(active_run.id) if active_run else None,
             "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
+            "active_runs": active_runs,
             "coverage": coverage,
             "runs": [
                 {
@@ -1263,44 +1263,26 @@ def _rank_chunks(chunks: list[Chunk], question_vectors: list[list[float]]) -> li
     return sorted(
         chunks,
         key=lambda chunk: max(
-            _cosine(question_vector, _vector_values(chunk.embedding))
+            cosine(question_vector, vector_values(chunk.embedding))
             for question_vector in question_vectors
         ),
         reverse=True,
     )
 
 
-def _vector_values(vector: object) -> Sequence[float]:
-    if vector is None:
-        return []
-    if hasattr(vector, "tolist"):
-        values = vector.tolist()
-        return values if isinstance(values, list) else list(values)
-    return vector if isinstance(vector, list) else list(vector)
-
-
-def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    if not left or not right:
-        return 0.0
-    size = min(len(left), len(right))
-    dot = sum(left[index] * right[index] for index in range(size))
-    left_norm = sum(value * value for value in left[:size]) ** 0.5
-    right_norm = sum(value * value for value in right[:size]) ** 0.5
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)
-
-
 def _source_coverage(session, source_id: uuid.UUID) -> dict[str, int]:
-    pages_fetched = session.execute(
-        select(func.count())
-        .select_from(Fetch)
-        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
-        .where(SourceRun.source_id == source_id)
-        .where(Fetch.http_status >= 200)
-        .where(Fetch.http_status < 300)
-        .where(Fetch.body_bytes.is_not(None))
-    ).scalar_one()
+    source = session.get(Source, source_id)
+    pages_fetched = int(source.pages_fetched_total or 0) if source else 0
+    if pages_fetched == 0:
+        pages_fetched = session.execute(
+            select(func.count(func.distinct(Fetch.url)))
+            .select_from(Fetch)
+            .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+            .where(SourceRun.source_id == source_id)
+            .where(Fetch.http_status >= 200)
+            .where(Fetch.http_status < 300)
+            .where(Fetch.body_bytes.is_not(None))
+        ).scalar_one()
     documents_parsed = session.execute(
         select(func.count(func.distinct(DocumentFetch.document_id)))
         .select_from(DocumentFetch)
@@ -1324,6 +1306,9 @@ def _source_coverage(session, source_id: uuid.UUID) -> dict[str, int]:
     ).scalar_one()
     return {
         "pages_fetched": pages_fetched,
+        "urls_known": max(int(source.urls_known_total or 0), pages_fetched)
+        if source
+        else pages_fetched,
         "documents_parsed": documents_parsed,
         "documents": documents_parsed,
         "claims": claims,

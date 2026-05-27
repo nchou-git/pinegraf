@@ -1829,13 +1829,16 @@ function setupSourceRows(root, sources, { archived }) {
       e.stopPropagation();
       toggleMenu(row, source.id);
     };
-    if (source?.active_run_id && isAdmin()) {
-      trackRun(
-        source.id,
-        sourceDisplayName(source),
-        source.active_run_kind || "crawl",
-        source.active_run_id,
-      );
+    if (isAdmin()) {
+      Object.values(activeRuns(source)).forEach((run) => {
+        trackRun(source.id, sourceDisplayName(source), run.action || "crawl", run.id, {
+          percent: Number(run.stats?.percent ?? 0),
+          fetched: Number(run.stats?.fetched ?? source.pages_fetched_total),
+          known: Number(run.stats?.known ?? source.urls_known_total),
+          done: Number(run.stats?.item_done),
+          total: Number(run.stats?.item_total),
+        });
+      });
     }
     if (state.runProgress[source.id]) updateRunProgressDom(source.id);
   });
@@ -1988,7 +1991,7 @@ function sourceArchiveRow(source) {
           </div>
         </div>
         <div class="source-row-stats">
-          <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+          <span><strong>${formatNumber(sourcePagesFetched(source))}</strong> pages fetched</span>
           <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
           <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
           <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
@@ -2017,8 +2020,7 @@ function sourceRow(source, options = {}) {
   const kindLabel = sourceKindLabel(source);
   const kindIcon = sourceKindIcon(source);
   const progress = state.runProgress[source.id];
-  const hasActiveRun = Boolean(source.active_run_id);
-  const actions = sourceRowActions(source, { archived, progress, hasActiveRun });
+  const actions = sourceRowActions(source, { archived });
   return `
     <article class="source-row ${archived ? "archived" : ""}" data-source-id="${escapeAttr(source.id)}">
       <div class="source-row-top">
@@ -2033,7 +2035,7 @@ function sourceRow(source, options = {}) {
           </div>
         </div>
         <div class="source-row-stats">
-          <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+          <span><strong>${formatNumber(sourcePagesFetched(source))}</strong> pages fetched</span>
           <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
           <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
           <span class="muted source-last-run">${sourceRunStatusText(source, progress)}</span>
@@ -2049,17 +2051,17 @@ function sourceRow(source, options = {}) {
   `;
 }
 
-function sourceRowActions(source, { archived, progress, hasActiveRun }) {
+function sourceRowActions(source, { archived }) {
   if (archived) {
     return `<button class="btn-secondary" data-action="unarchive" type="button">Unarchive</button>
       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
   }
-  const activeKind = activeRunKind(source, progress);
+  const runs = activeRuns(source);
   const menuButton = isAdmin()
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
-  return `${sourceActionButton("crawl", activeKind === "crawl" && hasActiveRun)}
-    ${sourceActionButton("parse", activeKind === "parse" && hasActiveRun)}
+  return `${sourceActionButton("crawl", Boolean(runs.crawl))}
+    ${sourceActionButton("parse", Boolean(runs.parse))}
     ${menuButton}`;
 }
 
@@ -2073,16 +2075,56 @@ function sourceActionButton(kind, isCancel) {
   return `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>`;
 }
 
-function activeRunKind(source, progress) {
-  const action = progress?.action || source?.active_run_kind || "crawl";
-  return action === "parse" ? "parse" : "crawl";
+function sourcePagesFetched(source) {
+  return Math.max(
+    Number(source.pages_fetched_total || 0),
+    Number(source.coverage?.pages_fetched || 0),
+  );
+}
+
+function activeRuns(source) {
+  if (source?.active_runs && typeof source.active_runs === "object") return source.active_runs;
+  if (!source?.active_run_id) return {};
+  const action = source.active_run_kind === "parse" ? "parse" : "crawl";
+  return {
+    [action]: {
+      id: source.active_run_id,
+      action,
+      status: "running",
+    },
+  };
 }
 
 function sourceRunStatusText(source, progress) {
+  const runs = activeRuns(source);
+  const parts = [];
+  if (runs.crawl) {
+    parts.push(runProgressText(progressForRun(source, "crawl", runs.crawl)));
+  }
+  if (runs.parse) {
+    parts.push(runProgressText(progressForRun(source, "parse", runs.parse)));
+  }
+  if (parts.length) return parts.join(" · ");
   if (!source.active_run_id) {
     return source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run";
   }
   return runProgressText(progress || { action: source.active_run_kind || "crawl" });
+}
+
+function progressForRun(source, action, run) {
+  const sourceId = source.id;
+  const stats = run?.stats || {};
+  const fetched = Number(stats.fetched ?? sourcePagesFetched(source));
+  const known = Number(stats.known ?? Math.max(Number(source.urls_known_total || 0), fetched));
+  return state.runProgress[sourceId]?.[action] || {
+    action,
+    runId: run?.id,
+    percent: Number(stats.percent ?? (known ? (100 * fetched) / known : 0)),
+    fetched,
+    known,
+    done: Number(stats.item_done),
+    total: Number(stats.item_total),
+  };
 }
 
 function runProgressText(progress) {
@@ -2253,13 +2295,19 @@ async function runSourceAction(sourceId, action) {
     const data = await res.json().catch(() => ({}));
     if (res.status === 409 && data.error === "already_running") {
       keepDisabled = true;
-      toast("A run is already in progress", { level: "warning" });
+      toast(`${sourceRunKindLabel(action)} is already running`, { level: "warning" });
       return;
     }
     if (!res.ok) {
       throw new Error(data.detail || res.statusText);
     }
-    trackRun(sourceId, sourceDisplayName(source), action, data.run_id);
+    trackRun(sourceId, sourceDisplayName(source), action, data.run_id, {
+      fetched: action === "crawl" ? sourcePagesFetched(source || {}) : undefined,
+      known:
+        action === "crawl"
+          ? Math.max(Number(source?.urls_known_total || 0), sourcePagesFetched(source || {}))
+          : undefined,
+    });
     await loadSourcesList();
     toast(`${sourceRunKindLabel(action)} queued`, { level: "success" });
   } catch (error) {
@@ -2271,16 +2319,20 @@ async function runSourceAction(sourceId, action) {
 }
 
 async function cancelSourceRun(source, kind) {
-  if (!source?.active_run_id || !isAdmin()) return;
+  const run = activeRuns(source)[kind] || (source.active_run_id ? { id: source.active_run_id } : null);
+  if (!run?.id || !isAdmin()) return;
   setSourceActionButtonsDisabled(source.id, true);
   try {
-    await expectOk(fetch(`/admin/runs/${source.active_run_id}/cancel`, { method: "POST" }));
-    const stream = state.runStreams[source.active_run_id];
+    await expectOk(fetch(`/admin/runs/${run.id}/cancel`, { method: "POST" }));
+    const stream = state.runStreams[run.id];
     if (stream) {
       stream.close();
-      delete state.runStreams[source.active_run_id];
+      delete state.runStreams[run.id];
     }
-    delete state.runProgress[source.id];
+    if (state.runProgress[source.id]) {
+      delete state.runProgress[source.id][kind];
+      if (!Object.keys(state.runProgress[source.id]).length) delete state.runProgress[source.id];
+    }
     await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
     toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} cancelled`, {
       level: "success",
@@ -2305,16 +2357,22 @@ function sourceActionButtons(sourceId) {
   );
 }
 
-function trackRun(sourceId, sourceName, action, runId) {
+function trackRun(sourceId, sourceName, action, runId, initial = {}) {
   if (!runId) return;
-  state.runProgress[sourceId] = {
-    ...state.runProgress[sourceId],
+  const sourceProgress = normalizeSourceProgress(sourceId);
+  sourceProgress[action] = {
+    ...sourceProgress[action],
     runId,
     sourceId,
     sourceName,
     action,
-    percent: state.runProgress[sourceId]?.percent || 0,
+    percent: sourceProgress[action]?.percent ?? initial.percent ?? 0,
+    fetched: sourceProgress[action]?.fetched ?? initial.fetched,
+    known: sourceProgress[action]?.known ?? initial.known,
+    done: sourceProgress[action]?.done ?? initial.done,
+    total: sourceProgress[action]?.total ?? initial.total,
   };
+  state.runProgress[sourceId] = sourceProgress;
   persistRunProgress();
   updateRunProgressDom(sourceId);
   if (state.runStreams[runId]) return;
@@ -2322,7 +2380,8 @@ function trackRun(sourceId, sourceName, action, runId) {
   state.runStreams[runId] = stream;
   stream.onmessage = (event) => {
     const data = JSON.parse(event.data);
-    const progress = state.runProgress[sourceId] || { runId, sourceId, sourceName, action };
+    const current = normalizeSourceProgress(sourceId);
+    const progress = current[action] || { runId, sourceId, sourceName, action };
     const progressData = data.data || {};
     progress.percent = Number(data.percent || 0);
     progress.fetched = Number(progressData.fetched);
@@ -2331,13 +2390,16 @@ function trackRun(sourceId, sourceName, action, runId) {
     progress.total = Number(progressData.item_total);
     progress.host_pacing = progressData.host_pacing || progress.host_pacing || {};
     progress.status = data.status;
-    state.runProgress[sourceId] = progress;
+    current[action] = progress;
+    state.runProgress[sourceId] = current;
     persistRunProgress();
     updateRunProgressDom(sourceId);
     if (data.status === "complete" || data.status === "failed" || data.status === "cancelled") {
       stream.close();
       delete state.runStreams[runId];
-      delete state.runProgress[sourceId];
+      delete current[action];
+      if (Object.keys(current).length) state.runProgress[sourceId] = current;
+      else delete state.runProgress[sourceId];
       persistRunProgress();
       loadStats();
       loadSourcesList();
@@ -2351,14 +2413,25 @@ function trackRun(sourceId, sourceName, action, runId) {
 function ensureActiveRunStreams(sources) {
   if (!isAdmin()) return;
   sources.forEach((source) => {
-    if (!source.active_run_id) return;
-    trackRun(
-      source.id,
-      sourceDisplayName(source),
-      source.active_run_kind || "run",
-      source.active_run_id,
-    );
+    Object.values(activeRuns(source)).forEach((run) => {
+      trackRun(source.id, sourceDisplayName(source), run.action || "crawl", run.id, {
+        percent: Number(run.stats?.percent ?? 0),
+        fetched: Number(run.stats?.fetched ?? source.pages_fetched_total),
+        known: Number(run.stats?.known ?? source.urls_known_total),
+        done: Number(run.stats?.item_done),
+        total: Number(run.stats?.item_total),
+      });
+    });
   });
+}
+
+function normalizeSourceProgress(sourceId) {
+  const progress = state.runProgress[sourceId] || {};
+  if (progress.runId) {
+    const action = progress.action === "parse" ? "parse" : "crawl";
+    state.runProgress[sourceId] = { [action]: progress };
+  }
+  return state.runProgress[sourceId] || {};
 }
 
 function persistRunProgress() {
@@ -2366,12 +2439,17 @@ function persistRunProgress() {
 }
 
 function updateRunProgressDom(sourceId) {
-  const progress = state.runProgress[sourceId];
+  const progress = normalizeSourceProgress(sourceId);
   const row = document.querySelector(`[data-source-id="${CSS.escape(sourceId)}"]`);
   if (!row) return;
   if (!progress) return;
   const lastRun = row.querySelector(".source-last-run");
-  if (lastRun) lastRun.textContent = runProgressText(progress);
+  if (lastRun) {
+    lastRun.textContent = ["crawl", "parse"]
+      .filter((action) => progress[action])
+      .map((action) => runProgressText(progress[action]))
+      .join(" · ");
+  }
 }
 
 /* ───── Source detail ───── */
@@ -2448,7 +2526,7 @@ function renderSourceDetailHead(source) {
         </div>
       </div>
       <div class="source-row-stats source-detail-stats">
-        <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+        <span><strong>${formatNumber(sourcePagesFetched(source))}</strong> pages fetched</span>
         <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
         <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
         <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
@@ -2563,7 +2641,7 @@ async function parseSelectedFetches(sourceId, fetchIds) {
     });
     const data = await response.json().catch(() => ({}));
     if (response.status === 409 && data.error === "already_running") {
-      toast("A run is already in progress", { level: "warning" });
+      toast("Parse is already running", { level: "warning" });
       return;
     }
     if (!response.ok) {

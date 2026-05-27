@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -12,6 +11,7 @@ from backend.class_year import CLASS_YEAR_RE, normalize_class_year
 from backend.db.models import Entity, EntityAlias, EntityMention, EntitySummary
 from backend.db.store import Store, utc_now
 from backend.resolution.embedder import embed_text
+from backend.util.vector import cosine, vector_values
 
 ENTITY_OBJECT_TYPES = {"person", "org", "project", "place", "event"}
 STOPWORDS = {"tuck", "dartmouth", "school", "business", "team", "company"}
@@ -194,7 +194,7 @@ async def _embedding_match(
             if _class_year_compatible(mention_year, _entity_class_year(session, entity))
         ]
     for entity, candidate_year in scored_rows:
-        score = _cosine(mention_embedding, _vector_values(entity.embedding))
+        score = cosine(mention_embedding, vector_values(entity.embedding))
         if mention_year is not None and mention_year == candidate_year:
             score = min(1.0, score + 0.05)
         if best is None or score > best.confidence:
@@ -223,24 +223,3 @@ async def _create_entity(store: Store, mention_text: str, kind: str) -> Resoluti
         )
         session.commit()
         return Resolution(entity.id, "new_entity", 0.75)
-
-
-def _vector_values(vector: object) -> Sequence[float]:
-    if vector is None:
-        return []
-    if hasattr(vector, "tolist"):
-        values = vector.tolist()
-        return values if isinstance(values, list) else list(values)
-    return vector if isinstance(vector, list) else list(vector)
-
-
-def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    if not left or not right:
-        return 0.0
-    size = min(len(left), len(right))
-    dot = sum(left[index] * right[index] for index in range(size))
-    left_norm = sum(value * value for value in left[:size]) ** 0.5
-    right_norm = sum(value * value for value in right[:size]) ** 0.5
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)

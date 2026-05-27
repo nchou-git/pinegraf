@@ -82,7 +82,14 @@ async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypa
 
     monkeypatch.setattr(normalizer, "embed_chunks", fake_embed)
 
-    rebuilt = await run_full_parse(run.id, store=store)
+    parse_run = store.create_source_run(
+        source_id=source.id,
+        kind="parse",
+        spec={"source_id": str(source.id), "scope": "unparsed"},
+        triggered_by="test",
+    )
+
+    rebuilt = await run_full_parse(source.id, store=store, progress_run_id=parse_run.id)
 
     with store.session() as session:
         errik = session.execute(

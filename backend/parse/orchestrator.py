@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from backend.corroboration.runner import corroborate_pending
 from backend.db.store import Store
@@ -18,18 +19,18 @@ class _RunStopped(Exception):
 
 
 async def run_full_parse(
-    source_run_id: uuid.UUID | str,
+    source_id: uuid.UUID | str,
     *,
     store: Store,
     progress_run_id: uuid.UUID | str | None = None,
-    source_id: uuid.UUID | str | None = None,
     scope: str = "unparsed",
     fetch_ids: list[uuid.UUID | str] | None = None,
+    snapshot_at: datetime | str | None = None,
 ) -> set[uuid.UUID]:
-    fetch_run_id = uuid.UUID(str(source_run_id))
-    run_id = uuid.UUID(str(progress_run_id or source_run_id))
-    source_uuid = uuid.UUID(str(source_id)) if source_id is not None else None
+    source_uuid = uuid.UUID(str(source_id))
+    run_id = uuid.UUID(str(progress_run_id or source_id))
     fetch_uuid_list = [uuid.UUID(str(fetch_id)) for fetch_id in (fetch_ids or [])]
+    snapshot = _parse_snapshot(snapshot_at)
     touched: set[uuid.UUID] = set()
     run = store.get_source_run(run_id)
     if run is None or run.status not in ACTIVE_RUN_STATUSES:
@@ -38,21 +39,18 @@ async def run_full_parse(
     try:
         _ensure_run_active(store, run_id)
         _write_progress(store, run_id, stats, "normalization", "Normalizing fetches", 0.0)
-        normalize_kwargs: dict[str, object] = {"store": store}
-        if scope == "all" and source_uuid is not None:
-            normalize_kwargs.update({"source_id": source_uuid, "pending_only": False})
+        normalize_kwargs: dict[str, object] = {"store": store, "source_id": source_uuid}
+        if snapshot is not None:
+            normalize_kwargs["snapshot_at"] = snapshot
+        if scope == "all":
+            normalize_kwargs.update({"pending_only": False})
         elif scope == "fetch_ids":
             normalize_kwargs.update(
                 {
-                    "source_id": source_uuid,
                     "fetch_ids": fetch_uuid_list,
                     "pending_only": False,
                 }
             )
-        elif source_uuid is not None:
-            normalize_kwargs.update({"source_id": source_uuid})
-        else:
-            normalize_kwargs.update({"source_run_id": fetch_run_id})
         documents = await normalize_pending(
             **normalize_kwargs,
             progress=lambda done, total: _item_progress(
@@ -187,3 +185,9 @@ def _ensure_run_active(store: Store, run_id: uuid.UUID) -> None:
     run = store.get_source_run(run_id)
     if run is None or run.status not in ACTIVE_RUN_STATUSES:
         raise _RunStopped
+
+
+def _parse_snapshot(value: datetime | str | None) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))

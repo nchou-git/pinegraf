@@ -63,6 +63,8 @@ class Source(Base):
     trust_weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     respect_robots: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    pages_fetched_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    urls_known_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     display_name: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -85,8 +87,9 @@ class SourceRun(Base):
         Index("ix_source_runs_status", "status"),
         Index("ix_source_runs_started_at_desc", "started_at"),
         Index(
-            "ix_source_runs_one_active_per_source",
+            "ix_source_runs_one_active_per_source_kind",
             "source_id",
+            "kind",
             unique=True,
             postgresql_where=text("status IN ('queued','running')"),
         ),

@@ -67,9 +67,7 @@ def get_settings() -> Settings:
             pinegraf_contact=os.getenv("PINEGRAF_CONTACT", "ops@example.com"),
             max_pages=int(os.getenv("MAX_PAGES", "10000")),
             crawl_concurrency=int(os.getenv("CRAWL_CONCURRENCY", "10")),
-            crawl_liveness_check_interval=int(
-                os.getenv("CRAWL_LIVENESS_CHECK_INTERVAL", "25")
-            ),
+            crawl_liveness_check_interval=int(os.getenv("CRAWL_LIVENESS_CHECK_INTERVAL", "25")),
             auto_parse=os.getenv("PINEGRAF_AUTO_PARSE", "true"),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
             cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),

@@ -114,8 +114,8 @@ FRONTEND_ASSET_HEADERS = {
 SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
-ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source"
-EXPECTED_ALEMBIC_HEAD = "0014_remove_paused_sources"
+ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
+EXPECTED_ALEMBIC_HEAD = "0015_concurrent_source_runs_and_counters"
 
 
 def _slugify(value: str) -> str:
@@ -513,6 +513,9 @@ def create_app(store: Store | None = None) -> FastAPI:
         source = store.get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
+        run_kind = (
+            "sitemap" if source.kind == "domain" else "seed" if source.kind == "file" else None
+        )
         try:
             if source.kind == "domain":
                 run = store.create_source_run(
@@ -536,7 +539,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                     status_code=400, detail=f"crawl not supported for kind={source.kind}"
                 )
         except IntegrityError as exc:
-            return _already_running_from_integrity_error(store, source_id, exc)
+            return _already_running_from_integrity_error(store, source_id, exc, kind=run_kind)
         try:
             await execute_cloud_run_job(run.id, "crawl")
         except Exception as exc:
@@ -600,7 +603,6 @@ def create_app(store: Store | None = None) -> FastAPI:
         try:
             spec: dict[str, object] = {
                 "source_id": str(source.id),
-                "parse_source_run_id": str(latest.id),
                 "scope": payload.scope,
             }
             if payload.scope == "fetch_ids":
@@ -621,7 +623,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                 },
             )
         except IntegrityError as exc:
-            return _already_running_from_integrity_error(store, source_id, exc)
+            return _already_running_from_integrity_error(store, source_id, exc, kind="parse")
         try:
             await execute_cloud_run_job(run.id, "parse")
         except Exception as exc:
@@ -754,9 +756,10 @@ def _warn_if_empty_database_since_deploy(store: Store) -> None:
             version = session.execute(text("select version_num from alembic_version")).scalar_one()
             if version != EXPECTED_ALEMBIC_HEAD:
                 return
-            counts = session.execute(
-                text(
-                    """
+            counts = (
+                session.execute(
+                    text(
+                        """
                     select
                         (select count(*) from sources) as sources,
                         (select count(*) from source_runs) as source_runs,
@@ -767,8 +770,11 @@ def _warn_if_empty_database_since_deploy(store: Store) -> None:
                             where action like '%create%' or action like '%enqueue%'
                         ) as create_audits
                     """
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         if (
             counts["sources"] == 0
             and counts["source_runs"] == 0
@@ -789,9 +795,14 @@ def _warn_if_empty_database_since_deploy(store: Store) -> None:
         )
 
 
-def _active_source_run(store: Store, source_id: uuid.UUID) -> SourceRun | None:
+def _active_source_run(
+    store: Store,
+    source_id: uuid.UUID,
+    *,
+    kind: str | None = None,
+) -> SourceRun | None:
     with store.session() as session:
-        return session.execute(
+        query = (
             select(SourceRun)
             .where(
                 SourceRun.source_id == source_id,
@@ -799,17 +810,22 @@ def _active_source_run(store: Store, source_id: uuid.UUID) -> SourceRun | None:
             )
             .order_by(SourceRun.started_at.desc())
             .limit(1)
-        ).scalar_one_or_none()
+        )
+        if kind is not None:
+            query = query.where(SourceRun.kind == kind)
+        return session.execute(query).scalar_one_or_none()
 
 
 def _already_running_from_integrity_error(
     store: Store,
     source_id: uuid.UUID,
     exc: IntegrityError,
+    *,
+    kind: str | None = None,
 ) -> JSONResponse:
     if not _is_one_active_source_run_error(exc):
         raise exc
-    active_run = _active_source_run(store, source_id)
+    active_run = _active_source_run(store, source_id, kind=kind)
     if active_run is None:
         raise exc
     return _already_running_response(active_run)

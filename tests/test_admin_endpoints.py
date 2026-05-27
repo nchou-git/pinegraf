@@ -100,13 +100,11 @@ def test_crawl_rejects_existing_active_source_run(store, admin_headers, monkeypa
     assert store.table_counts(["source_runs"])["source_runs"] == 1
 
 
-def test_parse_rejects_existing_active_source_run(store, admin_headers, monkeypatch) -> None:
-    called = False
+def test_parse_allows_existing_active_crawl(store, admin_headers, monkeypatch) -> None:
+    queued = []
 
     async def execute_cloud_run_job(run_id, mode: str) -> None:
-        nonlocal called
-        called = True
-        del run_id, mode
+        queued.append((run_id, mode))
 
     monkeypatch.setattr(main_module, "execute_cloud_run_job", execute_cloud_run_job)
     source = store.upsert_source(kind="domain", identifier="example.com")
@@ -117,10 +115,37 @@ def test_parse_rejects_existing_active_source_run(store, admin_headers, monkeypa
         triggered_by="test",
         status="complete",
     )
-    existing = store.create_source_run(
+    crawl = store.create_source_run(
         source_id=source.id,
         kind="sitemap",
         spec={"source_id": str(source.id), "source_input": source.identifier},
+        triggered_by="test",
+        status="running",
+    )
+
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
+
+    assert response.status_code == 200
+    assert store.get_source_run(complete.id).status == "complete"
+    assert store.get_source_run(crawl.id).status == "running"
+    assert queued[0][1] == "parse"
+
+
+def test_parse_rejects_existing_active_parse(store, admin_headers, monkeypatch) -> None:
+    called = False
+
+    async def execute_cloud_run_job(run_id, mode: str) -> None:
+        nonlocal called
+        called = True
+        del run_id, mode
+
+    monkeypatch.setattr(main_module, "execute_cloud_run_job", execute_cloud_run_job)
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    existing = store.create_source_run(
+        source_id=source.id,
+        kind="parse",
+        spec={"source_id": str(source.id), "scope": "unparsed"},
         triggered_by="test",
         status="running",
     )
@@ -135,8 +160,6 @@ def test_parse_rejects_existing_active_source_run(store, admin_headers, monkeypa
         "status": "running",
     }
     assert called is False
-    assert store.get_source_run(complete.id).status == "complete"
-    assert store.get_source_run(existing.id).status == "running"
 
 
 def test_parse_accepts_fetch_id_scope_and_audits(store, admin_headers, monkeypatch) -> None:
@@ -176,6 +199,7 @@ def test_parse_accepts_fetch_id_scope_and_audits(store, admin_headers, monkeypat
         ).scalar_one()
     assert parse_run.spec["scope"] == "fetch_ids"
     assert parse_run.spec["fetch_ids"] == [str(fetch.id)]
+    assert "parse_source_run_id" not in parse_run.spec
     assert queued == [(parse_run.id, "parse")]
     assert audit_response.json()["entries"][0]["payload"]["fetch_ids_count"] == 1
 

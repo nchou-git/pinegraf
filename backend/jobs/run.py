@@ -5,7 +5,7 @@ import logging
 import os
 import uuid
 
-from backend.db.store import Store
+from backend.db.store import Store, utc_now
 from backend.ingestion.orchestrator import run_source_run
 from backend.parse.orchestrator import run_full_parse
 
@@ -41,16 +41,19 @@ async def run_from_env(*, store: Store | None = None) -> None:
         return
     if mode == "parse":
         db.update_source_run(run_id, status="running", clear_finished=True)
-        spec = run.spec or {}
-        parse_source_run_id = spec.get("parse_source_run_id")
+        spec = dict(run.spec or {})
+        snapshot_at = spec.get("snapshot_at")
+        if not snapshot_at:
+            snapshot_at = utc_now().isoformat()
+            db.patch_source_run_spec(run_id, {"snapshot_at": snapshot_at})
         try:
             await run_full_parse(
-                parse_source_run_id or run_id,
+                spec.get("source_id") or run.source_id,
                 store=db,
                 progress_run_id=run_id,
-                source_id=spec.get("source_id"),
                 scope=str(spec.get("scope") or "unparsed"),
                 fetch_ids=list(spec.get("fetch_ids") or []),
+                snapshot_at=snapshot_at,
             )
         except Exception:
             current = db.get_source_run(run_id)

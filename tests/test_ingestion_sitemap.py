@@ -196,10 +196,11 @@ async def test_sitemap_runner_auto_queues_parse_on_completion(
     await run_sitemap(run.id, "https://example.com/sitemap.xml", store=store)
 
     with store.session() as session:
-        parse_run = session.execute(
-            select(SourceRun).where(SourceRun.kind == "parse")
-        ).scalar_one()
-    assert parse_run.spec["parse_source_run_id"] == str(run.id)
+        parse_run = session.execute(select(SourceRun).where(SourceRun.kind == "parse")).scalar_one()
+    assert parse_run.spec["source_id"] == str(source.id)
+    assert parse_run.spec["scope"] == "unparsed"
+    assert parse_run.spec["snapshot_at"]
+    assert "parse_source_run_id" not in parse_run.spec
     assert queued == [(str(parse_run.id), "parse")]
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import func, select
 
-from backend.db.models import Document, DocumentFetch
+from backend.db.models import Document, DocumentFetch, Fetch
+from backend.db.store import utc_now
 from backend.normalization import normalizer
 from backend.normalization.chunker import Chunk
 
@@ -46,6 +49,79 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
         link_count = session.execute(select(func.count()).select_from(DocumentFetch)).scalar_one()
     assert document_count == 1
     assert link_count == 2
+
+
+def test_pending_fetch_ids_are_source_scoped_and_snapshot_filtered(store) -> None:
+    source = store.upsert_source(kind="domain", identifier="scope.example")
+    first_run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={},
+        triggered_by="test",
+        status="complete",
+    )
+    second_run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={},
+        triggered_by="test",
+        status="complete",
+    )
+    other_source = store.upsert_source(kind="domain", identifier="other.example")
+    other_run = store.create_source_run(
+        source_id=other_source.id,
+        kind="sitemap",
+        spec={},
+        triggered_by="test",
+    )
+    previous_unparsed = store.add_fetch(
+        source_run_id=first_run.id,
+        url="https://scope.example/previous",
+        body_bytes=b"previous",
+    )
+    current_unparsed = store.add_fetch(
+        source_run_id=second_run.id,
+        url="https://scope.example/current",
+        body_bytes=b"current",
+    )
+    future_unparsed = store.add_fetch(
+        source_run_id=second_run.id,
+        url="https://scope.example/future",
+        body_bytes=b"future",
+    )
+    parsed = store.add_fetch(
+        source_run_id=first_run.id,
+        url="https://scope.example/parsed",
+        body_bytes=b"parsed",
+    )
+    store.add_fetch(
+        source_run_id=other_run.id,
+        url="https://other.example/unparsed",
+        body_bytes=b"other",
+    )
+    document = store.create_document_with_chunks(
+        content_hash=b"p" * 32,
+        cleaned_text="parsed",
+        title="Parsed",
+        canonical_url="https://scope.example/parsed",
+        language="en",
+        word_count=1,
+        first_seen_fetch_id=parsed.id,
+        chunks=[("parsed", 1, None)],
+    )
+    store.link_document_fetch(document.id, parsed.id)
+
+    snapshot_at = utc_now()
+    with store.session() as session:
+        session.get(Fetch, previous_unparsed.id).fetched_at = snapshot_at - timedelta(minutes=2)
+        session.get(Fetch, current_unparsed.id).fetched_at = snapshot_at - timedelta(minutes=1)
+        session.get(Fetch, parsed.id).fetched_at = snapshot_at - timedelta(minutes=1)
+        session.get(Fetch, future_unparsed.id).fetched_at = snapshot_at + timedelta(minutes=1)
+        session.commit()
+
+    pending = store.pending_fetch_ids(source_id=source.id, snapshot_at=snapshot_at)
+
+    assert pending == [previous_unparsed.id, current_unparsed.id]
 
 
 def test_create_document_with_chunks_returns_existing_document_on_hash_race(store) -> None:

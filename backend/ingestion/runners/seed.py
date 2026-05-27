@@ -22,6 +22,9 @@ async def run_seed(
     store: Store,
 ) -> dict[str, int]:
     run_id = uuid.UUID(str(source_run_id))
+    run = store.get_source_run(run_id)
+    if run is None:
+        raise ValueError(f"source run not found: {run_id}")
     rows = _read_seed_rows(Path(seed_file_path))[: get_settings().max_pages]
     stats = {"queried": 0, "found": 0, "fetched": 0, "missed": 0}
     store.update_source_run(
@@ -57,6 +60,10 @@ async def run_seed(
             break
         if not fetched_for_row:
             stats["missed"] += 1
+        cumulative_fetched, cumulative_known = store.refresh_source_crawl_counters(
+            run.source_id,
+            urls_known_total=max(total, stats["fetched"]),
+        )
         store.update_source_run(
             run_id,
             stats=progress_stats(
@@ -65,12 +72,17 @@ async def run_seed(
                 status="running",
                 message="Crawling seed rows",
                 percent=index / max(total, 1) * 100,
+                data={"fetched": cumulative_fetched, "known": cumulative_known},
             ),
         )
 
     status = "complete" if stats["missed"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["missed"] > 0:
         status = "failed"
+    cumulative_fetched, cumulative_known = store.refresh_source_crawl_counters(
+        run.source_id,
+        urls_known_total=max(total, stats["fetched"]),
+    )
     store.update_source_run(
         run_id,
         status=status,
@@ -80,6 +92,7 @@ async def run_seed(
             status="failed" if status == "failed" else "complete",
             message=status,
             percent=100.0,
+            data={"fetched": cumulative_fetched, "known": cumulative_known},
         ),
         finished=True,
     )

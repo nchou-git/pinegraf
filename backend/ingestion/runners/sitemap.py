@@ -151,6 +151,13 @@ async def run_sitemap(
     store: Store,
 ) -> dict[str, int]:
     run_id = uuid.UUID(str(source_run_id))
+    run = store.get_source_run(run_id)
+    if run is None:
+        raise ValueError(f"source run not found: {run_id}")
+    source_id = run.source_id
+    source = store.get_source(source_id)
+    baseline_fetched = int(source.pages_fetched_total or 0) if source else 0
+    baseline_known = int(source.urls_known_total or 0) if source else 0
     stats: dict[str, int] = {"fetched": 0, "errors": 0}
     root_host = _root_host(source_input)
     if not root_host:
@@ -373,8 +380,30 @@ async def run_sitemap(
 
                 async with stats_lock:
                     stats["fetched"] += 1
-                    known = stats["fetched"] + queue.qsize() + max(reserved - 1, 0)
-                    raw_percent = round(100.0 * stats["fetched"] / known, 1) if known else 0.0
+                    local_known = stats["fetched"] + queue.qsize() + max(reserved - 1, 0)
+                    cumulative_floor = max(
+                        baseline_known,
+                        baseline_fetched + local_known,
+                    )
+                    should_refresh = stats["fetched"] % HOST_PACING_STATS_INTERVAL == 0
+                    if should_refresh:
+                        cumulative_fetched, cumulative_known = store.refresh_source_crawl_counters(
+                            source_id,
+                            urls_known_total=cumulative_floor,
+                        )
+                    else:
+                        cumulative_fetched = baseline_fetched + stats["fetched"]
+                        cumulative_known = max(baseline_known, cumulative_floor, cumulative_fetched)
+                        store.update_source_crawl_counters(
+                            source_id,
+                            pages_fetched_total=cumulative_fetched,
+                            urls_known_total=cumulative_known,
+                        )
+                    raw_percent = (
+                        round(100.0 * cumulative_fetched / cumulative_known, 1)
+                        if cumulative_known
+                        else 0.0
+                    )
                     displayed_percent = round(min(99.9, max(highest_percent, raw_percent)), 1)
                     highest_percent = displayed_percent
                     fetched = stats["fetched"]
@@ -390,7 +419,8 @@ async def run_sitemap(
                         message="Retrieving documents",
                         percent=displayed_percent,
                         data={
-                            "known": known,
+                            "fetched": cumulative_fetched,
+                            "known": cumulative_known,
                             "raw_percent": raw_percent,
                             **({"host_pacing": pacing} if pacing is not None else {}),
                         },
@@ -405,7 +435,7 @@ async def run_sitemap(
                         url=final_url,
                         discovered=discovered_count,
                         fetched=fetched,
-                        known=known,
+                        known=cumulative_known,
                     )
                 if not await check_liveness(force=True):
                     continue
@@ -413,7 +443,7 @@ async def run_sitemap(
                 _log_fetch_decision(
                     (
                         f"Retrieved {_display_url(final_url)} — "
-                        f"{fetched}/{known} known ({raw_percent}%)"
+                        f"{cumulative_fetched}/{cumulative_known} known ({raw_percent}%)"
                     ),
                     event="retrieved",
                     url=final_url,
@@ -421,7 +451,7 @@ async def run_sitemap(
                     discovery_method=method,
                     http_status=result.status,
                     fetched=fetched,
-                    known=known,
+                    known=cumulative_known,
                     raw_percent=raw_percent,
                     displayed_percent=displayed_percent,
                 )
@@ -442,8 +472,12 @@ async def run_sitemap(
     status = "complete" if stats["errors"] == 0 else "partial"
     if stats["fetched"] == 0 and stats["errors"] > 0:
         status = "failed"
-    final_known = stats["fetched"] + queue.qsize()
-    final_raw_percent = round(100.0 * stats["fetched"] / final_known, 1) if final_known else 0.0
+    final_local_known = stats["fetched"] + queue.qsize()
+    final_fetched, final_known = store.refresh_source_crawl_counters(
+        source_id,
+        urls_known_total=final_local_known,
+    )
+    final_raw_percent = round(100.0 * final_fetched / final_known, 1) if final_known else 0.0
     store.update_source_run(
         run_id,
         status=status,
@@ -454,7 +488,7 @@ async def run_sitemap(
             message=status,
             percent=100.0,
             data={
-                "fetched": stats["fetched"],
+                "fetched": final_fetched,
                 "known": final_known,
                 "raw_percent": final_raw_percent,
                 "host_pacing": host_pacing_snapshot(),
