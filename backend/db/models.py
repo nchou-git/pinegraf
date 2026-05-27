@@ -52,7 +52,7 @@ class Source(Base):
             name="ck_sources_trust_weight",
         ),
         CheckConstraint(
-            "status in ('active','paused','archived')",
+            "status in ('active','archived')",
             name="ck_sources_status",
         ),
     )

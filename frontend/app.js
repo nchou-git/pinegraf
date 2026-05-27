@@ -1641,27 +1641,13 @@ async function renderSources(parts) {
     <div class="sources-list" id="sources-list" data-source-list="active">
       ${sourceSkeletonRow()}
     </div>
-    ${
-      isAdmin()
-        ? `<details class="conflicts archived-sources" open>
-             <summary>
-               <i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>
-               <span id="conflict-summary-text">Conflicts (0 unresolved)</span>
-             </summary>
-             <div id="conflicts-body"><div class="muted small">Loading…</div></div>
-           </details>`
-        : ""
-    }
   `;
   if (isAdmin()) {
     byId("add-source").onclick = openAddSourceModal;
   }
   setupStatInfoButtons();
-  await Promise.all([
-    loadSourcesStats(),
-    loadSourcesList(),
-    isAdmin() ? loadAdminConflicts() : Promise.resolve(),
-  ]);
+  await Promise.all([loadSourcesStats(), loadSourcesList()]);
+  if (isAdmin()) await loadAdminConflicts();
 }
 
 async function loadSourcesStats() {
@@ -1737,13 +1723,12 @@ async function loadSourcesList() {
     state.sourcesCache = sources;
     state.sourcesError = null;
     const active = sources.filter((s) => s.status === "active");
-    const paused = sources.filter((s) => s.status === "paused");
     const archivedCount = archivedSources.length;
     const pageSubtitle = byId("page-subtitle");
     if (pageSubtitle) {
       pageSubtitle.textContent = isAdmin()
-        ? `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused · ${formatNumber(archivedCount)} archived`
-        : `${formatNumber(active.length)} active · ${formatNumber(paused.length)} paused`;
+        ? `${formatNumber(active.length)} active · ${formatNumber(archivedCount)} archived`
+        : `${formatNumber(active.length)} active`;
     }
     if (!sources.length && (!isAdmin() || !archivedSources.length)) {
       list.innerHTML = sourceEmptyState();
@@ -1767,6 +1752,16 @@ async function loadSourcesList() {
                     ? archivedSources.map((source) => sourceRow(source, { archived: true })).join("")
                     : `<div class="empty-state sources-empty compact"><i class="ti ti-archive-off" aria-hidden="true"></i><div>No archived sources.</div></div>`
                 }
+              </div>
+            </details>`
+          : ""
+      }
+      ${
+        isAdmin()
+          ? `<details class="archived-sources" open>
+              <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span id="conflict-summary-text">Conflicts (0 unresolved)</span></summary>
+              <div class="archived-sources-list" id="conflicts-body">
+                <div class="muted small">Loading...</div>
               </div>
             </details>`
           : ""
@@ -1809,17 +1804,12 @@ function setupSourceRows(root, sources, { archived }) {
     }
     const crawl = row.querySelector("[data-action=crawl]");
     const parse = row.querySelector("[data-action=parse]");
-    const resume = row.querySelector("[data-action=resume]");
     const unarchive = row.querySelector("[data-action=unarchive]");
     const destroy = row.querySelector("[data-action=delete]");
-    const cancel = row.querySelector("[data-action=cancel]");
+    const cancelButtons = row.querySelectorAll("[data-action=cancel]");
     const menuBtn = row.querySelector("[data-action=menu]");
     if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
-    if (resume) resume.onclick = (e) => {
-      e.stopPropagation();
-      resumeSourceRun(source);
-    };
     if (unarchive) unarchive.onclick = (e) => {
       e.stopPropagation();
       updateSourceStatus(source.id, "active");
@@ -1829,16 +1819,23 @@ function setupSourceRows(root, sources, { archived }) {
       const listKind = row.closest("[data-source-list]")?.dataset.sourceList || (archived ? "archived" : "active");
       confirmDeleteSource(source, listKind);
     };
-    if (cancel) cancel.onclick = async (e) => {
-      e.stopPropagation();
-      await cancelSourceRun(source);
-    };
+    cancelButtons.forEach((cancel) => {
+      cancel.onclick = async (e) => {
+        e.stopPropagation();
+        await cancelSourceRun(source, cancel.dataset.runKind);
+      };
+    });
     if (menuBtn) menuBtn.onclick = (e) => {
       e.stopPropagation();
       toggleMenu(row, source.id);
     };
     if (source?.active_run_id && isAdmin()) {
-      trackRun(source.id, sourceDisplayName(source), "run", source.active_run_id);
+      trackRun(
+        source.id,
+        sourceDisplayName(source),
+        source.active_run_kind || "crawl",
+        source.active_run_id,
+      );
     }
     if (state.runProgress[source.id]) updateRunProgressDom(source.id);
   });
@@ -2017,17 +2014,13 @@ async function deleteArchivedSource(source) {
 
 function sourceRow(source, options = {}) {
   const archived = Boolean(options.archived);
-  const paused = source.status === "paused";
   const kindLabel = sourceKindLabel(source);
   const kindIcon = sourceKindIcon(source);
   const progress = state.runProgress[source.id];
   const hasActiveRun = Boolean(source.active_run_id);
-  const actions = sourceRowActions(source, { archived, paused, progress, hasActiveRun });
-  const progressStrip = !archived && hasActiveRun
-    ? (progress ? runProgressMarkup(progress) : runStartingMarkup(source.active_run_id))
-    : "";
+  const actions = sourceRowActions(source, { archived, progress, hasActiveRun });
   return `
-    <article class="source-row ${paused ? "paused" : ""} ${archived ? "archived" : ""}" data-source-id="${escapeAttr(source.id)}">
+    <article class="source-row ${archived ? "archived" : ""}" data-source-id="${escapeAttr(source.id)}">
       <div class="source-row-top">
         <div class="source-row-main">
           <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
@@ -2043,8 +2036,7 @@ function sourceRow(source, options = {}) {
           <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
           <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
           <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
-          <span class="muted source-last-run">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
-          ${runProgressSummaryMarkup(source, progress)}
+          <span class="muted source-last-run">${sourceRunStatusText(source, progress)}</span>
           <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
         </div>
         ${
@@ -2053,67 +2045,60 @@ function sourceRow(source, options = {}) {
             : ""
         }
       </div>
-      ${progressStrip}
     </article>
   `;
 }
 
-function sourceRowActions(source, { archived, paused, progress, hasActiveRun }) {
+function sourceRowActions(source, { archived, progress, hasActiveRun }) {
   if (archived) {
     return `<button class="btn-secondary" data-action="unarchive" type="button">Unarchive</button>
       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
   }
-  if (hasActiveRun) {
-    return `<button class="btn-danger-outline" data-action="cancel" type="button"><i class="ti ti-x"></i> Cancel</button>`;
-  }
-  if (paused) {
-    return `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`;
-  }
+  const activeKind = activeRunKind(source, progress);
   const menuButton = isAdmin()
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
-  return `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
-    <button class="btn-source" data-action="parse" title="Parse fetched documents that have not been parsed yet"><i class="ti ti-cpu"></i> Parse</button>
+  return `${sourceActionButton("crawl", activeKind === "crawl" && hasActiveRun)}
+    ${sourceActionButton("parse", activeKind === "parse" && hasActiveRun)}
     ${menuButton}`;
 }
 
-function runStartingMarkup(runId) {
-  return `
-    <div class="run-progress is-starting" data-run-id="${escapeAttr(runId)}">
-      <div class="run-progress-track">
-        <div class="run-progress-fill"></div>
-      </div>
-    </div>
-  `;
+function sourceActionButton(kind, isCancel) {
+  if (isCancel) {
+    return `<button class="btn-danger-outline" data-action="cancel" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-x"></i> Cancel</button>`;
+  }
+  if (kind === "parse") {
+    return `<button class="btn-source" data-action="parse" title="Parse fetched documents that have not been parsed yet"><i class="ti ti-cpu"></i> Parse</button>`;
+  }
+  return `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>`;
 }
 
-function runProgressMarkup(progress) {
-  return `
-    <div class="run-progress" data-run-id="${escapeAttr(progress.runId)}">
-      <div class="run-progress-track">
-        <div class="run-progress-fill"></div>
-      </div>
-    </div>
-  `;
+function activeRunKind(source, progress) {
+  const action = progress?.action || source?.active_run_kind || "crawl";
+  return action === "parse" ? "parse" : "crawl";
 }
 
-function runProgressSummaryMarkup(source, progress) {
-  if (!source.active_run_id) return "";
-  return `<span class="muted run-progress-summary">${escapeHtml(runProgressSummary(progress))}</span>`;
+function sourceRunStatusText(source, progress) {
+  if (!source.active_run_id) {
+    return source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run";
+  }
+  return runProgressText(progress || { action: source.active_run_kind || "crawl" });
 }
 
-function runProgressSummary(progress) {
-  if (!progress) return "Active";
-  const parts = ["Active"];
+function runProgressText(progress) {
+  const action = progress?.action === "parse" ? "parse" : "crawl";
+  const label = action === "parse" ? "Parsing" : "Crawling";
   const count = runProgressCount(progress);
-  if (count) parts.push(count);
-  parts.push(`${Number(progress.percent || 0).toFixed(1)}%`);
-  return parts.join(" · ");
+  const percent = Number(progress?.percent || 0).toFixed(1);
+  return count ? `${label} ${count} (${percent}%)` : `${label} (${percent}%)`;
 }
 
 function runProgressCount(progress) {
   const throttled = throttledDelay(progress);
   if (throttled > 2000) return `Throttled (${formatNumber(throttled)}ms)`;
+  if (progress?.action === "parse" && Number.isFinite(progress.done) && Number.isFinite(progress.total)) {
+    return `${formatNumber(progress.done)} / ${formatNumber(progress.total)} docs`;
+  }
   if (!Number.isFinite(progress.fetched) || !Number.isFinite(progress.known)) return "";
   return `${formatNumber(progress.fetched)} / ${formatNumber(progress.known)}`;
 }
@@ -2163,13 +2148,11 @@ function toggleMenu(container, sourceId) {
   }
   document.querySelectorAll(".menu").forEach((m) => m.remove());
   const source = (state.sourcesCache || []).find((s) => s.id === sourceId);
-  const isPaused = source && source.status === "paused";
   const menu = document.createElement("div");
   menu.className = "menu";
   menu.innerHTML = `
     <button class="menu-item" data-act="rename"><i class="ti ti-pencil"></i> Rename</button>
     ${source && source.kind === "file" ? `<button class="menu-item" data-act="download"><i class="ti ti-download"></i> Download original</button>` : ""}
-    ${isPaused ? "" : `<button class="menu-item" data-act="pause"><i class="ti ti-player-pause"></i> Pause</button>`}
     <button class="menu-item" data-act="archive"><i class="ti ti-archive"></i> Archive</button>
     <button class="menu-item danger" data-act="delete"><i class="ti ti-trash"></i> Delete permanently</button>
   `;
@@ -2201,9 +2184,6 @@ async function handleMenuAction(action, sourceId) {
     const name = prompt("New display name", source.display_name || source.identifier);
     if (!name) return;
     await patchSource(sourceId, { display_name: name });
-    loadSourcesList();
-  } else if (action === "pause") {
-    await patchSource(sourceId, { status: "paused" });
     loadSourcesList();
   } else if (action === "archive") {
     try {
@@ -2258,17 +2238,6 @@ async function updateSourceStatus(id, status) {
   }
 }
 
-async function resumeSourceRun(source) {
-  if (!source?.id || !isAdmin()) return;
-  try {
-    await patchSource(source.id, { status: "active" });
-    await loadSourcesList();
-    await runSourceAction(source.id, "crawl");
-  } catch (error) {
-    toast(normalizeErrorMessage(error), { level: "error" });
-  }
-}
-
 async function runSourceAction(sourceId, action) {
   if (!isAdmin()) return;
   const source = (state.sourcesCache || []).find((item) => item.id === sourceId);
@@ -2301,7 +2270,7 @@ async function runSourceAction(sourceId, action) {
   }
 }
 
-async function cancelSourceRun(source) {
+async function cancelSourceRun(source, kind) {
   if (!source?.active_run_id || !isAdmin()) return;
   setSourceActionButtonsDisabled(source.id, true);
   try {
@@ -2313,7 +2282,9 @@ async function cancelSourceRun(source) {
     }
     delete state.runProgress[source.id];
     await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
-    toast("Run cancelled", { level: "success" });
+    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} cancelled`, {
+      level: "success",
+    });
   } catch (error) {
     toast(normalizeErrorMessage(error), { level: "error" });
     setSourceActionButtonsDisabled(source.id, false);
@@ -2330,7 +2301,6 @@ function sourceActionButtons(sourceId) {
   return document.querySelectorAll(
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=resume], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=cancel]`,
   );
 }
@@ -2357,6 +2327,8 @@ function trackRun(sourceId, sourceName, action, runId) {
     progress.percent = Number(data.percent || 0);
     progress.fetched = Number(progressData.fetched);
     progress.known = Number(progressData.known);
+    progress.done = Number(progressData.item_done);
+    progress.total = Number(progressData.item_total);
     progress.host_pacing = progressData.host_pacing || progress.host_pacing || {};
     progress.status = data.status;
     state.runProgress[sourceId] = progress;
@@ -2398,14 +2370,8 @@ function updateRunProgressDom(sourceId) {
   const row = document.querySelector(`[data-source-id="${CSS.escape(sourceId)}"]`);
   if (!row) return;
   if (!progress) return;
-  if (!row.querySelector(".run-progress")) {
-    row.insertAdjacentHTML("beforeend", runProgressMarkup(progress));
-  }
-  const percent = Number(progress.percent || 0).toFixed(1);
-  const fill = row.querySelector(".run-progress-fill");
-  const summary = row.querySelector(".run-progress-summary");
-  if (fill) fill.style.width = `${percent}%`;
-  if (summary) summary.textContent = runProgressSummary(progress);
+  const lastRun = row.querySelector(".source-last-run");
+  if (lastRun) lastRun.textContent = runProgressText(progress);
 }
 
 /* ───── Source detail ───── */
@@ -2794,7 +2760,7 @@ function renderSourceRuns(detail) {
             (r) => `
           <tr>
             <td>${escapeHtml(sourceRunKindLabel(r.kind))}</td>
-            <td><span class="status-pill ${r.status === "complete" ? "active" : r.status === "running" ? "running" : "paused"}">${escapeHtml(r.status)}</span></td>
+            <td><span class="status-pill ${r.status === "complete" ? "active" : escapeAttr(r.status || "")}">${escapeHtml(r.status)}</span></td>
             <td class="muted small">${escapeHtml(timeAgo(r.started_at))}</td>
             <td class="muted small">${r.finished_at ? escapeHtml(timeAgo(r.finished_at)) : "—"}</td>
             <td class="num muted small">${r.stats ? escapeHtml(JSON.stringify(r.stats)) : "—"}</td>
@@ -2978,9 +2944,16 @@ async function loadAdminConflicts() {
     });
     if (!data) return;
     const rows = data.results || [];
-    byId("conflict-summary-text").textContent = `Conflicts (${formatNumber(data.total || 0)} unresolved)`;
+    const summary = byId("conflict-summary-text");
+    if (summary) {
+      summary.textContent = `Conflicts (${formatNumber(data.total || 0)} unresolved)`;
+    }
     if (!rows.length) {
-      byId("conflicts-body").innerHTML = `<div class="muted small">No conflicts. Sources agree (or there is no data yet).</div>`;
+      byId("conflicts-body").innerHTML = `
+        <div class="empty-state sources-empty compact">
+          <i class="ti ti-alert-triangle-off" aria-hidden="true"></i>
+          <div>No conflicts. Sources agree.</div>
+        </div>`;
       return;
     }
     byId("conflicts-body").innerHTML = rows

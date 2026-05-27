@@ -341,8 +341,10 @@ input[type="file"]::file-selector-button {
   color: var(--green);
 }
 
-.status-pill.paused,
-.status-pill.archived {
+.status-pill.archived,
+.status-pill.cancelled,
+.status-pill.failed,
+.status-pill.partial {
   background-color: var(--surface);
   color: var(--text-muted);
 }

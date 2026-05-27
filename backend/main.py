@@ -77,7 +77,7 @@ class SourceUpdate(BaseModel):
     display_name: str | None = None
     trust_weight: float | None = Field(default=None, ge=0, le=1)
     respect_robots: bool | None = None
-    status: Literal["active", "paused", "archived"] | None = None
+    status: Literal["active", "archived"] | None = None
     notes: str | None = None
 
 
@@ -115,7 +115,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source"
-EXPECTED_ALEMBIC_HEAD = "0013_audit_log"
+EXPECTED_ALEMBIC_HEAD = "0014_remove_paused_sources"
 
 
 def _slugify(value: str) -> str:

@@ -149,7 +149,15 @@ async def _item_progress(
     if run is None or run.status not in ACTIVE_RUN_STATUSES:
         raise _RunStopped
     stats = dict(run.stats or {}) if run else {}
-    _write_progress(store, run_id, stats, stage, message, percent)
+    _write_progress(
+        store,
+        run_id,
+        stats,
+        stage,
+        message,
+        percent,
+        data={"item_done": done, "item_total": total},
+    )
 
 
 def _write_progress(
@@ -159,6 +167,7 @@ def _write_progress(
     stage: str,
     message: str,
     percent: float,
+    data: dict[str, object] | None = None,
 ) -> None:
     _ensure_run_active(store, run_id)
     store.update_source_run(
@@ -169,6 +178,7 @@ def _write_progress(
             status="running",
             message=message,
             percent=percent,
+            data=data,
         ),
     )
 
