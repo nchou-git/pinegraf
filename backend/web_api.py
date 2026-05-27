@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from openai import AsyncOpenAI
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from backend.class_year import expand_class_year_synonyms
@@ -830,6 +830,157 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
                 for raw in claims_raw
             ],
         }
+
+
+def raw_document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] | None:
+    with store.session() as session:
+        document = session.get(Document, document_id)
+        if document is None:
+            return None
+        chunks = list(
+            session.execute(
+                select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ordinal.asc())
+            ).scalars()
+        )
+        return {
+            "id": str(document.id),
+            "document_id": str(document.id),
+            "canonical_url": document.canonical_url,
+            "title": document.title,
+            "language": document.language,
+            "word_count": document.word_count,
+            "valid_from": document.valid_from.isoformat() if document.valid_from else None,
+            "cleaned_text": document.cleaned_text,
+            "chunk_count": len(chunks),
+            "chunks": [
+                {
+                    "chunk_id": str(chunk.id),
+                    "ordinal": chunk.ordinal,
+                    "char_count": len(chunk.text or ""),
+                }
+                for chunk in chunks
+            ],
+        }
+
+
+def raw_chunk_detail(store: Store, chunk_id: uuid.UUID) -> dict[str, object] | None:
+    with store.session() as session:
+        row = session.execute(
+            select(Chunk, Document)
+            .join(Document, Document.id == Chunk.document_id)
+            .where(Chunk.id == chunk_id)
+        ).one_or_none()
+        if row is None:
+            return None
+        chunk, document = row
+        raw_rows = list(
+            session.execute(
+                select(ClaimRaw)
+                .where(ClaimRaw.chunk_id == chunk.id)
+                .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
+            ).scalars()
+        )
+        return {
+            "id": str(chunk.id),
+            "chunk_id": str(chunk.id),
+            "text": chunk.text,
+            "ordinal": chunk.ordinal,
+            "document_id": str(document.id),
+            "document": {
+                "id": str(document.id),
+                "canonical_url": document.canonical_url,
+                "title": document.title,
+            },
+            "claim_raw": [
+                {
+                    "id": str(raw.id),
+                    "subject_text": raw.subject_text,
+                    "predicate": raw.predicate,
+                    "object_text": raw.object_text,
+                    "raw_quote": raw.raw_quote,
+                }
+                for raw in raw_rows
+            ],
+        }
+
+
+def list_raw_claims(
+    store: Store,
+    *,
+    q: str = "",
+    predicate: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, object]:
+    page = max(1, page)
+    page_size = min(max(page_size, 1), 200)
+    q = q.strip()
+    predicate = predicate.strip()
+    filters = []
+    if q:
+        pattern = f"%{q}%"
+        filters.append(
+            or_(ClaimRaw.subject_text.ilike(pattern), ClaimRaw.object_text.ilike(pattern))
+        )
+    if predicate:
+        filters.append(ClaimRaw.predicate == predicate)
+
+    promoted = exists(
+        select(1).select_from(ClaimEvidence).where(ClaimEvidence.claim_raw_id == ClaimRaw.id)
+    )
+    with store.session() as session:
+        count_query = (
+            select(func.count())
+            .select_from(ClaimRaw)
+            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+            .join(Document, Document.id == Chunk.document_id)
+        )
+        rows_query = (
+            select(ClaimRaw, Chunk, Document, promoted.label("promoted_to_claim"))
+            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
+            .join(Document, Document.id == Chunk.document_id)
+            .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        if filters:
+            count_query = count_query.where(*filters)
+            rows_query = rows_query.where(*filters)
+        total = session.execute(count_query).scalar_one()
+        rows = list(session.execute(rows_query).all())
+
+    results = []
+    for raw, chunk, document, promoted_to_claim in rows:
+        promoted_bool = bool(promoted_to_claim)
+        results.append(
+            {
+                "id": str(raw.id),
+                "claim_raw_id": str(raw.id),
+                "chunk_id": str(chunk.id),
+                "document_id": str(document.id),
+                "canonical_url": document.canonical_url,
+                "document": {
+                    "id": str(document.id),
+                    "canonical_url": document.canonical_url,
+                    "title": document.title,
+                },
+                "subject_text": raw.subject_text,
+                "predicate": raw.predicate,
+                "object_text": raw.object_text,
+                "raw_quote": raw.raw_quote,
+                "promoted_to_claim": promoted_bool,
+                "promotion_status": "promoted" if promoted_bool else "filtered_out",
+                "extracted_at": raw.extracted_at.isoformat(),
+            }
+        )
+    return {
+        "claim_raw": results,
+        "results": results,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "filters_applied": {"q": q, "predicate": predicate},
+    }
 
 
 def update_source(

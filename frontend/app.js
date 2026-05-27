@@ -17,6 +17,10 @@ const state = {
   claimsPage: 1,
   claimsFilters: { q: "", predicate: "", source_id: "", min_confidence: 0, status: "current" },
   claimPredicates: [],
+  rawDataPage: 1,
+  rawDataFilters: { q: "", predicate: "" },
+  rawDataExpanded: {},
+  rawDataChunks: {},
   sourcesCache: null,
   sourcesError: null,
   runProgress: readSessionJSON(RUN_PROGRESS_KEY, {}),
@@ -38,11 +42,8 @@ const TAB_DEFS = [
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
 ];
-const IDENTITY_REVIEW_TAB = {
-  id: "identity-review",
-  label: "Identity Review",
-  icon: "ti-user-question",
-};
+const RAW_DATA_TAB = { id: "raw", label: "Raw data", icon: "ti-database-search" };
+const CONFLICTS_TAB = { id: "conflicts", label: "Conflicts", icon: "ti-alert-triangle" };
 const LOGS_TAB = { id: "logs", label: "Logs", icon: "ti-terminal-2" };
 
 const SOURCE_KINDS = [
@@ -198,7 +199,13 @@ function renderShell() {
 }
 
 function navTabs() {
-  return isAdmin() ? [...TAB_DEFS, IDENTITY_REVIEW_TAB, LOGS_TAB] : TAB_DEFS;
+  if (!isAdmin()) return TAB_DEFS;
+  const tabs = [];
+  TAB_DEFS.forEach((tab) => {
+    tabs.push(tab);
+    if (tab.id === "claims") tabs.push(RAW_DATA_TAB);
+  });
+  return [...tabs, CONFLICTS_TAB, LOGS_TAB];
 }
 
 function isAdmin() {
@@ -300,7 +307,19 @@ function renderRoute() {
     renderShell();
     return renderLogs();
   }
-  if (tab === "identity-review") {
+  if (tab === "conflicts") {
+    if (!state.me?.is_admin) {
+      history.replaceState(null, "", "#directory");
+      renderShell();
+      return renderDirectory();
+    }
+    const section = rest[0] === "identity" ? "identity" : "facts";
+    if (!rest[0]) history.replaceState(null, "", "#conflicts/facts");
+    closeMobileSidebar();
+    renderShell();
+    return renderConflictsPage(section);
+  }
+  if (tab === "raw") {
     if (!state.me?.is_admin) {
       history.replaceState(null, "", "#directory");
       renderShell();
@@ -308,7 +327,7 @@ function renderRoute() {
     }
     closeMobileSidebar();
     renderShell();
-    return renderIdentityReview();
+    return renderRawData();
   }
   closeMobileSidebar();
   renderShell();
@@ -1173,6 +1192,255 @@ function claimEntityCard(label, entity) {
       ${entity?.id ? `<a href="#graph/${escapeAttr(entity.id)}">Open entity</a>` : ""}
     </div>
   `;
+}
+
+/* ───── Raw Data ───── */
+
+async function renderRawData() {
+  setPageHeader({
+    title: "Raw data",
+    subtitle: "Inspect raw extraction rows, chunks, and cleaned documents.",
+  });
+  byId("app").innerHTML = `
+    <div class="directory-page raw-data-page">
+      <section class="directory-filter-bar raw-filter-bar">
+        <label class="directory-search input-with-icon">
+          <i class="ti ti-search icon" aria-hidden="true"></i>
+          <input class="input" id="raw-q" placeholder="Search subject or object" value="${escapeAttr(state.rawDataFilters.q)}" />
+        </label>
+        <input class="input raw-predicate-input" id="raw-predicate" placeholder="Predicate" value="${escapeAttr(state.rawDataFilters.predicate)}" />
+        <button class="btn-secondary" id="raw-search" type="button">Search</button>
+      </section>
+      <section class="directory-results" id="raw-results">
+        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
+      </section>
+      <div class="pagination directory-pagination" id="raw-pagination"></div>
+    </div>
+  `;
+  const reload = () => {
+    state.rawDataFilters.q = byId("raw-q").value.trim();
+    state.rawDataFilters.predicate = byId("raw-predicate").value.trim();
+    state.rawDataPage = 1;
+    loadRawData();
+  };
+  byId("raw-search").onclick = reload;
+  byId("raw-q").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") reload();
+  });
+  byId("raw-predicate").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") reload();
+  });
+  await loadRawData();
+}
+
+async function loadRawData() {
+  const target = byId("raw-results");
+  const params = new URLSearchParams({
+    q: state.rawDataFilters.q || "",
+    predicate: state.rawDataFilters.predicate || "",
+    page: String(state.rawDataPage),
+    page_size: "50",
+  });
+  try {
+    const data = await loadAdminPanelData(`/admin/raw/claim-raw?${params.toString()}`, {
+      targetId: "raw-results",
+      title: "Sign in to inspect raw data",
+    });
+    if (!data) return;
+    const rows = data.claim_raw || data.results || [];
+    if (!rows.length) {
+      target.innerHTML = `<div class="empty-state"><i class="ti ti-database-search" aria-hidden="true"></i><div>No raw claims matched.</div></div>`;
+    } else {
+      target.innerHTML = rawDataTable(rows);
+      attachRawDataRows(target);
+    }
+    renderRawPagination(data.page || 1, Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 50))));
+    setPageHeader({
+      title: "Raw data",
+      subtitle: `${formatNumber(data.total || 0)} raw extraction rows`,
+    });
+  } catch (error) {
+    target.innerHTML = `<div class="muted small">Unable to load raw data: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function rawDataTable(rows) {
+  return `
+    <table class="directory-table raw-data-table">
+      <thead>
+        <tr>
+          <th>Subject</th>
+          <th>Predicate</th>
+          <th>Object</th>
+          <th>Quote</th>
+          <th>Source URL</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `${rawDataRow(row)}${rawExpandedRow(row)}`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function rawDataRow(row) {
+  const expanded = Boolean(state.rawDataExpanded[row.id]);
+  return `
+    <tr class="directory-table-row raw-data-row ${expanded ? "active" : ""}" data-raw-id="${escapeAttr(row.id)}" data-chunk-id="${escapeAttr(row.chunk_id)}">
+      <td>${escapeHtml(row.subject_text || "")}</td>
+      <td><span class="claim-predicate">${escapeHtml(row.predicate || "")}</span></td>
+      <td>${escapeHtml(row.object_text || "")}</td>
+      <td>${escapeHtml(row.raw_quote || "")}</td>
+      <td>${escapeHtml(row.canonical_url || row.document?.canonical_url || "")}</td>
+    </tr>
+  `;
+}
+
+function rawExpandedRow(row) {
+  if (!state.rawDataExpanded[row.id]) return "";
+  const chunk = state.rawDataChunks[row.chunk_id];
+  const quote = row.raw_quote || "";
+  const body = chunk
+    ? `
+        <div class="raw-expanded-meta">
+          <a href="${escapeAttr(chunk.document?.canonical_url || row.canonical_url || "")}" target="_blank" rel="noreferrer">${escapeHtml(chunk.document?.canonical_url || row.canonical_url || "Source URL")}</a>
+          <button class="btn-ghost raw-document-button" type="button" data-document-id="${escapeAttr(chunk.document_id || row.document_id)}">View full document</button>
+        </div>
+        <div class="raw-chunk-text">${highlightRawQuote(chunk.text || "", quote)}</div>
+        ${rawChunkClaims(chunk.claim_raw || [])}
+      `
+    : `<div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading chunk...</div></div>`;
+  return `
+    <tr class="raw-expanded-row" data-raw-expanded="${escapeAttr(row.id)}">
+      <td colspan="5">${body}</td>
+    </tr>
+  `;
+}
+
+function rawChunkClaims(rows) {
+  if (!rows.length) return "";
+  return `
+    <div class="raw-claim-list">
+      <div class="muted small">Raw claims from this chunk</div>
+      ${rows
+        .map(
+          (row) =>
+            `<div class="raw-claim-item"><strong>${escapeHtml(row.subject_text)}</strong> ${escapeHtml(row.predicate)} ${escapeHtml(row.object_text || "")}</div>`,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function attachRawDataRows(root) {
+  root.querySelectorAll("[data-raw-id]").forEach((row) => {
+    row.onclick = async () => {
+      const rawId = row.dataset.rawId;
+      const chunkId = row.dataset.chunkId;
+      state.rawDataExpanded[rawId] = !state.rawDataExpanded[rawId];
+      const tableRows = Array.from(root.querySelectorAll("[data-raw-id]")).map((item) => ({
+        id: item.dataset.rawId,
+        chunk_id: item.dataset.chunkId,
+        subject_text: item.cells[0]?.textContent || "",
+        predicate: item.cells[1]?.textContent || "",
+        object_text: item.cells[2]?.textContent || "",
+        raw_quote: item.cells[3]?.textContent || "",
+        canonical_url: item.cells[4]?.textContent || "",
+      }));
+      root.innerHTML = rawDataTable(tableRows);
+      attachRawDataRows(root);
+      if (state.rawDataExpanded[rawId] && !state.rawDataChunks[chunkId]) {
+        try {
+          state.rawDataChunks[chunkId] = await getJSON(`/admin/raw/chunks/${chunkId}`, {
+            redirectOnAuth: false,
+          });
+          root.innerHTML = rawDataTable(tableRows);
+          attachRawDataRows(root);
+        } catch (error) {
+          toast(normalizeErrorMessage(error), { level: "error" });
+        }
+      }
+    };
+  });
+  root.querySelectorAll("[data-document-id]").forEach((button) => {
+    button.onclick = (event) => {
+      event.stopPropagation();
+      openRawDocumentModal(button.dataset.documentId);
+    };
+  });
+}
+
+function renderRawPagination(page, totalPages) {
+  const pag = byId("raw-pagination");
+  if (!pag || totalPages <= 1) {
+    if (pag) pag.innerHTML = "";
+    return;
+  }
+  pag.innerHTML = `
+    <button class="btn-secondary" ${page <= 1 ? "disabled" : ""}>Previous</button>
+    <button class="btn-secondary accent" ${page >= totalPages ? "disabled" : ""}>Next</button>
+  `;
+  const [prev, next] = pag.querySelectorAll("button");
+  prev.onclick = () => {
+    state.rawDataPage = Math.max(1, page - 1);
+    loadRawData();
+  };
+  next.onclick = () => {
+    state.rawDataPage = page + 1;
+    loadRawData();
+  };
+}
+
+async function openRawDocumentModal(documentId) {
+  if (!documentId) return;
+  openModal(`<div class="empty-state"><i class="ti ti-loader"></i><div>Loading...</div></div>`);
+  try {
+    const data = await getJSON(`/admin/raw/documents/${documentId}`, { redirectOnAuth: false });
+    openModal(`
+      <div class="modal-header">
+        <div>
+          <div class="modal-title">${escapeHtml(data.title || data.canonical_url || "Document")}</div>
+          <div class="modal-subtitle">${escapeHtml(data.canonical_url || "")}</div>
+        </div>
+        <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
+      </div>
+      <div class="doc-viewer raw-document-viewer">
+        <div class="muted small">${formatNumber(data.word_count || 0)} words · ${formatNumber(data.chunk_count || 0)} chunks</div>
+        <pre>${rawDocumentWithBoundaries(data)}</pre>
+      </div>
+    `);
+  } catch (error) {
+    openModal(`<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(error.message)}</div></div>`);
+  }
+}
+
+function rawDocumentWithBoundaries(data) {
+  const text = data.cleaned_text || "";
+  const chunks = data.chunks || [];
+  if (!chunks.length) return escapeHtml(text);
+  let offset = 0;
+  const parts = [];
+  chunks.forEach((chunk) => {
+    const length = Number(chunk.char_count || 0);
+    const segment = text.slice(offset, offset + length);
+    parts.push(`\n\n--- chunk ${chunk.ordinal} · ${chunk.chunk_id} ---\n`);
+    parts.push(segment || "");
+    offset += length;
+  });
+  if (offset < text.length) {
+    parts.push("\n\n--- remaining text ---\n");
+    parts.push(text.slice(offset));
+  }
+  return escapeHtml(parts.join("").trim());
+}
+
+function highlightRawQuote(text, quote) {
+  if (!quote) return escapeHtml(text);
+  const lowerText = text.toLowerCase();
+  const lowerQuote = quote.toLowerCase();
+  const index = lowerText.indexOf(lowerQuote);
+  if (index < 0) return escapeHtml(text);
+  return `${escapeHtml(text.slice(0, index))}<mark>${escapeHtml(text.slice(index, index + quote.length))}</mark>${escapeHtml(text.slice(index + quote.length))}`;
 }
 
 /* ───── Ask ───── */
@@ -3443,29 +3711,103 @@ async function submitAddSource() {
 
 /* ───── Source conflicts ───── */
 
-async function loadAdminConflicts() {
+async function loadAdminConflicts(targetId = "conflicts-body", summaryId = "conflict-summary-text") {
   try {
     const data = await loadAdminPanelData("/admin/conflicts", {
-      targetId: "conflicts-body",
+      targetId,
       title: "Sign in to view conflicts",
     });
     if (!data) return;
-    const rows = data.results || [];
-    const summary = byId("conflict-summary-text");
+    const summary = byId(summaryId);
     if (summary) {
       summary.textContent = `Conflicts (${formatNumber(data.total || 0)} unresolved)`;
     }
-    if (!rows.length) {
-      byId("conflicts-body").innerHTML = `
-        <div class="empty-state sources-empty compact">
-          <i class="ti ti-alert-triangle-off" aria-hidden="true"></i>
-          <div>No conflicts. Sources agree.</div>
-        </div>`;
-      return;
+    renderFactConflictsList(byId(targetId), data, () => loadAdminConflicts(targetId, summaryId));
+  } catch (e) {
+    const target = byId(targetId);
+    if (target) target.innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function renderConflictsPage(section = "facts") {
+  const active = section === "identity" ? "identity" : "facts";
+  setPageHeader({
+    title: "Conflicts",
+    subtitle:
+      active === "identity"
+        ? "Two records may refer to the same entity. Merge or split."
+        : "Sources disagree about a fact. Pick the correct claim.",
+  });
+  byId("app").innerHTML = `
+    <section class="conflicts-page">
+      <nav class="conflicts-tabs" id="conflicts-tabs" aria-label="Conflict type">
+        ${conflictTabStrip(active)}
+      </nav>
+      <div class="sources-list" id="conflicts-panel-body">
+        <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
+      </div>
+    </section>
+  `;
+  await loadConflictsPanel(active);
+}
+
+async function loadConflictsPanel(active) {
+  const body = byId("conflicts-panel-body");
+  try {
+    const [facts, identity] = await Promise.all([
+      loadAdminPanelData("/admin/conflicts", {
+        targetId: "conflicts-panel-body",
+        title: "Sign in to view conflicts",
+      }),
+      loadAdminPanelData("/admin/identity-review", {
+        targetId: "conflicts-panel-body",
+        title: "Sign in to view conflicts",
+      }),
+    ]);
+    if (!facts || !identity) return;
+    byId("conflicts-tabs").innerHTML = conflictTabStrip(active, facts.total || 0, identity.total || 0);
+    setPageHeader({
+      title: "Conflicts",
+      subtitle:
+        active === "identity"
+          ? "Two records may refer to the same entity. Merge or split."
+          : "Sources disagree about a fact. Pick the correct claim.",
+    });
+    if (active === "identity") {
+      renderIdentityReviewList(body, identity, () => loadConflictsPanel("identity"));
+    } else {
+      renderFactConflictsList(body, facts, () => loadConflictsPanel("facts"));
     }
-    byId("conflicts-body").innerHTML = rows
-      .map(
-        (c) => `
+  } catch (error) {
+    if (body) body.innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function conflictTabStrip(active, factsTotal = 0, identityTotal = 0) {
+  return `
+    <a class="conflicts-tab ${active === "facts" ? "active" : ""}" href="#conflicts/facts">
+      Contradicting Facts (${formatNumber(factsTotal)})
+    </a>
+    <a class="conflicts-tab ${active === "identity" ? "active" : ""}" href="#conflicts/identity">
+      Ambiguous Identity (${formatNumber(identityTotal)})
+    </a>
+  `;
+}
+
+function renderFactConflictsList(target, data, reload) {
+  if (!target) return;
+  const rows = data.results || [];
+  if (!rows.length) {
+    target.innerHTML = `
+      <div class="empty-state sources-empty compact">
+        <i class="ti ti-alert-triangle-off" aria-hidden="true"></i>
+        <div>No conflicts. Sources agree.</div>
+      </div>`;
+    return;
+  }
+  target.innerHTML = rows
+    .map(
+      (c) => `
       <div class="conflict-row">
         <div class="stmt"><strong>Conflict ${escapeHtml(c.id.slice(0, 8))}</strong></div>
         <div class="versus">
@@ -3479,30 +3821,25 @@ async function loadAdminConflicts() {
           <button class="btn-ghost" data-resolve="${escapeAttr(c.id)}" data-side="both_valid_distinct">Both valid</button>
         </div>
       </div>`,
-      )
-      .join("");
-    byId("conflicts-body")
-      .querySelectorAll("[data-resolve]")
-      .forEach((b) => {
-        b.onclick = async () => {
-          const id = b.dataset.resolve;
-          const resolution = b.dataset.side;
-          try {
-            await expectOk(fetch(`/admin/conflicts/${id}/resolve`, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ resolution }),
-            }));
-            toast("Conflict resolved", { level: "success" });
-            loadAdminConflicts();
-          } catch (error) {
-            toast(normalizeErrorMessage(error), { level: "error" });
-          }
-        };
-      });
-  } catch (e) {
-    byId("conflicts-body").innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(e.message)}</div>`;
-  }
+    )
+    .join("");
+  target.querySelectorAll("[data-resolve]").forEach((b) => {
+    b.onclick = async () => {
+      const id = b.dataset.resolve;
+      const resolution = b.dataset.side;
+      try {
+        await expectOk(fetch(`/admin/conflicts/${id}/resolve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ resolution }),
+        }));
+        toast("Conflict resolved", { level: "success" });
+        reload();
+      } catch (error) {
+        toast(normalizeErrorMessage(error), { level: "error" });
+      }
+    };
+  });
 }
 
 function renderConflictClaim(label, claim, claimId) {
@@ -3515,19 +3852,6 @@ function renderConflictClaim(label, claim, claimId) {
   `;
 }
 
-async function renderIdentityReview() {
-  setPageHeader({
-    title: "Identity Review",
-    subtitle: "Near-miss entity matches waiting for an admin decision",
-  });
-  byId("app").innerHTML = `
-    <section class="sources-list" id="identity-review-list">
-      <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
-    </section>
-  `;
-  await loadIdentityReview();
-}
-
 async function loadIdentityReview() {
   const list = byId("identity-review-list");
   try {
@@ -3536,40 +3860,45 @@ async function loadIdentityReview() {
       title: "Sign in to review identities",
     });
     if (!data) return;
-    const rows = data.results || [];
-    if (!rows.length) {
-      list.innerHTML = `
-        <div class="empty-state sources-empty compact">
-          <i class="ti ti-user-check" aria-hidden="true"></i>
-          <div>No identity review items.</div>
-        </div>`;
-      return;
-    }
-    list.innerHTML = rows.map(identityReviewRow).join("");
-    list.querySelectorAll("[data-review-decision]").forEach((button) => {
-      button.onclick = async () => {
-        const id = button.dataset.reviewId;
-        const decision = button.dataset.reviewDecision;
-        if (decision === "defer") return;
-        try {
-          await postJSON(`/admin/identity-review/${id}`, {
-            decision,
-            reviewer: state.me?.username || "admin",
-          });
-          toast(decision === "merge" ? "Entities merged" : "Identity review updated", {
-            level: "success",
-          });
-          await loadIdentityReview();
-        } catch (error) {
-          toast(normalizeErrorMessage(error), { level: "error" });
-        }
-      };
-    });
+    renderIdentityReviewList(list, data, loadIdentityReview);
   } catch (error) {
     if (list) {
-      list.innerHTML = `<div class="muted small">Unable to load identity review: ${escapeHtml(error.message)}</div>`;
+      list.innerHTML = `<div class="muted small">Unable to load ambiguous identities: ${escapeHtml(error.message)}</div>`;
     }
   }
+}
+
+function renderIdentityReviewList(target, data, reload) {
+  if (!target) return;
+  const rows = data.results || [];
+  if (!rows.length) {
+    target.innerHTML = `
+      <div class="empty-state sources-empty compact">
+        <i class="ti ti-user-check" aria-hidden="true"></i>
+        <div>No ambiguous identities.</div>
+      </div>`;
+    return;
+  }
+  target.innerHTML = rows.map(identityReviewRow).join("");
+  target.querySelectorAll("[data-review-decision]").forEach((button) => {
+    button.onclick = async () => {
+      const id = button.dataset.reviewId;
+      const decision = button.dataset.reviewDecision;
+      if (decision === "defer") return;
+      try {
+        await postJSON(`/admin/identity-review/${id}`, {
+          decision,
+          reviewer: state.me?.username || "admin",
+        });
+        toast(decision === "merge" ? "Entities merged" : "Identity review updated", {
+          level: "success",
+        });
+        await reload();
+      } catch (error) {
+        toast(normalizeErrorMessage(error), { level: "error" });
+      }
+    };
+  });
 }
 
 function identityReviewRow(row) {
@@ -3651,7 +3980,7 @@ async function adminLogout(event) {
   renderShell();
   if (tab === "admin") {
     location.hash = "#sources";
-  } else if (tab === "logs" || tab === "identity-review") {
+  } else if (tab === "logs" || tab === "conflicts" || tab === "raw") {
     stopLogsViewStream();
     location.hash = "#directory";
   } else if (tab === "sources") {

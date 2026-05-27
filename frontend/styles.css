@@ -1187,6 +1187,107 @@
 .claims-table .claim-row {
   cursor: pointer;
 }
+.conflicts-page {
+  display: grid;
+  gap: var(--space-4);
+}
+.conflicts-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: fit-content;
+  padding: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+}
+.conflicts-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--space-9);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.conflicts-tab:hover {
+  color: var(--text);
+}
+.conflicts-tab.active {
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.raw-predicate-input {
+  width: calc(var(--space-16) * 3);
+  flex: 0 0 auto;
+}
+.raw-data-table th:nth-child(4),
+.raw-data-table td:nth-child(4),
+.raw-data-table th:nth-child(5),
+.raw-data-table td:nth-child(5) {
+  width: 28%;
+}
+.raw-expanded-row td {
+  height: auto;
+  padding: var(--space-4);
+  white-space: normal;
+  overflow: visible;
+}
+.raw-expanded-row:hover {
+  background: transparent;
+}
+.raw-expanded-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+.raw-expanded-meta a {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--green);
+}
+.raw-chunk-text,
+.raw-document-viewer pre {
+  max-height: 60vh;
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-relaxed);
+  white-space: pre-wrap;
+}
+.raw-chunk-text mark {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+  color: var(--text);
+}
+.raw-claim-list {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.raw-claim-item {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
 .claim-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

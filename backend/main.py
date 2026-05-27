@@ -62,8 +62,11 @@ from backend.web_api import (
     list_conflicts,
     list_directory,
     list_identity_review,
+    list_raw_claims,
     list_source_documents,
     list_sources,
+    raw_chunk_detail,
+    raw_document_detail,
     resolve_conflict,
     review_identity_candidate,
     source_detail,
@@ -386,6 +389,39 @@ def create_app(store: Store | None = None) -> FastAPI:
         if detail is None:
             raise HTTPException(status_code=404, detail="document not found")
         return detail
+
+    @app.get("/admin/raw/documents/{document_id}")
+    async def admin_raw_document(request: Request, document_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
+        detail = raw_document_detail(_store(request), document_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="document not found")
+        return detail
+
+    @app.get("/admin/raw/chunks/{chunk_id}")
+    async def admin_raw_chunk(request: Request, chunk_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
+        detail = raw_chunk_detail(_store(request), chunk_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="chunk not found")
+        return detail
+
+    @app.get("/admin/raw/claim-raw")
+    async def admin_raw_claims(
+        request: Request,
+        q: str = "",
+        predicate: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, object]:
+        require_admin(request)
+        return list_raw_claims(
+            _store(request),
+            q=q,
+            predicate=predicate,
+            page=page,
+            page_size=page_size,
+        )
 
     @app.delete("/admin/documents/{document_id}")
     async def admin_delete_document(request: Request, document_id: uuid.UUID) -> dict[str, str]:
