@@ -21,16 +21,14 @@ from backend.resolution.resolver import resolve_mention
 @pytest.mark.asyncio
 async def test_extraction_heuristic_returns_claim(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    result = await extract_claims(
-        "Errik Anderson partnered with Daniella Reichstetter to license the invention."
-    )
+    result = await extract_claims("Sam Brooks partnered with Mia Chen to license the invention.")
 
     assert result.model
     assert len(result.claims) == 1
     claim = result.claims[0]
-    assert claim.subject_text == "Errik Anderson"
+    assert claim.subject_text == "Sam Brooks"
     assert claim.predicate == "partnered_with"
-    assert claim.object_text == "Daniella Reichstetter"
+    assert claim.object_text == "Mia Chen"
     assert claim.object_type == "person"
 
 
@@ -72,7 +70,7 @@ async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypa
         content_type="text/html",
     )
 
-    text = "Errik Anderson partnered with Daniella Reichstetter to license the invention."
+    text = "Sam Brooks partnered with Mia Chen to license the invention."
     monkeypatch.setattr(normalizer, "clean_html", lambda raw: (text, "Story"))
     monkeypatch.setattr(normalizer, "detect_language", lambda value: "en")
     monkeypatch.setattr(normalizer, "chunk_text", lambda value: [Chunk(text=value, token_count=12)])
@@ -92,11 +90,11 @@ async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypa
     rebuilt = await run_full_parse(source.id, store=store, progress_run_id=parse_run.id)
 
     with store.session() as session:
-        errik = session.execute(
-            select(Entity).where(Entity.canonical_name == "Errik Anderson")
+        sam = session.execute(
+            select(Entity).where(Entity.canonical_name == "Sam Brooks")
         ).scalar_one()
-        daniella = session.execute(
-            select(Entity).where(Entity.canonical_name == "Daniella Reichstetter")
+        mia = session.execute(
+            select(Entity).where(Entity.canonical_name == "Mia Chen")
         ).scalar_one()
         claim = session.execute(
             select(Claim).where(Claim.predicate == "partnered_with")
@@ -107,15 +105,15 @@ async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypa
         mention_count = session.execute(
             select(func.count()).select_from(EntityMention)
         ).scalar_one()
-        summary = session.get(EntitySummary, errik.id)
+        summary = session.get(EntitySummary, sam.id)
         neighborhood = session.get(
             EntityNeighborhood,
-            {"entity_id": errik.id, "neighbor_id": daniella.id},
+            {"entity_id": sam.id, "neighbor_id": mia.id},
         )
 
-    assert errik.id in rebuilt
-    assert claim.subject_entity_id == errik.id
-    assert claim.object_entity_id == daniella.id
+    assert sam.id in rebuilt
+    assert claim.subject_entity_id == sam.id
+    assert claim.object_entity_id == mia.id
     assert claim.confidence_score > 0
     assert evidence_count == 1
     assert mention_count == 2

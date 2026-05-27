@@ -5,7 +5,13 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from backend.db.models import Entity, EntityAlias, EntityDisambiguationCandidate, EntitySummary
+from backend.db.models import (
+    Claim,
+    Entity,
+    EntityAlias,
+    EntityDisambiguationCandidate,
+    EntitySummary,
+)
 from backend.resolution import resolver
 from backend.resolution.llm_disambiguator import DisambiguationResult
 
@@ -142,3 +148,79 @@ async def test_class_year_conflict_records_near_miss_without_llm(store, monkeypa
         candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one()
     assert candidate.candidate_entity_id == entity.id
     assert candidate.llm_decision == "near_miss_review"
+
+
+@pytest.mark.asyncio
+async def test_affiliation_conflict_records_near_miss_without_llm(store, monkeypatch) -> None:
+    entity = _add_entity(store, "Alex Example", _vector(0.7, 0.714142842))
+    with store.session() as session:
+        org = Entity(kind="org", canonical_name="Acme Labs")
+        session.add(org)
+        session.flush()
+        session.add(
+            Claim(
+                subject_entity_id=entity.id,
+                predicate="employed_by",
+                object_entity_id=org.id,
+                confidence_score=0.9,
+            )
+        )
+        session.commit()
+
+    async def fail_disambiguate(*args, **kwargs):
+        raise AssertionError("Contradictory affiliation should block LLM merge")
+
+    monkeypatch.setattr(resolver, "embed_text", _embed_for_text)
+    monkeypatch.setattr(resolver, "disambiguate", fail_disambiguate)
+
+    result = await resolver.resolve_mention(
+        "Alex Exampel",
+        "person",
+        store=store,
+        context_chunk="Alex Exampel works at Widget Labs on a synthetic project.",
+    )
+
+    assert result.method == "new_entity"
+    assert result.entity_id != entity.id
+    with store.session() as session:
+        candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one()
+    assert candidate.candidate_entity_id == entity.id
+    assert "affiliation" in candidate.llm_reasoning
+
+
+@pytest.mark.asyncio
+async def test_location_conflict_records_near_miss_without_llm(store, monkeypatch) -> None:
+    entity = _add_entity(store, "Jordan Sample", _vector(0.7, 0.714142842))
+    with store.session() as session:
+        place = Entity(kind="place", canonical_name="Denver")
+        session.add(place)
+        session.flush()
+        session.add(
+            Claim(
+                subject_entity_id=entity.id,
+                predicate="located_in",
+                object_entity_id=place.id,
+                confidence_score=0.9,
+            )
+        )
+        session.commit()
+
+    async def fail_disambiguate(*args, **kwargs):
+        raise AssertionError("Contradictory location should block LLM merge")
+
+    monkeypatch.setattr(resolver, "embed_text", _embed_for_text)
+    monkeypatch.setattr(resolver, "disambiguate", fail_disambiguate)
+
+    result = await resolver.resolve_mention(
+        "Jordan Sampl",
+        "person",
+        store=store,
+        context_chunk="Jordan Sampl is based in Boston while advising a synthetic venture.",
+    )
+
+    assert result.method == "new_entity"
+    assert result.entity_id != entity.id
+    with store.session() as session:
+        candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one()
+    assert candidate.candidate_entity_id == entity.id
+    assert "location" in candidate.llm_reasoning

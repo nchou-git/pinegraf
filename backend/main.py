@@ -52,9 +52,11 @@ from backend.web_api import (
     list_claims,
     list_conflicts,
     list_directory,
+    list_identity_review,
     list_source_documents,
     list_sources,
     resolve_conflict,
+    review_identity_candidate,
     source_detail,
     stats,
     update_source,
@@ -102,6 +104,11 @@ class ConflictResolveRequest(BaseModel):
     notes: str | None = None
 
 
+class IdentityReviewRequest(BaseModel):
+    decision: Literal["confirm", "merge", "split"]
+    reviewer: str | None = None
+
+
 class ParseRequest(BaseModel):
     scope: Literal["all", "unparsed", "fetch_ids"] = "unparsed"
     fetch_ids: list[uuid.UUID] | None = None
@@ -120,7 +127,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0020_entity_disambig"
+EXPECTED_ALEMBIC_HEAD = "0021_identity_review"
 
 
 def _slugify(value: str) -> str:
@@ -758,6 +765,31 @@ def create_app(store: Store | None = None) -> FastAPI:
     ) -> dict[str, object]:
         require_admin(request)
         return list_conflicts(_store(request), page=page, page_size=page_size)
+
+    @app.get("/admin/identity-review")
+    async def admin_identity_review(
+        request: Request,
+        page: int = 1,
+        page_size: int = 25,
+    ) -> dict[str, object]:
+        require_admin(request)
+        return list_identity_review(_store(request), page=page, page_size=page_size)
+
+    @app.post("/admin/identity-review/{candidate_id}")
+    async def admin_identity_review_decision(
+        request: Request,
+        candidate_id: uuid.UUID,
+        payload: IdentityReviewRequest,
+    ) -> dict[str, object]:
+        require_admin(request)
+        return review_identity_candidate(
+            _store(request),
+            candidate_id=candidate_id,
+            decision=payload.decision,
+            reviewer=payload.reviewer or _admin_actor(request),
+            audit_actor=_admin_actor(request),
+            audit_request_ip=_request_ip(request),
+        )
 
     @app.post("/admin/conflicts/{conflict_id}/resolve")
     async def admin_resolve_conflict(

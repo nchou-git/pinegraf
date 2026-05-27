@@ -38,6 +38,11 @@ const TAB_DEFS = [
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
 ];
+const IDENTITY_REVIEW_TAB = {
+  id: "identity-review",
+  label: "Identity Review",
+  icon: "ti-user-question",
+};
 const LOGS_TAB = { id: "logs", label: "Logs", icon: "ti-terminal-2" };
 
 const SOURCE_KINDS = [
@@ -182,7 +187,7 @@ function renderShell() {
 }
 
 function navTabs() {
-  return isAdmin() ? [...TAB_DEFS, LOGS_TAB] : TAB_DEFS;
+  return isAdmin() ? [...TAB_DEFS, IDENTITY_REVIEW_TAB, LOGS_TAB] : TAB_DEFS;
 }
 
 function isAdmin() {
@@ -283,6 +288,16 @@ function renderRoute() {
     closeMobileSidebar();
     renderShell();
     return renderLogs();
+  }
+  if (tab === "identity-review") {
+    if (!state.me?.is_admin) {
+      history.replaceState(null, "", "#directory");
+      renderShell();
+      return renderDirectory();
+    }
+    closeMobileSidebar();
+    renderShell();
+    return renderIdentityReview();
   }
   closeMobileSidebar();
   renderShell();
@@ -3483,6 +3498,109 @@ function renderConflictClaim(label, claim, claimId) {
   `;
 }
 
+async function renderIdentityReview() {
+  setPageHeader({
+    title: "Identity Review",
+    subtitle: "Near-miss entity matches waiting for an admin decision",
+  });
+  byId("app").innerHTML = `
+    <section class="sources-list" id="identity-review-list">
+      <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
+    </section>
+  `;
+  await loadIdentityReview();
+}
+
+async function loadIdentityReview() {
+  const list = byId("identity-review-list");
+  try {
+    const data = await loadAdminPanelData("/admin/identity-review", {
+      targetId: "identity-review-list",
+      title: "Sign in to review identities",
+    });
+    if (!data) return;
+    const rows = data.results || [];
+    if (!rows.length) {
+      list.innerHTML = `
+        <div class="empty-state sources-empty compact">
+          <i class="ti ti-user-check" aria-hidden="true"></i>
+          <div>No identity review items.</div>
+        </div>`;
+      return;
+    }
+    list.innerHTML = rows.map(identityReviewRow).join("");
+    list.querySelectorAll("[data-review-decision]").forEach((button) => {
+      button.onclick = async () => {
+        const id = button.dataset.reviewId;
+        const decision = button.dataset.reviewDecision;
+        if (decision === "defer") return;
+        try {
+          await postJSON(`/admin/identity-review/${id}`, {
+            decision,
+            reviewer: state.me?.username || "admin",
+          });
+          toast(decision === "merge" ? "Entities merged" : "Identity review updated", {
+            level: "success",
+          });
+          await loadIdentityReview();
+        } catch (error) {
+          toast(normalizeErrorMessage(error), { level: "error" });
+        }
+      };
+    });
+  } catch (error) {
+    if (list) {
+      list.innerHTML = `<div class="muted small">Unable to load identity review: ${escapeHtml(error.message)}</div>`;
+    }
+  }
+}
+
+function identityReviewRow(row) {
+  const source = row.source_entity || {};
+  const candidate = row.candidate_entity || {};
+  const score = Number(row.name_similarity_score || 0);
+  const scoreLabel = score ? `${Math.round(score * 100)}% similar` : "similarity unknown";
+  const canMerge = Boolean(row.mention && source.id && candidate.id);
+  return `
+    <article class="conflict-row">
+      <div class="stmt"><strong>${escapeHtml(source.display_name || source.canonical_name || "Unknown entity")}</strong> <span class="muted">vs</span> <strong>${escapeHtml(candidate.display_name || candidate.canonical_name || "Candidate missing")}</strong></div>
+      <div class="muted small">${escapeHtml(scoreLabel)} · ${escapeHtml(row.mention?.text || "No mention text")}</div>
+      <div class="versus">
+        ${identityReviewEntityBlock("Mention entity", source, row.source_qualifiers)}
+        <span>vs</span>
+        ${identityReviewEntityBlock("Candidate", candidate, row.candidate_qualifiers)}
+      </div>
+      ${row.llm_reasoning ? `<div class="muted small">${escapeHtml(row.llm_reasoning)}</div>` : ""}
+      <div class="conflict-actions">
+        ${canMerge ? `<button class="btn-source" data-review-id="${escapeAttr(row.id)}" data-review-decision="merge">Merge</button>` : ""}
+        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="split">Confirm split</button>
+        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="confirm">Confirm</button>
+        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="defer">Defer</button>
+      </div>
+    </article>
+  `;
+}
+
+function identityReviewEntityBlock(label, entity, qualifiers = {}) {
+  const aliasText = (entity.aliases || []).slice(0, 4).join(", ");
+  return `
+    <div class="conflict-claim">
+      <span class="muted small">${escapeHtml(label)}: ${escapeHtml(String(entity.id || "").slice(0, 8))}</span>
+      <strong>${escapeHtml(entity.display_name || entity.canonical_name || "Unknown entity")}</strong>
+      <div class="muted small">${escapeHtml(entity.type || "")}${aliasText ? ` · aliases: ${escapeHtml(aliasText)}` : ""}</div>
+      ${identityReviewQualifierText(qualifiers)}
+    </div>
+  `;
+}
+
+function identityReviewQualifierText(qualifiers = {}) {
+  const parts = Object.entries(qualifiers)
+    .filter(([, values]) => Array.isArray(values) && values.length)
+    .slice(0, 5)
+    .map(([key, values]) => `${key}: ${values.slice(0, 4).join(", ")}`);
+  return parts.length ? `<div class="muted small">${escapeHtml(parts.join(" · "))}</div>` : "";
+}
+
 async function loadAdminPanelData(url, { targetId, title }) {
   try {
     return await getJSON(url, { redirectOnAuth: false });
@@ -3516,7 +3634,7 @@ async function adminLogout(event) {
   renderShell();
   if (tab === "admin") {
     location.hash = "#sources";
-  } else if (tab === "logs") {
+  } else if (tab === "logs" || tab === "identity-review") {
     stopLogsViewStream();
     location.hash = "#directory";
   } else if (tab === "sources") {

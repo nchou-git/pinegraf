@@ -36,7 +36,7 @@ async def test_ask_sources_are_deduped_by_document(store) -> None:
 async def test_ask_uses_lexical_chunk_hits_and_cites_originating_url(store) -> None:
     source = store.upsert_source(kind="domain", identifier="tuck.example")
     run = store.create_source_run(source_id=source.id, kind="sitemap", spec={}, triggered_by="test")
-    body = b"Daniella Example was the founder and CEO of Gyrobike."
+    body = b"Alex Doe was the founder and CEO of WidgetCo."
     fetch = store.add_fetch(
         source_run_id=run.id,
         url="https://tuck.example/faculty",
@@ -56,11 +56,11 @@ async def test_ask_uses_lexical_chunk_hits_and_cites_originating_url(store) -> N
 
     _settings, chunks, claims, citations = await _answer_materials(
         store,
-        "Who worked on Gyrobike?",
+        "Who worked on WidgetCo?",
         max_results=5,
     )
 
     assert not claims
     assert chunks[0].document_id == document.id
     assert citations[0]["document_url"] == "https://tuck.example/faculty"
-    assert "Gyrobike" in citations[0]["quote"]
+    assert "WidgetCo" in citations[0]["quote"]

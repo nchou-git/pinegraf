@@ -28,6 +28,7 @@ from backend.util.vector import cosine, vector_values
 
 ENTITY_OBJECT_TYPES = {"person", "org", "project", "place", "event"}
 STOPWORDS = {"tuck", "dartmouth", "school", "business", "team", "company"}
+AFFILIATION_KEYS = {"affiliated_with", "employed_by"}
 QUALIFIER_PREDICATES = {
     "class_year",
     "affiliated_with",
@@ -277,7 +278,13 @@ async def _llm_match(
     )
     if not candidates:
         return None
-    block = _two_strike_block(candidates[0], mention_year, context_chunk)
+    mention_qualifiers = _mention_qualifiers(mention_text, context_chunk)
+    block = _two_strike_block(
+        candidates[0],
+        mention_year,
+        context_chunk,
+        mention_qualifiers,
+    )
     if block is not None:
         _record_disambiguation_candidate(
             store,
@@ -300,7 +307,7 @@ async def _llm_match(
         ExtractedMention(
             text=mention_text,
             type=kind,
-            qualifiers=_mention_qualifiers(mention_text, context_chunk),
+            qualifiers=mention_qualifiers,
         ),
         candidates,
         context_chunk,
@@ -437,10 +444,53 @@ def _candidate_document_stats(session, entity: Entity) -> tuple[int, object | No
 
 def _mention_qualifiers(mention_text: str, context_chunk: str) -> dict[str, list[str]]:
     qualifiers: dict[str, list[str]] = {}
-    year = normalize_class_year(f"{mention_text} {context_chunk}")
+    text = f"{mention_text} {context_chunk}"
+    year = normalize_class_year(text)
     if year is not None:
         qualifiers["class_year"] = [str(year)]
+    for key, pattern in (
+        (
+            "employed_by",
+            r"\b(?:works at|worked at|joined|employed by|employee of)\s+"
+            r"(?P<value>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){0,5})",
+        ),
+        (
+            "affiliated_with",
+            r"\b(?:affiliated with|member of|faculty at|student at)\s+"
+            r"(?P<value>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){0,5})",
+        ),
+        (
+            "located_in",
+            r"\b(?:located in|based in|lives in|from)\s+"
+            r"(?P<value>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+){0,5})",
+        ),
+    ):
+        values = [
+            _clean_qualifier_value(match.group("value")) for match in re.finditer(pattern, text)
+        ]
+        values = [value for value in values if value]
+        if values:
+            qualifiers[key] = _dedupe(values)
     return qualifiers
+
+
+def _clean_qualifier_value(value: str) -> str:
+    return re.split(
+        r"[.;,]|\s+(?:and|before|after|while|where|who)\b",
+        value.strip(),
+        maxsplit=1,
+    )[0].strip()
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    output = []
+    seen = set()
+    for value in values:
+        normalized = normalize_name(value)
+        if normalized and normalized not in seen:
+            output.append(value)
+            seen.add(normalized)
+    return output
 
 
 def _two_strike_block_for_entity(
@@ -469,7 +519,12 @@ def _two_strike_block_for_entity(
             similarity=similarity,
             qualifiers=_candidate_qualifiers(session, entity),
         )
-    reasoning = _two_strike_block(candidate, mention_year, context_chunk)
+    reasoning = _two_strike_block(
+        candidate,
+        mention_year,
+        context_chunk,
+        _mention_qualifiers("", context_chunk),
+    )
     if reasoning is None:
         return None
     return {"candidate": candidate, "reasoning": reasoning}
@@ -479,7 +534,9 @@ def _two_strike_block(
     candidate: EntityCandidate,
     mention_year: int | None,
     context_chunk: str,
+    mention_qualifiers: dict[str, list[str]] | None = None,
 ) -> str | None:
+    mention_qualifiers = mention_qualifiers or {}
     candidate_years = {
         normalize_class_year(value)
         for value in candidate.qualifiers.get("class_year", [])
@@ -490,8 +547,30 @@ def _two_strike_block(
             f"near miss: mention class year {mention_year} conflicts with candidate "
             f"class_year {sorted(candidate_years)}"
         )
-    mention_has_qualifiers = mention_year is not None or _context_has_strong_alignment(
-        context_chunk, candidate
+    affiliation_reason = _qualifier_conflict_reason(
+        mention_qualifiers,
+        candidate.qualifiers,
+        mention_keys=AFFILIATION_KEYS,
+        candidate_keys=AFFILIATION_KEYS,
+        label="affiliation",
+    )
+    if affiliation_reason is not None:
+        return affiliation_reason
+    location_reason = _qualifier_conflict_reason(
+        mention_qualifiers,
+        candidate.qualifiers,
+        mention_keys={"located_in"},
+        candidate_keys={"located_in"},
+        label="location",
+    )
+    if location_reason is not None:
+        return location_reason
+    mention_has_qualifiers = (
+        mention_year is not None
+        or _context_has_strong_alignment(context_chunk, candidate)
+        or any(
+            mention_qualifiers.get(key) for key in ("affiliated_with", "employed_by", "located_in")
+        )
     )
     if not mention_has_qualifiers and candidate.qualifiers and candidate.similarity < 0.78:
         return (
@@ -499,6 +578,39 @@ def _two_strike_block(
             "insufficient context for a safe merge"
         )
     return None
+
+
+def _qualifier_conflict_reason(
+    mention_qualifiers: dict[str, list[str]],
+    candidate_qualifiers: dict[str, list[str]],
+    *,
+    mention_keys: set[str],
+    candidate_keys: set[str],
+    label: str,
+) -> str | None:
+    mention_values = _normalized_qualifier_values(mention_qualifiers, mention_keys)
+    candidate_values = _normalized_qualifier_values(candidate_qualifiers, candidate_keys)
+    if not mention_values or not candidate_values:
+        return None
+    if set(mention_values).isdisjoint(set(candidate_values)):
+        return (
+            f"near miss: mention {label} {sorted(mention_values.values())} conflicts "
+            f"with candidate {label} {sorted(candidate_values.values())}"
+        )
+    return None
+
+
+def _normalized_qualifier_values(
+    qualifiers: dict[str, list[str]],
+    keys: set[str],
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for key in keys:
+        for value in qualifiers.get(key, []):
+            normalized = normalize_name(value)
+            if normalized:
+                values[normalized] = value
+    return values
 
 
 def _context_has_strong_alignment(context_chunk: str, candidate: EntityCandidate) -> bool:

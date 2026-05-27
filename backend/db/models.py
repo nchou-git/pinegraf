@@ -327,11 +327,16 @@ class Entity(Base):
             name="ck_entities_kind",
         ),
         Index("ix_entities_kind", "kind"),
+        Index("ix_entities_superseded_by_entity_id", "superseded_by_entity_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
+    superseded_by_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+    )
     embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

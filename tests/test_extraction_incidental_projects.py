@@ -36,9 +36,9 @@ async def test_extracts_founder_and_ceo_project_from_pronoun_sentence(monkeypatc
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     result = await extract_claims(
-        "Daniella Example has 20-plus years of startup experience. "
-        "She was the founder and CEO of Gyrobike before advising student teams."
+        "Alex Doe has 20-plus years of startup experience. "
+        "She was the founder and CEO of WidgetCo before advising student teams."
     )
 
     claims = {(claim.subject_text, claim.predicate, claim.object_text) for claim in result.claims}
-    assert ("Daniella Example", "founded", "Gyrobike") in claims
+    assert ("Alex Doe", "founded", "WidgetCo") in claims

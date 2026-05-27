@@ -8,8 +8,9 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from fastapi import HTTPException
 from openai import AsyncOpenAI
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from backend.class_year import expand_class_year_synonyms
 from backend.config import Settings, get_settings
@@ -24,6 +25,7 @@ from backend.db.models import (
     DocumentFetch,
     Entity,
     EntityAlias,
+    EntityDisambiguationCandidate,
     EntityMention,
     EntityNeighborhood,
     EntitySummary,
@@ -1107,6 +1109,254 @@ def resolve_conflict(
         session.commit()
 
 
+def list_identity_review(
+    store: Store,
+    *,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, object]:
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    with store.session() as session:
+        base = select(EntityDisambiguationCandidate).where(
+            EntityDisambiguationCandidate.review_decision.is_(None)
+        )
+        total = session.execute(select(func.count()).select_from(base.subquery())).scalar_one()
+        rows = list(
+            session.execute(
+                base.order_by(EntityDisambiguationCandidate.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).scalars()
+        )
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "results": [_identity_review_payload(session, row) for row in rows],
+        }
+
+
+def review_identity_candidate(
+    store: Store,
+    *,
+    candidate_id: uuid.UUID,
+    decision: str,
+    reviewer: str | None,
+    audit_actor: str | None,
+    audit_request_ip: str | None,
+) -> dict[str, object]:
+    if decision not in {"confirm", "merge", "split"}:
+        raise HTTPException(status_code=400, detail="decision must be confirm, merge, or split")
+    with store.session() as session:
+        row = session.get(EntityDisambiguationCandidate, candidate_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="identity review candidate not found")
+        if row.review_decision is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="identity review candidate already reviewed",
+            )
+        if decision == "merge":
+            result = _merge_identity_candidate(session, row)
+        else:
+            result = {"merged": False}
+        row.review_decision = decision
+        row.reviewed_by = reviewer or audit_actor or "admin"
+        row.reviewed_at = utc_now()
+        _add_audit_row(
+            session,
+            action=f"identity_review.{decision}",
+            target_table="entity_disambiguation_candidates",
+            target_id=row.id,
+            actor=audit_actor,
+            request_ip=audit_request_ip,
+            payload={
+                "reviewer": row.reviewed_by,
+                "decision": decision,
+                "candidate_entity_id": str(row.candidate_entity_id),
+                **result,
+            },
+        )
+        payload = _identity_review_payload(session, row)
+        session.commit()
+        return {"status": "ok", "candidate": payload, **result}
+
+
+def _identity_review_payload(
+    session,
+    row: EntityDisambiguationCandidate,
+) -> dict[str, object]:
+    mention = session.get(EntityMention, row.mention_id) if row.mention_id else None
+    candidate = session.get(Entity, row.candidate_entity_id)
+    source_entity = session.get(Entity, mention.entity_id) if mention else None
+    return {
+        "id": str(row.id),
+        "created_at": row.created_at.isoformat(),
+        "llm_decision": row.llm_decision,
+        "llm_reasoning": row.llm_reasoning,
+        "name_similarity_score": row.name_similarity_score,
+        "review_decision": row.review_decision,
+        "reviewed_by": row.reviewed_by,
+        "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+        "mention": (
+            {
+                "id": str(mention.id),
+                "text": mention.mention_text,
+                "position": mention.position,
+                "entity_id": str(mention.entity_id),
+            }
+            if mention
+            else None
+        ),
+        "source_entity": _entity_record(session, source_entity.id) if source_entity else None,
+        "candidate_entity": _entity_record(session, candidate.id) if candidate else None,
+        "source_qualifiers": _entity_review_qualifiers(session, source_entity.id)
+        if source_entity
+        else {},
+        "candidate_qualifiers": _entity_review_qualifiers(session, row.candidate_entity_id),
+    }
+
+
+def _merge_identity_candidate(
+    session,
+    row: EntityDisambiguationCandidate,
+) -> dict[str, object]:
+    mention = session.get(EntityMention, row.mention_id) if row.mention_id else None
+    target = session.get(Entity, row.candidate_entity_id)
+    if mention is None:
+        raise HTTPException(status_code=400, detail="review candidate has no mention to merge")
+    source = session.get(Entity, mention.entity_id)
+    if source is None or target is None:
+        raise HTTPException(status_code=400, detail="review candidate references a missing entity")
+    source_id = source.id
+    target_id = target.id
+    if source_id == target_id:
+        return {
+            "merged": False,
+            "source_entity_id": str(source_id),
+            "target_entity_id": str(target_id),
+            "reason": "source entity already matches candidate",
+        }
+    _migrate_aliases(session, source, target)
+    session.execute(
+        update(Claim)
+        .where(Claim.subject_entity_id == source_id)
+        .values(subject_entity_id=target_id)
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        update(Claim)
+        .where(Claim.object_entity_id == source_id)
+        .values(object_entity_id=target_id)
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        update(EntityMention)
+        .where(EntityMention.entity_id == source_id)
+        .values(entity_id=target_id)
+        .execution_options(synchronize_session=False)
+    )
+    session.execute(
+        delete(EntityNeighborhood)
+        .where(
+            or_(
+                EntityNeighborhood.entity_id == source_id,
+                EntityNeighborhood.neighbor_id == source_id,
+                EntityNeighborhood.entity_id == target_id,
+                EntityNeighborhood.neighbor_id == target_id,
+            )
+        )
+        .execution_options(synchronize_session=False)
+    )
+    source.superseded_by_entity_id = target_id
+    source.updated_at = utc_now()
+    target.updated_at = utc_now()
+    return {
+        "merged": True,
+        "source_entity_id": str(source_id),
+        "target_entity_id": str(target_id),
+    }
+
+
+def _migrate_aliases(session, source: Entity, target: Entity) -> None:
+    target_aliases = {
+        _alias_key(target.canonical_name),
+        *(
+            _alias_key(alias)
+            for alias in session.execute(
+                select(EntityAlias.alias).where(EntityAlias.entity_id == target.id)
+            ).scalars()
+        ),
+    }
+    source_name_key = _alias_key(source.canonical_name)
+    if source_name_key and source_name_key not in target_aliases:
+        session.add(
+            EntityAlias(
+                entity_id=target.id,
+                alias=source.canonical_name,
+                confidence=1.0,
+                source="identity_review:merge",
+            )
+        )
+        target_aliases.add(source_name_key)
+    aliases = list(
+        session.execute(select(EntityAlias).where(EntityAlias.entity_id == source.id)).scalars()
+    )
+    for alias in aliases:
+        key = _alias_key(alias.alias)
+        if key in target_aliases:
+            session.delete(alias)
+            continue
+        alias.entity_id = target.id
+        alias.source = alias.source or "identity_review:merge"
+        target_aliases.add(key)
+
+
+def _alias_key(value: str | None) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _entity_review_qualifiers(session, entity_id: uuid.UUID) -> dict[str, list[str]]:
+    qualifiers: dict[str, list[str]] = {}
+    summary = session.get(EntitySummary, entity_id)
+    if summary and isinstance(summary.primary_attributes, dict):
+        for key, value in summary.primary_attributes.items():
+            if value is None:
+                continue
+            values = value if isinstance(value, list) else [value]
+            qualifiers[str(key)] = [str(item) for item in values if item is not None]
+    rows = list(
+        session.execute(
+            select(Claim.predicate, Entity.canonical_name, Claim.object_value)
+            .outerjoin(Entity, Entity.id == Claim.object_entity_id)
+            .where(Claim.subject_entity_id == entity_id)
+            .where(
+                Claim.predicate.in_(
+                    [
+                        "class_year",
+                        "affiliated_with",
+                        "employed_by",
+                        "located_in",
+                        "founded",
+                        "worked_on_project",
+                    ]
+                )
+            )
+            .limit(50)
+        ).all()
+    )
+    for predicate, object_name, object_value in rows:
+        value = object_name or object_value
+        if value is None:
+            continue
+        bucket = qualifiers.setdefault(predicate, [])
+        text = str(value)
+        if text not in bucket:
+            bucket.append(text)
+    return qualifiers
+
+
 def _source_mix(session, entity_id: uuid.UUID) -> dict[str, int]:
     rows = session.execute(
         select(Source.identifier, func.count())
@@ -1264,6 +1514,9 @@ def _entity_record(session, entity_id: uuid.UUID | None) -> dict[str, object] | 
         "display_name": entity.canonical_name,
         "canonical_name": entity.canonical_name,
         "type": entity.kind,
+        "superseded_by_entity_id": (
+            str(entity.superseded_by_entity_id) if entity.superseded_by_entity_id else None
+        ),
         "aliases": aliases,
     }
 
