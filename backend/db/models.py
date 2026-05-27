@@ -80,7 +80,7 @@ class SourceRun(Base):
             name="ck_source_runs_kind",
         ),
         CheckConstraint(
-            "status in ('queued','running','paused','complete','failed','partial','cancelled')",
+            "status in ('queued','running','stopped','superseded','complete','failed','partial')",
             name="ck_source_runs_status",
         ),
         Index("ix_source_runs_source_id", "source_id"),

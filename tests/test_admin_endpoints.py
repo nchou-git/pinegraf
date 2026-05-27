@@ -218,16 +218,16 @@ def test_delete_source_rejects_active_run(store, admin_headers) -> None:
         response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
 
     assert response.status_code == 409
-    assert "cancel the run first" in response.json()["detail"]
+    assert "stop the run first" in response.json()["detail"]
     assert store.get_source(source.id) is not None
     assert store.get_source_run(run.id).status == "running"
 
 
-def test_cancel_run_marks_cancelled_and_audits(store, admin_headers, monkeypatch) -> None:
-    cancelled = []
+def test_stop_run_marks_stopped_and_audits(store, admin_headers, monkeypatch) -> None:
+    stopped = []
 
     def cancel_cloud_run_execution(run) -> str:
-        cancelled.append(run.id)
+        stopped.append(run.id)
         return "projects/p/locations/r/jobs/pinegraf-crawl/executions/e"
 
     monkeypatch.setattr(main_module, "cancel_cloud_run_execution", cancel_cloud_run_execution)
@@ -241,52 +241,23 @@ def test_cancel_run_marks_cancelled_and_audits(store, admin_headers, monkeypatch
     )
 
     with TestClient(main_module.create_app(store)) as client:
-        response = client.post(f"/admin/runs/{run.id}/cancel", headers=admin_headers)
+        response = client.post(f"/admin/runs/{run.id}/stop", headers=admin_headers)
         assert store.get_source(source.id).status == "active"
         delete_response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
         audit_response = client.get("/admin/audit", headers=admin_headers)
 
     assert response.status_code == 200
-    assert response.json()["status"] == "cancelled"
-    assert response.json()["cloud_cancelled"] is True
-    assert cancelled == [run.id]
+    assert response.json()["status"] == "stopped"
+    assert response.json()["cloud_execution_cancelled"] is True
+    assert stopped == [run.id]
+    assert store.get_source_run(run.id).status == "stopped"
     assert delete_response.status_code == 200
     assert store.get_source(source.id) is None
     assert audit_response.status_code == 200
     assert [entry["action"] for entry in audit_response.json()["entries"][:2]] == [
         "source.delete",
-        "run.cancel",
+        "run.stop",
     ]
-
-
-def test_pause_run_marks_paused_and_audits(store, admin_headers, monkeypatch) -> None:
-    cancelled = []
-
-    def cancel_cloud_run_execution(run) -> str:
-        cancelled.append(run.id)
-        return "projects/p/locations/r/jobs/pinegraf-parse/executions/e"
-
-    monkeypatch.setattr(main_module, "cancel_cloud_run_execution", cancel_cloud_run_execution)
-    source = store.upsert_source(kind="domain", identifier="example.com")
-    run = store.create_source_run(
-        source_id=source.id,
-        kind="parse",
-        spec={"source_id": str(source.id), "scope": "unparsed"},
-        triggered_by="test",
-        status="running",
-    )
-
-    with TestClient(main_module.create_app(store)) as client:
-        response = client.post(f"/admin/runs/{run.id}/pause", headers=admin_headers)
-        audit_response = client.get("/admin/audit", headers=admin_headers)
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "paused"
-    assert response.json()["cloud_cancelled"] is True
-    assert cancelled == [run.id]
-    assert store.get_source_run(run.id).status == "paused"
-    assert audit_response.status_code == 200
-    assert audit_response.json()["entries"][0]["action"] == "run.pause"
 
 
 def test_source_create_and_update_are_audited(store, admin_headers) -> None:

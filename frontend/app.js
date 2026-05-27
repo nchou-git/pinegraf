@@ -1806,8 +1806,8 @@ function setupSourceRows(root, sources, { archived }) {
     const parse = row.querySelector("[data-action=parse]");
     const unarchive = row.querySelector("[data-action=unarchive]");
     const destroy = row.querySelector("[data-action=delete]");
-    const pauseButtons = row.querySelectorAll("[data-action=pause]");
-    const resumeButtons = row.querySelectorAll("[data-action=resume]");
+    const stopButtons = row.querySelectorAll("[data-action=stop]");
+    const startAgainButtons = row.querySelectorAll("[data-action=start-again]");
     const menuBtn = row.querySelector("[data-action=menu]");
     if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
@@ -1820,16 +1820,16 @@ function setupSourceRows(root, sources, { archived }) {
       const listKind = row.closest("[data-source-list]")?.dataset.sourceList || (archived ? "archived" : "active");
       confirmDeleteSource(source, listKind);
     };
-    pauseButtons.forEach((pause) => {
-      pause.onclick = async (e) => {
+    stopButtons.forEach((stop) => {
+      stop.onclick = async (e) => {
         e.stopPropagation();
-        await pauseSourceRun(source, pause.dataset.runKind);
+        await stopSourceRun(source, stop.dataset.runKind);
       };
     });
-    resumeButtons.forEach((resume) => {
-      resume.onclick = async (e) => {
+    startAgainButtons.forEach((startAgain) => {
+      startAgain.onclick = async (e) => {
         e.stopPropagation();
-        await runSourceAction(source.id, resume.dataset.runKind);
+        await runSourceAction(source.id, startAgain.dataset.runKind);
       };
     });
     if (menuBtn) menuBtn.onclick = (e) => {
@@ -2064,21 +2064,21 @@ function sourceRowActions(source, { archived }) {
       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
   }
   const runs = activeRuns(source);
-  const paused = pausedRuns(source);
+  const stopped = stoppedRuns(source);
   const menuButton = isAdmin()
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
-  return `${sourceActionButton("crawl", runs.crawl ? "pause" : paused.crawl ? "resume" : "start")}
-    ${sourceActionButton("parse", runs.parse ? "pause" : paused.parse ? "resume" : "start")}
+  return `${sourceActionButton("crawl", runs.crawl ? "stop" : stopped.crawl ? "start-again" : "start")}
+    ${sourceActionButton("parse", runs.parse ? "stop" : stopped.parse ? "start-again" : "start")}
     ${menuButton}`;
 }
 
 function sourceActionButton(kind, state = "start") {
-  if (state === "pause") {
-    return `<button class="btn-danger-outline" data-action="pause" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-pause"></i> Pause</button>`;
+  if (state === "stop") {
+    return `<button class="btn-danger-outline" data-action="stop" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-stop"></i> Stop</button>`;
   }
-  if (state === "resume") {
-    return `<button class="btn-source" data-action="resume" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-play"></i> Resume</button>`;
+  if (state === "start-again") {
+    return `<button class="btn-source" data-action="start-again" data-run-kind="${escapeAttr(kind)}" type="button"><i class="ti ti-player-play"></i> Start again</button>`;
   }
   if (kind === "parse") {
     return `<button class="btn-source" data-action="parse" title="Parse fetched documents that have not been parsed yet"><i class="ti ti-cpu"></i> Parse</button>`;
@@ -2106,14 +2106,14 @@ function activeRuns(source) {
   };
 }
 
-function pausedRuns(source) {
-  if (source?.paused_runs && typeof source.paused_runs === "object") return source.paused_runs;
+function stoppedRuns(source) {
+  if (source?.stopped_runs && typeof source.stopped_runs === "object") return source.stopped_runs;
   return {};
 }
 
 function sourceRunStatusText(source, progress) {
   const runs = activeRuns(source);
-  const paused = pausedRuns(source);
+  const stopped = stoppedRuns(source);
   const parts = [];
   if (runs.crawl) {
     parts.push(runProgressText(progressForRun(source, "crawl", runs.crawl)));
@@ -2122,10 +2122,10 @@ function sourceRunStatusText(source, progress) {
     parts.push(runProgressText(progressForRun(source, "parse", runs.parse)));
   }
   if (parts.length) return parts.join(" · ");
-  if (paused.crawl || paused.parse) {
+  if (stopped.crawl || stopped.parse) {
     return ["crawl", "parse"]
-      .filter((action) => paused[action])
-      .map((action) => `${capitalize(action)} paused`)
+      .filter((action) => stopped[action])
+      .map((action) => `${capitalize(action)} stopped`)
       .join(" · ");
   }
   if (!source.active_run_id) {
@@ -2341,12 +2341,12 @@ async function runSourceAction(sourceId, action) {
   }
 }
 
-async function pauseSourceRun(source, kind) {
+async function stopSourceRun(source, kind) {
   const run = activeRuns(source)[kind] || (source.active_run_id ? { id: source.active_run_id } : null);
   if (!run?.id || !isAdmin()) return;
   setSourceActionButtonsDisabled(source.id, true);
   try {
-    await expectOk(fetch(`/admin/runs/${run.id}/pause`, { method: "POST" }));
+    await expectOk(fetch(`/admin/runs/${run.id}/stop`, { method: "POST" }));
     const stream = state.runStreams[run.id];
     if (stream) {
       stream.close();
@@ -2357,7 +2357,7 @@ async function pauseSourceRun(source, kind) {
       if (!Object.keys(state.runProgress[source.id]).length) delete state.runProgress[source.id];
     }
     await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
-    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} paused`, {
+    toast(`${sourceRunKindLabel(kind || source.active_run_kind || "run")} stopped`, {
       level: "success",
     });
   } catch (error) {
@@ -2376,8 +2376,8 @@ function sourceActionButtons(sourceId) {
   return document.querySelectorAll(
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=pause], ` +
-      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=resume]`,
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=stop], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=start-again]`,
   );
 }
 
@@ -2421,8 +2421,8 @@ function trackRun(sourceId, sourceName, action, runId, initial = {}) {
     if (
       data.status === "complete" ||
       data.status === "failed" ||
-      data.status === "cancelled" ||
-      data.status === "paused"
+      data.status === "stopped" ||
+      data.status === "superseded"
     ) {
       stream.close();
       delete state.runStreams[runId];

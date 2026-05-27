@@ -342,7 +342,6 @@ input[type="file"]::file-selector-button {
 }
 
 .status-pill.archived,
-.status-pill.cancelled,
 .status-pill.failed,
 .status-pill.partial {
   background-color: var(--surface);

@@ -58,12 +58,12 @@ async def run_from_env(*, store: Store | None = None) -> None:
             )
         except Exception:
             current = db.get_source_run(run_id)
-            if current is not None and current.status in {"cancelled", "paused"}:
+            if current is not None and current.status == "stopped":
                 return
             db.update_source_run(run_id, status="failed", finished=True)
             raise
         current = db.get_source_run(run_id)
-        if current is None or current.status in {"cancelled", "paused"}:
+        if current is None or current.status == "stopped":
             return
         db.update_source_run(run_id, status="complete", finished=True)
         await enqueue_parse_after_parse(store=db, parse_run_id=run_id)

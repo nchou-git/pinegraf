@@ -38,7 +38,7 @@ from backend.util.vector import cosine, vector_values
 ASK_CACHE_SECONDS = 3600
 ASK_CACHE_MAX = 100
 ACTIVE_SOURCE_RUN_STATUSES = {"queued", "running"}
-PAUSED_SOURCE_RUN_STATUS = "paused"
+STOPPED_SOURCE_RUN_STATUS = "stopped"
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
 
 
@@ -71,15 +71,15 @@ def _active_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
     return active
 
 
-def _paused_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
-    paused: dict[str, dict[str, object]] = {}
-    for run in runs:
-        if run.status != PAUSED_SOURCE_RUN_STATUS:
+def _stopped_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
+    stopped: dict[str, dict[str, object]] = {}
+    for run in sorted(runs, key=lambda value: value.started_at, reverse=True):
+        if run.status != STOPPED_SOURCE_RUN_STATUS:
             continue
         action = _source_run_action_kind(run)
-        if action in paused:
+        if action in stopped:
             continue
-        paused[action] = {
+        stopped[action] = {
             "id": str(run.id),
             "kind": run.kind,
             "action": action,
@@ -87,7 +87,7 @@ def _paused_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
             "stats": run.stats,
             "started_at": run.started_at.isoformat(),
         }
-    return paused
+    return stopped
 
 
 def stats(store: Store) -> dict[str, int]:
@@ -360,7 +360,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                 None,
             )
             active_runs = _active_runs_payload(runs)
-            paused_runs = _paused_runs_payload(runs)
+            stopped_runs = _stopped_runs_payload(runs)
             output.append(
                 {
                     "id": str(source.id),
@@ -379,7 +379,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "active_run_id": str(active_run.id) if active_run else None,
                     "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
                     "active_runs": active_runs,
-                    "paused_runs": paused_runs,
+                    "stopped_runs": stopped_runs,
                     "runs": [
                         {
                             "id": str(run.id),
@@ -428,7 +428,7 @@ def source_detail(
             None,
         )
         active_runs = _active_runs_payload(runs)
-        paused_runs = _paused_runs_payload(runs)
+        stopped_runs = _stopped_runs_payload(runs)
         coverage = _source_coverage(session, source.id)
         document_count = session.execute(
             select(func.count(func.distinct(DocumentFetch.document_id)))
@@ -457,7 +457,7 @@ def source_detail(
             "active_run_id": str(active_run.id) if active_run else None,
             "active_run_kind": _source_run_action_kind(active_run) if active_run else None,
             "active_runs": active_runs,
-            "paused_runs": paused_runs,
+            "stopped_runs": stopped_runs,
             "coverage": coverage,
             "runs": [
                 {

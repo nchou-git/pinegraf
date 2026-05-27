@@ -115,7 +115,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0016_run_pause"
+EXPECTED_ALEMBIC_HEAD = "0017_stop_supersede"
 
 
 def _slugify(value: str) -> str:
@@ -495,7 +495,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "source has an active run; cancel the run first or wait for completion "
+                    "source has an active run; stop the run first or wait for completion "
                     "before deleting"
                 ),
             ) from exc
@@ -538,6 +538,13 @@ def create_app(store: Store | None = None) -> FastAPI:
                 raise HTTPException(
                     status_code=400, detail=f"crawl not supported for kind={source.kind}"
                 )
+            _supersede_stopped_runs_for_resume(
+                store,
+                source_id=source.id,
+                kind=run.kind,
+                new_run=run,
+                request=request,
+            )
         except IntegrityError as exc:
             return _already_running_from_integrity_error(store, source_id, exc, kind=run_kind)
         try:
@@ -622,6 +629,13 @@ def create_app(store: Store | None = None) -> FastAPI:
                     "fetch_ids_sample": [str(fetch_id) for fetch_id in fetch_ids[:20]],
                 },
             )
+            _supersede_stopped_runs_for_resume(
+                store,
+                source_id=source.id,
+                kind="parse",
+                new_run=run,
+                request=request,
+            )
         except IntegrityError as exc:
             return _already_running_from_integrity_error(store, source_id, exc, kind="parse")
         try:
@@ -662,13 +676,9 @@ def create_app(store: Store | None = None) -> FastAPI:
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
-    @app.post("/admin/runs/{run_id}/pause")
-    async def admin_pause_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
-        return await _stop_run(request, run_id, status="paused", audit_action="run.pause")
-
-    @app.post("/admin/runs/{run_id}/cancel")
-    async def admin_cancel_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
-        return await _stop_run(request, run_id, status="cancelled", audit_action="run.cancel")
+    @app.post("/admin/runs/{run_id}/stop")
+    async def admin_stop_run(request: Request, run_id: uuid.UUID) -> dict[str, object]:
+        return await _stop_run(request, run_id)
 
     @app.get("/admin/audit")
     async def admin_audit(request: Request) -> dict[str, object]:
@@ -786,9 +796,6 @@ def _active_source_run(
 async def _stop_run(
     request: Request,
     run_id: uuid.UUID,
-    *,
-    status: str,
-    audit_action: str,
 ) -> dict[str, object]:
     require_admin(request)
     store = _store(request)
@@ -796,21 +803,21 @@ async def _stop_run(
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
 
-    cloud_cancelled = False
+    cloud_execution_cancelled = False
     warning = None
     result_status = run.status
     if run.status in ACTIVE_SOURCE_RUN_STATUSES:
         try:
             await asyncio.to_thread(cancel_cloud_run_execution, run)
-            cloud_cancelled = True
+            cloud_execution_cancelled = True
         except Exception as exc:  # noqa: BLE001
             warning = f"{type(exc).__name__}: {exc}"
-        result_status = status
+        result_status = "stopped"
     with store.session() as session:
         db_run = session.get(SourceRun, run_id)
         if db_run is not None:
             if run.status in ACTIVE_SOURCE_RUN_STATUSES:
-                db_run.status = status
+                db_run.status = "stopped"
                 db_run.error_message = warning
                 db_run.finished_at = db_run.finished_at or utc_now()
                 db_source = session.get(Source, db_run.source_id)
@@ -818,16 +825,62 @@ async def _stop_run(
                     db_source.status = "active"
             session.add(
                 AuditLog(
-                    action=audit_action,
+                    action="run.stop",
                     target_table="source_runs",
                     target_id=str(run_id),
                     actor=_admin_actor(request),
                     request_ip=_request_ip(request),
-                    payload={"cloud_cancelled": cloud_cancelled, "warning": warning},
+                    payload={
+                        "cloud_execution_cancelled": cloud_execution_cancelled,
+                        "warning": warning,
+                    },
                 )
             )
             session.commit()
-    return {"status": result_status, "cloud_cancelled": cloud_cancelled, "warning": warning}
+    return {
+        "status": result_status,
+        "cloud_execution_cancelled": cloud_execution_cancelled,
+        "warning": warning,
+    }
+
+
+def _supersede_stopped_runs_for_resume(
+    store: Store,
+    *,
+    source_id: uuid.UUID,
+    kind: str,
+    new_run: SourceRun,
+    request: Request,
+) -> None:
+    with store.session() as session:
+        stopped_runs = list(
+            session.execute(
+                select(SourceRun)
+                .where(SourceRun.source_id == source_id)
+                .where(SourceRun.kind == kind)
+                .where(SourceRun.status == "stopped")
+                .order_by(SourceRun.started_at.desc())
+            ).scalars()
+        )
+        for stopped_run in stopped_runs:
+            stopped_run.status = "superseded"
+            session.add(
+                AuditLog(
+                    action="run.superseded_by_resume",
+                    target_table="source_runs",
+                    target_id=str(new_run.id),
+                    actor=_admin_actor(request),
+                    request_ip=_request_ip(request),
+                    payload={
+                        "source_id": str(source_id),
+                        "old_run_id": str(stopped_run.id),
+                        "new_run_id": str(new_run.id),
+                        "kind": kind,
+                    },
+                )
+            )
+        if stopped_runs:
+            session.commit()
 
 
 def _already_running_from_integrity_error(
