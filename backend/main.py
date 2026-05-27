@@ -36,16 +36,20 @@ from backend.db.models import AuditLog, Fetch, Source, SourceRun
 from backend.db.store import Store, source_to_dict, utc_now
 from backend.jobs.run import cancel_cloud_run_execution, execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
+from backend.maintenance.integrity import verify_source_integrity
 from backend.progress import subscribe as subscribe_progress
 from backend.source_identifiers import normalize_identifier
 from backend.web_api import (
     ActiveSourceRunError,
     archived_source_count,
     ask_stream,
+    claim_detail,
+    claim_predicates,
     delete_source,
     document_detail,
     entity_detail,
     list_audit_log,
+    list_claims,
     list_conflicts,
     list_directory,
     list_source_documents,
@@ -77,6 +81,7 @@ class SourceUpdate(BaseModel):
     display_name: str | None = None
     trust_weight: float | None = Field(default=None, ge=0, le=1)
     respect_robots: bool | None = None
+    recrawl_interval_days: int | None = Field(default=None, ge=1, le=3650)
     status: Literal["active", "archived"] | None = None
     notes: str | None = None
 
@@ -115,7 +120,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0018_temporal_storage"
+EXPECTED_ALEMBIC_HEAD = "0020_entity_disambig"
 
 
 def _slugify(value: str) -> str:
@@ -373,6 +378,43 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="entity not found")
         return detail
 
+    @app.get("/api/claims")
+    async def api_claims(
+        request: Request,
+        predicate: str = "",
+        subject_entity_id: uuid.UUID | None = None,
+        object_entity_id: uuid.UUID | None = None,
+        source_id: uuid.UUID | None = None,
+        min_confidence: float = 0.0,
+        status: str = "current",
+        q: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, object]:
+        return list_claims(
+            _store(request),
+            predicate=predicate,
+            subject_entity_id=subject_entity_id,
+            object_entity_id=object_entity_id,
+            source_id=source_id,
+            min_confidence=min(max(min_confidence, 0.0), 1.0),
+            status=status,
+            q=q,
+            page=page,
+            page_size=page_size,
+        )
+
+    @app.get("/api/claims/predicates")
+    async def api_claim_predicates(request: Request) -> dict[str, object]:
+        return {"predicates": claim_predicates(_store(request))}
+
+    @app.get("/api/claims/{claim_id}")
+    async def api_claim_detail(request: Request, claim_id: uuid.UUID) -> dict[str, object]:
+        detail = claim_detail(_store(request), claim_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="claim not found")
+        return detail
+
     @app.post("/api/ask")
     async def api_ask(request: Request, payload: AskRequest) -> StreamingResponse:
         return StreamingResponse(
@@ -479,6 +521,7 @@ def create_app(store: Store | None = None) -> FastAPI:
             display_name=payload.display_name,
             trust_weight=payload.trust_weight,
             respect_robots=payload.respect_robots,
+            recrawl_interval_days=payload.recrawl_interval_days,
             status=payload.status,
             notes=payload.notes,
             audit_actor=_admin_actor(request),
@@ -664,6 +707,17 @@ def create_app(store: Store | None = None) -> FastAPI:
             f"Parse queued for {source.display_name or source.identifier} ({payload.scope})",
         )
         return {"run_id": str(run.id), "status": "queued"}
+
+    @app.post("/admin/sources/{source_id}/verify-integrity")
+    async def admin_verify_source_integrity(
+        request: Request,
+        source_id: uuid.UUID,
+    ) -> dict[str, object]:
+        require_admin(request)
+        result = verify_source_integrity(_store(request), source_id)
+        if result.get("error") == "source not found":
+            raise HTTPException(status_code=404, detail="source not found")
+        return result
 
     @app.get("/admin/runs/{run_id}/stream")
     async def admin_run_stream(request: Request, run_id: uuid.UUID) -> StreamingResponse:

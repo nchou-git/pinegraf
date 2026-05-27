@@ -7,6 +7,7 @@ import uuid
 
 from backend.db.store import Store, utc_now
 from backend.ingestion.orchestrator import run_source_run
+from backend.maintenance.reconcile import reconcile_all_sources
 from backend.parse.orchestrator import run_full_parse
 
 PROJECT_ID = "pinegraf-prod"
@@ -14,6 +15,7 @@ REGION = "us-east4"
 JOB_BY_MODE = {
     "crawl": "pinegraf-crawl",
     "parse": "pinegraf-parse",
+    "maintenance": "pinegraf-maintenance",
 }
 
 
@@ -30,9 +32,12 @@ async def execute_cloud_run_job(run_id: uuid.UUID | str, mode: str) -> None:
 
 
 async def run_from_env(*, store: Store | None = None) -> None:
-    run_id = uuid.UUID(_required_env("PINEGRAF_RUN_ID"))
     mode = _required_env("PINEGRAF_MODE")
     db = store or Store()
+    if mode == "maintenance":
+        reconcile_all_sources(db)
+        return
+    run_id = uuid.UUID(_required_env("PINEGRAF_RUN_ID"))
     run = db.get_source_run(run_id)
     if run is None:
         raise ValueError(f"source run not found: {run_id}")

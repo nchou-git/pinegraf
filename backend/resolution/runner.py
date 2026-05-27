@@ -33,6 +33,7 @@ async def resolve_pending(
             row.subject_text,
             "person",
             store=store,
+            context_chunk=_context_chunk(store, row.chunk_id),
         )
         if subject is not None:
             write_mention(
@@ -48,6 +49,7 @@ async def resolve_pending(
                 row.object_text,
                 row.object_type or "org",
                 store=store,
+                context_chunk=_context_chunk(store, row.chunk_id),
             )
             if object_resolution is not None:
                 write_mention(
@@ -61,3 +63,11 @@ async def resolve_pending(
         if progress is not None:
             await progress(index, total)
     return touched
+
+
+def _context_chunk(store: Store, chunk_id: uuid.UUID) -> str:
+    from backend.db.models import Chunk
+
+    with store.session() as session:
+        chunk = session.get(Chunk, chunk_id)
+        return chunk.text if chunk is not None else ""

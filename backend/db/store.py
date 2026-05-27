@@ -25,6 +25,7 @@ from backend.db.models import (
     Source,
     SourceRun,
 )
+from backend.db.stats_queries import pages_fetched, pending_fetch_ids, urls_known
 from backend.source_identifiers import normalize_identifier
 
 SCHEMA_TABLES = [
@@ -41,6 +42,7 @@ SCHEMA_TABLES = [
     "entities",
     "entity_aliases",
     "entity_mentions",
+    "entity_disambiguation_candidates",
     "claims",
     "claim_evidence",
     "claim_conflicts",
@@ -128,6 +130,7 @@ class Store:
                 status=status,
                 display_name=display_name,
                 notes=notes,
+                recrawl_interval_days=get_settings().recrawl_default_days,
             )
             session.add(source)
             session.flush()
@@ -200,6 +203,7 @@ class Store:
                 run.status = status
             if stats is not None:
                 run.stats = stats
+                run.stats_updated_at = utc_now()
             if error_message is not None:
                 run.error_message = error_message
             if clear_finished:
@@ -220,28 +224,6 @@ class Store:
             session.commit()
             return run
 
-    def update_source_crawl_counters(
-        self,
-        source_id: uuid.UUID,
-        *,
-        pages_fetched_total: int,
-        urls_known_total: int,
-    ) -> None:
-        with self.session() as session:
-            source = session.get(Source, source_id)
-            if source is None:
-                return
-            source.pages_fetched_total = max(
-                int(source.pages_fetched_total or 0),
-                int(pages_fetched_total),
-            )
-            source.urls_known_total = max(
-                int(source.urls_known_total or 0),
-                int(urls_known_total),
-                source.pages_fetched_total,
-            )
-            session.commit()
-
     def refresh_source_crawl_counters(
         self,
         source_id: uuid.UUID,
@@ -249,29 +231,24 @@ class Store:
         urls_known_total: int | None = None,
     ) -> tuple[int, int]:
         with self.session() as session:
-            pages_fetched_total = int(
-                session.execute(
-                    select(func.count(func.distinct(Fetch.url)))
-                    .select_from(Fetch)
-                    .join(SourceRun, SourceRun.id == Fetch.source_run_id)
-                    .where(SourceRun.source_id == source_id)
-                    .where(Fetch.http_status >= 200)
-                    .where(Fetch.http_status < 300)
-                    .where(Fetch.body_bytes.is_not(None))
-                ).scalar_one()
-            )
+            pages_fetched_total = pages_fetched(session, source_id)
+            known_total = urls_known(session, source_id)
             source = session.get(Source, source_id)
             if source is None:
-                return pages_fetched_total, max(pages_fetched_total, int(urls_known_total or 0))
-            known = max(
-                int(source.urls_known_total or 0),
-                pages_fetched_total,
-                int(urls_known_total or 0),
-            )
+                return pages_fetched_total, max(pages_fetched_total, known_total)
+            known = max(pages_fetched_total, known_total)
             source.pages_fetched_total = pages_fetched_total
             source.urls_known_total = known
             session.commit()
             return pages_fetched_total, known
+
+    def mark_source_full_recrawl_complete(self, source_id: uuid.UUID) -> None:
+        with self.session() as session:
+            source = session.get(Source, source_id)
+            if source is None:
+                return
+            source.last_full_recrawl_at = utc_now()
+            session.commit()
 
     def get_source_run(self, run_id: uuid.UUID) -> SourceRun | None:
         with self.session() as session:
@@ -330,12 +307,19 @@ class Store:
         body_bytes: bytes | None,
         http_status: int | None = None,
         content_type: str | None = None,
+        content_hash: bytes | None = None,
+        body_unchanged_since: uuid.UUID | None = None,
+        parse_skip_reason: str | None = None,
         error_message: str | None = None,
         original_url: str | None = None,
         redirect_chain: list[str] | None = None,
         discovery_method: str | None = None,
     ) -> Fetch:
-        digest = content_digest(body_bytes) if body_bytes is not None else None
+        digest = (
+            content_hash
+            if content_hash is not None
+            else (content_digest(body_bytes) if body_bytes is not None else None)
+        )
         with self.session() as session:
             fetch = Fetch(
                 source_run_id=source_run_id,
@@ -343,6 +327,8 @@ class Store:
                 http_status=http_status,
                 content_hash=digest,
                 body_bytes=body_bytes,
+                body_unchanged_since=body_unchanged_since,
+                parse_skip_reason=parse_skip_reason,
                 content_type=content_type,
                 bytes_size=len(body_bytes) if body_bytes is not None else None,
                 error_message=error_message,
@@ -357,6 +343,25 @@ class Store:
     def get_fetch(self, fetch_id: uuid.UUID) -> Fetch | None:
         with self.session() as session:
             return session.get(Fetch, fetch_id)
+
+    def latest_successful_fetch_for_url(
+        self,
+        *,
+        source_id: uuid.UUID,
+        url: str,
+    ) -> Fetch | None:
+        with self.session() as session:
+            return session.execute(
+                select(Fetch)
+                .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+                .where(SourceRun.source_id == source_id)
+                .where(Fetch.url == url)
+                .where(Fetch.http_status >= 200)
+                .where(Fetch.http_status < 300)
+                .where(Fetch.content_hash.is_not(None))
+                .order_by(Fetch.fetched_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
 
     def update_fetch_hash(self, fetch_id: uuid.UUID, digest: bytes) -> None:
         with self.session() as session:
@@ -442,22 +447,12 @@ class Store:
         snapshot_at: datetime | None = None,
     ) -> list[uuid.UUID]:
         with self.session() as session:
-            query = (
-                select(Fetch.id)
-                .outerjoin(DocumentFetch, DocumentFetch.fetch_id == Fetch.id)
-                .where(DocumentFetch.fetch_id.is_(None))
-                .where(Fetch.body_bytes.is_not(None))
-                .order_by(Fetch.fetched_at.asc())
+            return pending_fetch_ids(
+                session,
+                source_id=source_id,
+                fetch_ids=list(fetch_ids) if fetch_ids is not None else None,
+                snapshot_at=snapshot_at,
             )
-            if source_id is not None:
-                query = query.join(SourceRun, SourceRun.id == Fetch.source_run_id).where(
-                    SourceRun.source_id == source_id
-                )
-            if fetch_ids is not None:
-                query = query.where(Fetch.id.in_(fetch_ids))
-            if snapshot_at is not None:
-                query = query.where(Fetch.fetched_at <= snapshot_at)
-            return list(session.execute(query).scalars())
 
     def fetch_ids_for_source(
         self,
@@ -506,6 +501,10 @@ def source_to_dict(source: Source) -> dict[str, object]:
         "status": source.status,
         "pages_fetched_total": source.pages_fetched_total,
         "urls_known_total": source.urls_known_total,
+        "recrawl_interval_days": source.recrawl_interval_days,
+        "last_full_recrawl_at": (
+            source.last_full_recrawl_at.isoformat() if source.last_full_recrawl_at else None
+        ),
         "display_name": source.display_name,
         "notes": source.notes,
         "created_at": source.created_at.isoformat(),

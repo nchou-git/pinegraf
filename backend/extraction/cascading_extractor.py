@@ -15,6 +15,8 @@ from backend.extraction.prompts import OBJECT_TYPES, PREDICATES, SYSTEM_PROMPT, 
 
 PROMPT_VERSION = "week2_v1"
 LOW_CONFIDENCE_THRESHOLD = 0.6
+PERSON_PATTERN = r"[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+"
+OBJECT_PATTERN = r"[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+)*"
 
 
 class ExtractedClaim(BaseModel):
@@ -92,30 +94,51 @@ def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
     claims: list[ExtractedClaim] = []
     patterns = [
         (
-            r"(?P<s>[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+)"
-            r"\s+founded\s+"
-            r"(?P<o>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+)*)",
+            rf"(?P<s>{PERSON_PATTERN})"
+            r"\s+(?:founded|started|launched)\s+"
+            rf"(?P<o>{OBJECT_PATTERN})",
             "founded",
             "org",
         ),
         (
-            r"(?P<s>[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+)"
+            rf"(?P<s>{PERSON_PATTERN})\b.{{0,120}}?"
+            r"\b(?:founded|started|launched|founding)\s+"
+            rf"(?P<o>{OBJECT_PATTERN})",
+            "founded",
+            "org",
+        ),
+        (
+            rf"(?P<s>{PERSON_PATTERN})"
+            r"\s+(?:co-created|created|built|developed|led|worked on)\s+"
+            rf"(?P<o>{OBJECT_PATTERN})",
+            "worked_on_project",
+            "project",
+        ),
+        (
+            rf"(?P<s>{PERSON_PATTERN})\b.{{0,120}}?"
+            r"\b(?:building|built|co-created|co-creating|created|developed|led|worked on)\s+"
+            rf"(?P<o>{OBJECT_PATTERN})",
+            "worked_on_project",
+            "project",
+        ),
+        (
+            rf"(?P<s>{PERSON_PATTERN})"
             r"\s+partnered with\s+"
-            r"(?P<o>[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+)",
+            rf"(?P<o>{PERSON_PATTERN})",
             "partnered_with",
             "person",
         ),
         (
-            r"(?P<s>[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+)"
+            rf"(?P<s>{PERSON_PATTERN})"
             r"\s+(?:works at|worked at|joined)\s+"
-            r"(?P<o>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+)*)",
+            rf"(?P<o>{OBJECT_PATTERN})",
             "employed_by",
             "org",
         ),
         (
-            r"(?P<s>[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+)"
+            rf"(?P<s>{PERSON_PATTERN})"
             r"\s+(?:studied at|graduated from)\s+"
-            r"(?P<o>[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+)*)",
+            rf"(?P<o>{OBJECT_PATTERN})",
             "studied_at",
             "org",
         ),

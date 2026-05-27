@@ -36,27 +36,47 @@ async def run_full_parse(
     if run is None or run.status not in ACTIVE_RUN_STATUSES:
         return touched
     stats = dict(run.stats or {}) if run else {}
+    frozen_fetch_ids = _parse_fetch_ids(
+        store,
+        source_uuid,
+        scope=scope,
+        fetch_ids=fetch_uuid_list,
+        snapshot_at=snapshot,
+    )
+    total_to_parse = len(frozen_fetch_ids)
+    stats["total_to_parse"] = total_to_parse
+    stats["items_parsed"] = int(stats.get("items_parsed") or 0)
     try:
         _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "normalization", "Normalizing fetches", 0.0)
+        _write_progress(
+            store,
+            run_id,
+            stats,
+            "normalization",
+            "Normalizing fetches",
+            0.0 if total_to_parse else 100.0,
+            data={"total_to_parse": total_to_parse, "items_parsed": 0},
+        )
         normalize_kwargs: dict[str, object] = {"store": store, "source_id": source_uuid}
         if snapshot is not None:
             normalize_kwargs["snapshot_at"] = snapshot
-        if scope == "all":
-            normalize_kwargs.update({"pending_only": False})
-        elif scope == "fetch_ids":
-            normalize_kwargs.update(
-                {
-                    "fetch_ids": fetch_uuid_list,
-                    "pending_only": False,
-                }
-            )
+        normalize_kwargs.update({"fetch_ids": frozen_fetch_ids, "pending_only": False})
         documents = await normalize_pending(
             **normalize_kwargs,
             progress=lambda done, total: _item_progress(
-                store, run_id, "normalization", "Normalizing fetches", done, total, 0.0, 20.0
+                store,
+                run_id,
+                "normalization",
+                "Normalizing fetches",
+                done,
+                total,
+                0.0,
+                20.0,
+                total_to_parse=total_to_parse,
+                items_parsed=done,
             ),
         )
+        stats["items_parsed"] = len(documents)
         stats["normalized_documents"] = len(documents)
         _ensure_run_active(store, run_id)
         _write_progress(store, run_id, stats, "normalization", "Normalizing fetches", 20.0)
@@ -108,6 +128,7 @@ async def run_full_parse(
                 status="complete",
                 message="Parse complete",
                 percent=100.0,
+                data={"items_parsed": len(documents), "total_to_parse": total_to_parse},
             ),
         )
         return rebuilt
@@ -138,6 +159,8 @@ async def _item_progress(
     total: int,
     start: float,
     end: float,
+    total_to_parse: int | None = None,
+    items_parsed: int | None = None,
 ) -> None:
     if total <= 0:
         percent = end
@@ -154,7 +177,12 @@ async def _item_progress(
         stage,
         message,
         percent,
-        data={"item_done": done, "item_total": total},
+        data={
+            "item_done": done,
+            "item_total": total,
+            **({"total_to_parse": total_to_parse} if total_to_parse is not None else {}),
+            **({"items_parsed": items_parsed} if items_parsed is not None else {}),
+        },
     )
 
 
@@ -191,3 +219,22 @@ def _parse_snapshot(value: datetime | str | None) -> datetime | None:
     if value is None or isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value))
+
+
+def _parse_fetch_ids(
+    store: Store,
+    source_id: uuid.UUID,
+    *,
+    scope: str,
+    fetch_ids: list[uuid.UUID],
+    snapshot_at: datetime,
+) -> list[uuid.UUID]:
+    if scope == "all":
+        return store.fetch_ids_for_source(source_id, snapshot_at=snapshot_at)
+    if scope == "fetch_ids":
+        return store.fetch_ids_for_source(
+            source_id,
+            fetch_ids=fetch_ids,
+            snapshot_at=snapshot_at,
+        )
+    return store.pending_fetch_ids(source_id=source_id, snapshot_at=snapshot_at)

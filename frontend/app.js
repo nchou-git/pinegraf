@@ -14,6 +14,9 @@ const state = {
   directoryFilters: { q: "", sources: [], class_years: [], orgs: [], sort: "name_asc" },
   directoryRows: [],
   directoryOptionRows: [],
+  claimsPage: 1,
+  claimsFilters: { q: "", predicate: "", source_id: "", min_confidence: 0, status: "current" },
+  claimPredicates: [],
   sourcesCache: null,
   sourcesError: null,
   runProgress: readSessionJSON(RUN_PROGRESS_KEY, {}),
@@ -31,6 +34,7 @@ let logsViewStream = null;
 const TAB_DEFS = [
   { id: "directory", label: "Directory", icon: "ti-list-search" },
   { id: "ask", label: "Ask", icon: "ti-message-question" },
+  { id: "claims", label: "Claims", icon: "ti-file-search" },
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
 ];
@@ -255,12 +259,13 @@ function closeMobileSidebar() {
 }
 
 function currentTab() {
-  const route = location.hash.replace(/^#/, "") || "directory";
+  const route = (location.hash.replace(/^#/, "") || "directory").split("?")[0];
   return route.split("/")[0];
 }
 
 function renderRoute() {
-  const route = location.hash.replace(/^#/, "") || "directory";
+  const rawRoute = location.hash.replace(/^#/, "") || "directory";
+  const [route, queryString = ""] = rawRoute.split("?");
   const [tab, ...rest] = route.split("/");
   document.body.classList.toggle("route-logs", tab === "logs" && Boolean(state.me?.is_admin));
   if (tab !== "logs") stopLogsViewStream();
@@ -282,6 +287,7 @@ function renderRoute() {
   closeMobileSidebar();
   renderShell();
   if (tab === "ask") return renderAsk();
+  if (tab === "claims") return renderClaims(rest, new URLSearchParams(queryString));
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
   return renderDirectory();
@@ -860,6 +866,11 @@ function claimAttribution(claimOrEvidence) {
   `;
 }
 
+function claimDisplayLine(claim) {
+  const confidence = Number(claim.confidence ?? claim.confidence_score ?? 0);
+  return `${claim.subject?.name || "Unknown"} ${claim.predicate || ""} ${claim.object?.name || claim.object_value || ""} (${confidence.toFixed(2)})`;
+}
+
 function claimEvidenceList(claimOrEvidence) {
   if (Array.isArray(claimOrEvidence)) return claimOrEvidence;
   if (Array.isArray(claimOrEvidence?.evidence)) return claimOrEvidence.evidence;
@@ -913,6 +924,229 @@ function renderPagination(page, totalPages) {
     state.directoryPage = page + 1;
     loadDirectory();
   };
+}
+
+/* ───── Claims ───── */
+
+async function renderClaims(parts = [], query = new URLSearchParams()) {
+  const claimId = parts[0];
+  if (claimId) return renderClaimDetail(claimId);
+  if (query.get("source")) {
+    state.claimsFilters.source_id = query.get("source");
+  }
+  setPageHeader({
+    title: "Claims",
+    subtitle: "Browse extracted claims across all sources.",
+  });
+  const app = byId("app");
+  app.innerHTML = `
+    <div class="directory-page claims-page">
+      <section class="directory-filter-bar claims-filter-bar">
+        <label class="directory-search input-with-icon">
+          <i class="ti ti-search icon" aria-hidden="true"></i>
+          <input class="input" id="claims-q" placeholder="Search subject or object" value="${escapeAttr(state.claimsFilters.q)}" />
+        </label>
+        <select class="input claims-filter-select" id="claims-predicate">
+          <option value="">All predicates</option>
+        </select>
+        <select class="input claims-filter-select" id="claims-status">
+          <option value="current">Current</option>
+          <option value="superseded">Superseded</option>
+          <option value="all">All</option>
+        </select>
+        <select class="input claims-filter-select" id="claims-source">
+          <option value="">All sources</option>
+        </select>
+        <label class="claims-confidence">
+          <span>Confidence</span>
+          <input id="claims-confidence" type="range" min="0" max="1" step="0.05" value="${escapeAttr(state.claimsFilters.min_confidence)}" />
+        </label>
+      </section>
+      <section class="directory-results" id="claims-results">
+        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
+      </section>
+      <div class="pagination directory-pagination" id="claims-pagination"></div>
+    </div>
+  `;
+  await Promise.all([loadClaimsSources(), loadClaimPredicates()]);
+  setupClaimsFilters();
+  await loadClaims();
+}
+
+async function loadClaimsSources() {
+  if (state.sourcesCache) return;
+  const data = await getJSON("/api/sources");
+  state.sourcesCache = data.sources || [];
+}
+
+async function loadClaimPredicates() {
+  const data = await getJSON("/api/claims/predicates");
+  state.claimPredicates = data.predicates || [];
+}
+
+function setupClaimsFilters() {
+  const predicate = byId("claims-predicate");
+  predicate.innerHTML = `<option value="">All predicates</option>${(state.claimPredicates || [])
+    .map((item) => `<option value="${escapeAttr(item)}">${escapeHtml(item)}</option>`)
+    .join("")}`;
+  predicate.value = state.claimsFilters.predicate || "";
+  const source = byId("claims-source");
+  source.innerHTML = `<option value="">All sources</option>${(state.sourcesCache || [])
+    .filter((item) => item.status !== "archived")
+    .map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.display_name || item.identifier)}</option>`)
+    .join("")}`;
+  source.value = state.claimsFilters.source_id || "";
+  byId("claims-status").value = state.claimsFilters.status || "current";
+  const reload = () => {
+    state.claimsFilters.q = byId("claims-q").value.trim();
+    state.claimsFilters.predicate = byId("claims-predicate").value;
+    state.claimsFilters.status = byId("claims-status").value;
+    state.claimsFilters.source_id = byId("claims-source").value;
+    state.claimsFilters.min_confidence = Number(byId("claims-confidence").value || 0);
+    state.claimsPage = 1;
+    loadClaims();
+  };
+  byId("claims-q").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") reload();
+  });
+  predicate.onchange = reload;
+  source.onchange = reload;
+  byId("claims-status").onchange = reload;
+  byId("claims-confidence").oninput = reload;
+}
+
+async function loadClaims(extraParams = {}) {
+  const params = new URLSearchParams({
+    q: state.claimsFilters.q || "",
+    predicate: state.claimsFilters.predicate || "",
+    source_id: state.claimsFilters.source_id || "",
+    min_confidence: String(state.claimsFilters.min_confidence || 0),
+    status: state.claimsFilters.status || "current",
+    page: String(state.claimsPage),
+    page_size: "50",
+    ...extraParams,
+  });
+  const data = await getJSON(`/api/claims?${params.toString()}`);
+  const results = byId("claims-results");
+  results.innerHTML = claimsList(data.claims || {});
+  attachClaimsRows(results);
+  renderClaimsPagination(data.page || 1, Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 50))));
+  setPageHeader({
+    title: "Claims",
+    subtitle: `${formatNumber(data.total || 0)} claims`,
+  });
+}
+
+function claimsList(claims, options = {}) {
+  const rows = Array.isArray(claims) ? claims : [];
+  if (!rows.length) {
+    return `<div class="empty-state"><i class="ti ti-file-search" aria-hidden="true"></i><div>No claims matched.</div></div>`;
+  }
+  return `
+    <table class="directory-table claims-table">
+      <thead>
+        <tr>
+          <th>Subject</th>
+          <th>Predicate</th>
+          <th>Object</th>
+          <th>Confidence</th>
+          <th>Evidence</th>
+          <th>Valid from</th>
+          ${options.role ? `<th>Role</th>` : ""}
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((claim) => claimsListRow(claim, options)).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function claimsListRow(claim, options = {}) {
+  const confidence = Number(claim.confidence ?? claim.confidence_score ?? 0);
+  const role = options.entityId
+    ? claim.subject?.id === options.entityId ? "as subject" : "as object"
+    : "";
+  return `
+    <tr class="directory-table-row claim-row" data-claim-id="${escapeAttr(claim.id || claim.claim_id)}">
+      <td>${escapeHtml(claim.subject?.name || "Unknown")}</td>
+      <td><span class="claim-predicate">${escapeHtml(claim.predicate || "")}</span></td>
+      <td>${escapeHtml(claim.object?.name || claim.object_value || "")}</td>
+      <td>${confidence.toFixed(2)}</td>
+      <td>${formatNumber(claim.evidence_count || 0)}</td>
+      <td>${claim.valid_from ? escapeHtml(formatDate(claim.valid_from)) : ""}</td>
+      ${options.role ? `<td><span class="source-badge">${escapeHtml(role)}</span></td>` : ""}
+    </tr>
+  `;
+}
+
+function attachClaimsRows(root) {
+  root.querySelectorAll("[data-claim-id]").forEach((row) => {
+    row.onclick = () => {
+      location.hash = `#claims/${row.dataset.claimId}`;
+    };
+  });
+}
+
+function renderClaimsPagination(page, totalPages) {
+  const pag = byId("claims-pagination");
+  if (!pag || totalPages <= 1) {
+    if (pag) pag.innerHTML = "";
+    return;
+  }
+  pag.innerHTML = `
+    <button class="btn-secondary" ${page <= 1 ? "disabled" : ""}>Previous</button>
+    <button class="btn-secondary accent" ${page >= totalPages ? "disabled" : ""}>Next</button>
+  `;
+  const [prev, next] = pag.querySelectorAll("button");
+  prev.onclick = () => {
+    state.claimsPage = Math.max(1, page - 1);
+    loadClaims();
+  };
+  next.onclick = () => {
+    state.claimsPage = page + 1;
+    loadClaims();
+  };
+}
+
+async function renderClaimDetail(claimId) {
+  const data = await getJSON(`/api/claims/${claimId}`);
+  setPageHeader({
+    title: "Claim",
+    subtitle: data.statement || "",
+    eyebrow: `<a href="#claims">Claims</a> / Claim detail`,
+  });
+  byId("app").innerHTML = `
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">${escapeHtml(data.statement || "")}</div>
+          <div class="muted small">${escapeHtml(data.predicate || "")} · confidence ${Number(data.confidence || 0).toFixed(2)}</div>
+        </div>
+      </div>
+      <div class="claim-detail-grid">
+        ${claimEntityCard("Subject", data.subject_entity || data.subject)}
+        ${claimEntityCard("Object", data.object_entity || data.object)}
+      </div>
+      <div class="panel-header">
+        <div class="panel-title">Evidence</div>
+        <div class="muted small">${formatNumber(data.evidence_count || 0)} rows</div>
+      </div>
+      <div class="claim-attribution-panel">
+        ${(data.evidence || []).map(claimEvidenceRow).join("") || `<div class="muted small">No evidence rows.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function claimEntityCard(label, entity) {
+  return `
+    <div class="claim-entity-card">
+      <div class="field-label">${escapeHtml(label)}</div>
+      <strong>${escapeHtml(entity?.display_name || entity?.canonical_name || entity?.name || "Unknown")}</strong>
+      ${entity?.id ? `<a href="#graph/${escapeAttr(entity.id)}">Open entity</a>` : ""}
+    </div>
+  `;
 }
 
 /* ───── Ask ───── */
@@ -1120,6 +1354,7 @@ function renderAskSources(item) {
                     <article class="ask-citation-card" role="button" tabindex="0" data-ask-id="${escapeAttr(item.id)}" data-citation-index="${i}">
                       <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
                       <strong>${escapeHtml(c.source_name || c.title || c.source_title || `Source ${i + 1}`)}</strong>
+                      ${c.claim ? `<div class="muted small">${escapeHtml(claimDisplayLine(c.claim))}</div>` : ""}
                       ${claimAttribution(c)}
                       <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
                     </article>`,
@@ -1393,6 +1628,14 @@ function renderEntityPanel(data) {
       </div>
     </div>
     ${renderEntityAttributeClaims(data.attributes || {})}
+    <section class="panel entity-claims-panel">
+      <div class="panel-header">
+        <div class="panel-title">Claims</div>
+      </div>
+      <div id="entity-claims-list">
+        <div class="muted small">Loading claims...</div>
+      </div>
+    </section>
     <section class="graph-split">
       <div class="panel">
         <div class="panel-header">
@@ -1418,6 +1661,29 @@ function renderEntityPanel(data) {
     </section>
   `;
   drawGraph(data);
+  loadEntityClaims(data.identity.entity_id);
+}
+
+async function loadEntityClaims(entityId) {
+  const root = byId("entity-claims-list");
+  if (!root) return;
+  try {
+    const [subject, object] = await Promise.all([
+      getJSON(`/api/claims?subject_entity_id=${encodeURIComponent(entityId)}&page_size=100`),
+      getJSON(`/api/claims?object_entity_id=${encodeURIComponent(entityId)}&page_size=100`),
+    ]);
+    const seen = new Set();
+    const claims = [...(subject.claims || []), ...(object.claims || [])].filter((claim) => {
+      const id = claim.id || claim.claim_id;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    root.innerHTML = claimsList(claims, { entityId, role: true });
+    attachClaimsRows(root);
+  } catch (error) {
+    root.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load claims: ${escapeHtml(error.message)}</div></div>`;
+  }
 }
 
 function renderEntityAttributeClaims(attributes) {
@@ -1809,9 +2075,13 @@ function setupSourceRows(root, sources, { archived }) {
     const destroy = row.querySelector("[data-action=delete]");
     const pauseButtons = row.querySelectorAll("[data-action=pause]");
     const resumeButtons = row.querySelectorAll("[data-action=resume]");
+    const pendingParse = row.querySelector("[data-action=pending-parse]");
+    const dueRecrawl = row.querySelector("[data-action=due-recrawl]");
     const menuBtn = row.querySelector("[data-action=menu]");
     if (crawl) crawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (parse) parse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
+    if (pendingParse) pendingParse.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "parse"); };
+    if (dueRecrawl) dueRecrawl.onclick = (e) => { e.stopPropagation(); runSourceAction(source.id, "crawl"); };
     if (unarchive) unarchive.onclick = (e) => {
       e.stopPropagation();
       updateSourceStatus(source.id, "active");
@@ -2046,7 +2316,7 @@ function sourceRow(source, options = {}) {
           <span><strong>${formatNumber(sourcePagesFetched(source))}</strong> pages fetched</span>
           <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
           <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
-          <span class="muted source-last-run">${sourceRunStatusText(source, progress)}</span>
+          ${sourceStateMarkup(source, progress)}
           <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
         </div>
         ${
@@ -2135,6 +2405,36 @@ function sourceRunStatusText(source, progress) {
   return runProgressText(progress || { action: source.active_run_kind || "crawl" });
 }
 
+function sourceStateMarkup(source, progress) {
+  const runs = activeRuns(source);
+  if (runs.crawl || runs.parse || source.active_run_id) {
+    return `<span class="muted source-last-run">${escapeHtml(sourceRunStatusText(source, progress))}</span>`;
+  }
+  const pending = Number(source.pending_parse_count ?? source.coverage?.pending_parse_count ?? 0);
+  if (pending > 0) {
+    return `<button class="source-state-pill info" data-action="pending-parse" type="button"><i class="ti ti-info-circle" aria-hidden="true"></i>${formatNumber(pending)} documents haven't been parsed</button>`;
+  }
+  if (sourceDueForRecrawl(source)) {
+    return `<button class="source-state-pill info" data-action="due-recrawl" type="button"><i class="ti ti-refresh-alert" aria-hidden="true"></i>Due for re-crawl</button>`;
+  }
+  if (sourceUpToDate(source)) {
+    return `<span class="source-state-indicator"><i class="ti ti-circle-check" aria-hidden="true"></i>Up to date</span>`;
+  }
+  return `<span class="muted source-last-run">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>`;
+}
+
+function sourceDueForRecrawl(source) {
+  const last = source.last_full_recrawl_at ? new Date(source.last_full_recrawl_at) : null;
+  if (!last || Number.isNaN(last.getTime())) return true;
+  const intervalDays = Math.max(1, Number(source.recrawl_interval_days || 7));
+  return Date.now() - last.getTime() >= intervalDays * 24 * 60 * 60 * 1000;
+}
+
+function sourceUpToDate(source) {
+  const runs = activeRuns(source);
+  return !runs.crawl && !runs.parse && Number(source.pending_parse_count || 0) === 0 && !sourceDueForRecrawl(source);
+}
+
 function progressForRun(source, action, run) {
   const sourceId = source.id;
   const stats = run?.stats || {};
@@ -2148,6 +2448,8 @@ function progressForRun(source, action, run) {
     known,
     done: Number(stats.item_done),
     total: Number(stats.item_total),
+    itemsParsed: Number(stats.items_parsed),
+    totalToParse: Number(stats.total_to_parse),
   };
 }
 
@@ -2155,15 +2457,22 @@ function runProgressText(progress) {
   const action = progress?.action === "parse" ? "parse" : "crawl";
   const label = action === "parse" ? "Parsing" : "Crawling";
   const count = runProgressCount(progress);
-  const percent = Number(progress?.percent || 0).toFixed(1);
+  const percent =
+    action === "parse" && Number.isFinite(progress?.itemsParsed) && Number(progress?.totalToParse) > 0
+      ? ((100 * Number(progress.itemsParsed)) / Number(progress.totalToParse)).toFixed(1)
+      : Number(progress?.percent || 0).toFixed(1);
   return count ? `${label} ${count} (${percent}%)` : `${label} (${percent}%)`;
 }
 
 function runProgressCount(progress) {
   const throttled = throttledDelay(progress);
   if (throttled > 2000) return `Throttled (${formatNumber(throttled)}ms)`;
-  if (progress?.action === "parse" && Number.isFinite(progress.done) && Number.isFinite(progress.total)) {
-    return `${formatNumber(progress.done)} / ${formatNumber(progress.total)} docs`;
+  if (progress?.action === "parse") {
+    const done = Number.isFinite(progress.itemsParsed) ? progress.itemsParsed : progress.done;
+    const total = Number.isFinite(progress.totalToParse) ? progress.totalToParse : progress.total;
+    if (Number.isFinite(done) && Number.isFinite(total)) {
+      return `${formatNumber(done)} / ${formatNumber(total)} docs`;
+    }
   }
   if (!Number.isFinite(progress.fetched) || !Number.isFinite(progress.known)) return "";
   return `${formatNumber(progress.fetched)} / ${formatNumber(progress.known)}`;
@@ -2401,6 +2710,8 @@ function trackRun(sourceId, sourceName, action, runId, initial = {}) {
     known: sourceProgress[action]?.known ?? initial.known,
     done: sourceProgress[action]?.done ?? initial.done,
     total: sourceProgress[action]?.total ?? initial.total,
+    itemsParsed: sourceProgress[action]?.itemsParsed ?? initial.itemsParsed,
+    totalToParse: sourceProgress[action]?.totalToParse ?? initial.totalToParse,
   };
   state.runProgress[sourceId] = sourceProgress;
   persistRunProgress();
@@ -2418,6 +2729,8 @@ function trackRun(sourceId, sourceName, action, runId, initial = {}) {
     progress.known = Number(progressData.known);
     progress.done = Number(progressData.item_done);
     progress.total = Number(progressData.item_total);
+    progress.itemsParsed = Number(progressData.items_parsed);
+    progress.totalToParse = Number(progressData.total_to_parse);
     progress.host_pacing = progressData.host_pacing || progress.host_pacing || {};
     progress.status = data.status;
     current[action] = progress;
@@ -2455,6 +2768,8 @@ function ensureActiveRunStreams(sources) {
         known: Number(run.stats?.known ?? source.urls_known_total),
         done: Number(run.stats?.item_done),
         total: Number(run.stats?.item_total),
+        itemsParsed: Number(run.stats?.items_parsed),
+        totalToParse: Number(run.stats?.total_to_parse),
       });
     });
   });
@@ -2892,6 +3207,10 @@ function renderSourceConfig(detail) {
   wrap.innerHTML = `
     <div class="panel panel-flush">
       <div class="modal-body">
+        <div class="source-config-status">
+          ${sourceConfigStatusMarkup(detail)}
+        </div>
+        <a class="btn-ghost" href="#claims?source=${escapeAttr(detail.id)}"><i class="ti ti-file-search" aria-hidden="true"></i> View ${formatNumber(detail.coverage?.claims || 0)} claims from this source</a>
         <label class="field">
           <span class="field-label">Display name</span>
           <input class="input" id="cfg-name" value="${escapeAttr(detail.display_name || "")}" ${adminOnly ? "disabled" : ""} />
@@ -2914,9 +3233,16 @@ function renderSourceConfig(detail) {
           </span>
           <span class="field-hint warning">Disable only with explicit permission from the site owner.</span>
         </label>
+        <label class="field">
+          <span class="field-label">Re-crawl interval (days)</span>
+          <input class="input" id="cfg-recrawl-days" type="number" min="1" max="3650" value="${escapeAttr(detail.recrawl_interval_days || 7)}" ${adminOnly ? "disabled" : ""} />
+        </label>
         ${
           !adminOnly
-            ? `<div class="form-actions"><button class="btn-primary" id="cfg-save"><i class="ti ti-device-floppy"></i> Save</button></div>`
+            ? `<div class="form-actions">
+                <button class="btn-secondary" id="cfg-verify" type="button"><i class="ti ti-shield-check"></i> Verify integrity</button>
+                <button class="btn-primary" id="cfg-save"><i class="ti ti-device-floppy"></i> Save</button>
+              </div>`
             : ""
         }
       </div>
@@ -2928,10 +3254,46 @@ function renderSourceConfig(detail) {
         display_name: byId("cfg-name").value.trim() || null,
         notes: byId("cfg-notes").value.trim() || null,
         respect_robots: byId("cfg-respect-robots").checked,
+        recrawl_interval_days: Math.max(1, Number(byId("cfg-recrawl-days").value || 7)),
       };
       await patchSource(detail.id, body);
       renderSourceDetail(detail.id, "config");
     };
+    byId("cfg-verify").onclick = () => verifySourceIntegrity(detail.id);
+  }
+}
+
+function sourceConfigStatusMarkup(detail) {
+  if (sourceUpToDate(detail)) {
+    return `<div class="source-config-indicator ok"><i class="ti ti-circle-check" aria-hidden="true"></i><div><strong>Up to date</strong><span>Up to date as of ${escapeHtml(detail.last_full_recrawl_at ? timeAgo(detail.last_full_recrawl_at) : "the last crawl")}; last parsed ${escapeHtml(detail.latest_parse_finished_at ? timeAgo(detail.latest_parse_finished_at) : "never")}.</span></div></div>`;
+  }
+  const pending = Number(detail.pending_parse_count || 0);
+  if (pending > 0) {
+    return `<div class="source-config-indicator info"><i class="ti ti-info-circle" aria-hidden="true"></i><div><strong>${formatNumber(pending)} documents haven't been parsed</strong><span>Click Parse from the sources list to process pending work.</span></div></div>`;
+  }
+  if (sourceDueForRecrawl(detail)) {
+    return `<div class="source-config-indicator info"><i class="ti ti-refresh-alert" aria-hidden="true"></i><div><strong>Due for re-crawl</strong><span>Last crawled ${escapeHtml(detail.last_full_recrawl_at ? timeAgo(detail.last_full_recrawl_at) : "never")}.</span></div></div>`;
+  }
+  return `<div class="source-config-indicator"><i class="ti ti-clock" aria-hidden="true"></i><div><strong>Status</strong><span>Last crawled ${escapeHtml(detail.last_full_recrawl_at ? timeAgo(detail.last_full_recrawl_at) : "never")}; last parsed ${escapeHtml(detail.latest_parse_finished_at ? timeAgo(detail.latest_parse_finished_at) : "never")}.</span></div></div>`;
+}
+
+async function verifySourceIntegrity(sourceId) {
+  try {
+    const result = await postJSON(`/admin/sources/${sourceId}/verify-integrity`, {});
+    openModal(`
+      <div class="modal-header">
+        <div>
+          <div class="modal-title">Integrity check</div>
+          <div class="modal-subtitle">${result.ok ? "No violations found" : "Violations found"}</div>
+        </div>
+        <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <pre class="integrity-result">${escapeHtml(JSON.stringify(result, null, 2))}</pre>
+      </div>
+    `);
+  } catch (error) {
+    toast(normalizeErrorMessage(error), { level: "error" });
   }
 }
 
@@ -3384,6 +3746,17 @@ async function getJSON(url, options = {}) {
   if (!res.ok) {
     throw await errorFromResponse(res, url, { redirectOnAuth });
   }
+  return res.json();
+}
+
+async function postJSON(url, body = {}, options = {}) {
+  const { redirectOnAuth = true } = options;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await errorFromResponse(res, url, { redirectOnAuth });
   return res.json();
 }
 

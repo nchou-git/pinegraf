@@ -49,6 +49,7 @@ steps:
     args:
       - -c
       - |
+        set -euo pipefail
         pip install --no-cache-dir -e .
         python -m alembic upgrade head
         pytest -q

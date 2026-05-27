@@ -17,7 +17,7 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 
 from backend.config import get_settings
-from backend.db.store import Store
+from backend.db.store import Store, content_digest
 from backend.ingestion.fetcher import TIMEOUT_SECONDS, fetch_url, robots_allowed, user_agent
 from backend.live_logs import append_log
 from backend.progress import progress_stats
@@ -101,7 +101,7 @@ _TRACKING_PARAMS = frozenset(
 )
 
 ACTIVE_RUN_STATUSES = {"queued", "running"}
-HOST_PACING_STATS_INTERVAL = 10
+HOST_PACING_STATS_INTERVAL = 50
 HOST_DELAY_INITIAL_SECONDS = 0.250
 HOST_DELAY_FLOOR_SECONDS = 0.100
 HOST_DELAY_RATE_LIMIT_MIN_SECONDS = 5.0
@@ -351,8 +351,9 @@ async def run_sitemap(
 
                 if not await check_liveness(force=True):
                     continue
-                if not _safe_add_fetch(
+                if not _safe_add_success_fetch(
                     store,
+                    source_id=source_id,
                     source_run_id=run_id,
                     url=final_url,
                     body_bytes=result.body,
@@ -387,17 +388,11 @@ async def run_sitemap(
                     should_refresh = stats["fetched"] % HOST_PACING_STATS_INTERVAL == 0
                     if should_refresh:
                         cumulative_fetched, cumulative_known = store.refresh_source_crawl_counters(
-                            source_id,
-                            urls_known_total=cumulative_floor,
+                            source_id
                         )
                     else:
                         cumulative_fetched = baseline_fetched + stats["fetched"]
                         cumulative_known = max(baseline_known, cumulative_floor, cumulative_fetched)
-                        store.update_source_crawl_counters(
-                            source_id,
-                            pages_fetched_total=cumulative_fetched,
-                            urls_known_total=cumulative_known,
-                        )
                     raw_percent = (
                         round(100.0 * cumulative_fetched / cumulative_known, 1)
                         if cumulative_known
@@ -495,6 +490,8 @@ async def run_sitemap(
         ),
         finished=True,
     )
+    if status == "complete":
+        store.mark_source_full_recrawl_complete(source_id)
     return stats
 
 
@@ -732,6 +729,29 @@ def _safe_add_fetch(store: Store, **kwargs: object) -> bool:
             store=store,
         )
         return False
+
+
+def _safe_add_success_fetch(
+    store: Store,
+    *,
+    source_id: uuid.UUID,
+    source_run_id: uuid.UUID,
+    url: str,
+    body_bytes: bytes,
+    **kwargs: object,
+) -> bool:
+    digest = content_digest(body_bytes)
+    prior = store.latest_successful_fetch_for_url(source_id=source_id, url=url)
+    unchanged_since = prior.id if prior is not None and prior.content_hash == digest else None
+    return _safe_add_fetch(
+        store,
+        source_run_id=source_run_id,
+        url=url,
+        body_bytes=None if unchanged_since is not None else body_bytes,
+        content_hash=digest,
+        body_unchanged_since=unchanged_since,
+        **kwargs,
+    )
 
 
 def _passes_filters(url: str) -> bool:
