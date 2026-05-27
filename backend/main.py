@@ -210,7 +210,18 @@ def create_app(store: Store | None = None) -> FastAPI:
         password = ""
         next_url = "/"
         if "application/json" in content_type:
-            data = await request.json()
+            try:
+                data = await request.json()
+            except json.JSONDecodeError:
+                return JSONResponse(
+                    {"detail": "Invalid JSON body for admin login."},
+                    status_code=400,
+                )
+            if not isinstance(data, dict):
+                return JSONResponse(
+                    {"detail": "Admin login JSON body must be an object."},
+                    status_code=400,
+                )
             username = str(data.get("username", ""))
             password = str(data.get("password", ""))
             next_url = str(data.get("next", "/"))

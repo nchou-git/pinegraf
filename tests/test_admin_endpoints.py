@@ -305,3 +305,21 @@ def test_admin_login_page_uses_single_account_and_password_toggle(store) -> None
             follow_redirects=False,
         )
         assert login.status_code == 303
+
+
+def test_admin_login_rejects_invalid_json(store) -> None:
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.post(
+            "/admin/login",
+            content=b"",
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid JSON body for admin login."
+
+        response = client.post(
+            "/admin/login",
+            json=["pinegraf", "Pinegrafposen$"],
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Admin login JSON body must be an object."

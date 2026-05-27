@@ -24,6 +24,7 @@ from structured rows or raw-page RAG.
 - ORM schema: `backend/db/models.py`
 - FastAPI route definitions: `backend/main.py`
 - Auth helpers: `backend/admin_auth.py`, `backend/admin_session.py`
+- Auth model and scripting examples: `docs/auth.md`
 
 ## Conventions
 
@@ -56,7 +57,18 @@ from structured rows or raw-page RAG.
 
 - After committing and pushing final work, create a fresh workspace snapshot:
   `tar -czf /mnt/c/Users/Nate/Downloads/pinegraf.tar.gz -C ~/pinegraf --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='node_modules' --exclude='.pytest_cache' --exclude='*.pyc' .`
+- Also write a timestamped session changelog:
+  `TS=$(date -u +"%Y-%m-%d_%H-%M"); LOG=/mnt/c/Users/Nate/Downloads/pinegraf-session-${TS}.txt`
+- The changelog must include, in order:
+  - Header line with the UTC timestamp and the commit range covered.
+  - `Summary`: 3-8 plain-language bullets describing what changed and why.
+  - `Commits`: `git log --oneline --reverse <start>..HEAD`.
+  - `Diff stat`: `git diff --stat <start>..HEAD`.
+  - `Files touched`: `git diff --name-only <start>..HEAD`.
+  - `Verification`: ruff, node `--check`, Alembic heads, pytest, and prod checks.
+  - `Open items`: unresolved or deferred work.
 - Print: `Snapshot ready at C:\Users\Nate\Downloads\pinegraf.tar.gz`
+- Print: `Session log at C:\Users\Nate\Downloads\pinegraf-session-${TS}.txt`
 
 ## Things To Avoid
 

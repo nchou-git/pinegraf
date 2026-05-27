@@ -9,8 +9,9 @@ the `SourceRun` as `stopped`.
 - Crawl starts a new crawl run while preserving source-level cumulative counters.
 - Parse starts a new parse run with a fresh `snapshot_at` at job start and the
   default `scope="unparsed"`, so already-linked `DocumentFetch` rows are skipped.
-- Any prior stopped run for the same source and kind is marked `superseded` and
-  audited with `run.superseded_by_resume`.
+- Start again clears all prior stopped runs for this source and kind, not just
+  the latest. Each cleared run is marked `superseded` and audited with
+  `run.superseded_by_resume`.
 
 True pause would require persisting the crawl frontier or parse work queue and
 resuming the same run from that snapshot. That is intentionally out of scope for
