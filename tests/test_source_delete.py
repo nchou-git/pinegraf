@@ -379,7 +379,7 @@ def test_archive_status_hides_source_without_deleting_data(
         assert archive.json()["status"] == "archived"
 
         main_sources = client.get("/api/sources").json()
-        archived_sources = client.get("/api/sources/archived").json()
+        archived_sources = client.get("/api/sources/archived", headers=admin_headers).json()
 
         restore = client.patch(
             f"/admin/sources/{source.id}",

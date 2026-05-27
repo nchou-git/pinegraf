@@ -142,6 +142,13 @@ def test_parse_rejects_existing_active_parse(store, admin_headers, monkeypatch) 
 
     monkeypatch.setattr(main_module, "execute_cloud_run_job", execute_cloud_run_job)
     source = store.upsert_source(kind="domain", identifier="example.com")
+    store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_id": str(source.id), "source_input": source.identifier},
+        triggered_by="test",
+        status="complete",
+    )
     existing = store.create_source_run(
         source_id=source.id,
         kind="parse",
@@ -243,6 +250,7 @@ def test_stop_run_marks_stopped_and_audits(store, admin_headers, monkeypatch) ->
     with TestClient(main_module.create_app(store)) as client:
         response = client.post(f"/admin/runs/{run.id}/stop", headers=admin_headers)
         assert store.get_source(source.id).status == "active"
+        assert store.get_source_run(run.id).status == "stopped"
         delete_response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
         audit_response = client.get("/admin/audit", headers=admin_headers)
 
@@ -250,7 +258,6 @@ def test_stop_run_marks_stopped_and_audits(store, admin_headers, monkeypatch) ->
     assert response.json()["status"] == "stopped"
     assert response.json()["cloud_execution_cancelled"] is True
     assert stopped == [run.id]
-    assert store.get_source_run(run.id).status == "stopped"
     assert delete_response.status_code == 200
     assert store.get_source(source.id) is None
     assert audit_response.status_code == 200
