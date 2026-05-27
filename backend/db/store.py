@@ -379,7 +379,13 @@ class Store:
                 return existing
             return document
 
-    def pending_fetch_ids(self, *, source_run_id: uuid.UUID | None = None) -> list[uuid.UUID]:
+    def pending_fetch_ids(
+        self,
+        *,
+        source_run_id: uuid.UUID | None = None,
+        source_id: uuid.UUID | None = None,
+        fetch_ids: Sequence[uuid.UUID] | None = None,
+    ) -> list[uuid.UUID]:
         with self.session() as session:
             query = (
                 select(Fetch.id)
@@ -390,6 +396,30 @@ class Store:
             )
             if source_run_id is not None:
                 query = query.where(Fetch.source_run_id == source_run_id)
+            if source_id is not None:
+                query = query.join(SourceRun, SourceRun.id == Fetch.source_run_id).where(
+                    SourceRun.source_id == source_id
+                )
+            if fetch_ids is not None:
+                query = query.where(Fetch.id.in_(fetch_ids))
+            return list(session.execute(query).scalars())
+
+    def fetch_ids_for_source(
+        self,
+        source_id: uuid.UUID,
+        *,
+        fetch_ids: Sequence[uuid.UUID] | None = None,
+    ) -> list[uuid.UUID]:
+        with self.session() as session:
+            query = (
+                select(Fetch.id)
+                .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+                .where(SourceRun.source_id == source_id)
+                .where(Fetch.body_bytes.is_not(None))
+                .order_by(Fetch.fetched_at.asc())
+            )
+            if fetch_ids is not None:
+                query = query.where(Fetch.id.in_(fetch_ids))
             return list(session.execute(query).scalars())
 
     def table_counts(self, tables: Iterable[str] = SCHEMA_TABLES) -> dict[str, int]:

@@ -498,6 +498,7 @@ def list_source_documents(
             results.append(
                 {
                     "document_id": str(document.id),
+                    "fetch_id": str(fetch.id),
                     "title": document.title or fetch.url,
                     "url": document.canonical_url or fetch.url,
                     "fetched_at": fetch.fetched_at.isoformat(),

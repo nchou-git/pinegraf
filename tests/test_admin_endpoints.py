@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend import main as main_module
-from backend.db.models import AuditLog
+from backend.db.models import AuditLog, SourceRun
 
 
 def test_admin_auth_required_and_happy_paths(
@@ -139,6 +139,47 @@ def test_parse_rejects_existing_active_source_run(store, admin_headers, monkeypa
     assert store.get_source_run(existing.id).status == "running"
 
 
+def test_parse_accepts_fetch_id_scope_and_audits(store, admin_headers, monkeypatch) -> None:
+    queued = []
+
+    async def execute_cloud_run_job(run_id, mode: str) -> None:
+        queued.append((run_id, mode))
+
+    monkeypatch.setattr(main_module, "execute_cloud_run_job", execute_cloud_run_job)
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_id": str(source.id), "source_input": source.identifier},
+        triggered_by="test",
+        status="complete",
+    )
+    fetch = store.add_fetch(
+        source_run_id=run.id,
+        url="https://example.com/page",
+        body_bytes=b"<html>ok</html>",
+        http_status=200,
+    )
+
+    with TestClient(main_module.create_app(store)) as client:
+        response = client.post(
+            f"/admin/sources/{source.id}/parse",
+            headers=admin_headers,
+            json={"scope": "fetch_ids", "fetch_ids": [str(fetch.id)]},
+        )
+        audit_response = client.get("/admin/audit", headers=admin_headers)
+
+    assert response.status_code == 200
+    with store.session() as session:
+        parse_run = session.execute(
+            select(SourceRun).where(SourceRun.source_id == source.id, SourceRun.kind == "parse")
+        ).scalar_one()
+    assert parse_run.spec["scope"] == "fetch_ids"
+    assert parse_run.spec["fetch_ids"] == [str(fetch.id)]
+    assert queued == [(parse_run.id, "parse")]
+    assert audit_response.json()["entries"][0]["payload"]["fetch_ids_count"] == 1
+
+
 def test_delete_source_rejects_active_run(store, admin_headers) -> None:
     source = store.upsert_source(kind="domain", identifier="example.com")
     run = store.create_source_run(
@@ -177,7 +218,7 @@ def test_cancel_run_marks_cancelled_and_audits(store, admin_headers, monkeypatch
 
     with TestClient(main_module.create_app(store)) as client:
         response = client.post(f"/admin/runs/{run.id}/cancel", headers=admin_headers)
-        assert store.get_source(source.id).status == "paused"
+        assert store.get_source(source.id).status == "active"
         delete_response = client.delete(f"/admin/sources/{source.id}", headers=admin_headers)
         audit_response = client.get("/admin/audit", headers=admin_headers)
 

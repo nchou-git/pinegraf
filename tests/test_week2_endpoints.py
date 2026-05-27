@@ -64,8 +64,16 @@ def test_source_coverage_separates_pages_fetched_from_documents_parsed(store) ->
 def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypatch) -> None:
     from backend.jobs import run as jobs_run
 
-    async def fake_run_full_parse(source_run_id, *, store, progress_run_id=None):
-        del source_run_id, store, progress_run_id
+    async def fake_run_full_parse(
+        source_run_id,
+        *,
+        store,
+        progress_run_id=None,
+        source_id=None,
+        scope="unparsed",
+        fetch_ids=None,
+    ):
+        del source_run_id, store, progress_run_id, source_id, scope, fetch_ids
         return set()
 
     monkeypatch.setattr(jobs_run, "run_full_parse", fake_run_full_parse)
@@ -102,3 +110,4 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
             select(SourceRun).where(SourceRun.source_id == source.id, SourceRun.kind == "parse")
         ).scalar_one()
     assert parse_run.spec["parse_source_run_id"]
+    assert parse_run.spec["scope"] == "unparsed"

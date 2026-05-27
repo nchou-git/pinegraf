@@ -41,12 +41,16 @@ async def run_from_env(*, store: Store | None = None) -> None:
         return
     if mode == "parse":
         db.update_source_run(run_id, status="running", clear_finished=True)
-        parse_source_run_id = run.spec.get("parse_source_run_id") if run.spec else None
+        spec = run.spec or {}
+        parse_source_run_id = spec.get("parse_source_run_id")
         try:
             await run_full_parse(
                 parse_source_run_id or run_id,
                 store=db,
                 progress_run_id=run_id,
+                source_id=spec.get("source_id"),
+                scope=str(spec.get("scope") or "unparsed"),
+                fetch_ids=list(spec.get("fetch_ids") or []),
             )
         except Exception:
             current = db.get_source_run(run_id)

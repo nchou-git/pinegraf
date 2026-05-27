@@ -32,7 +32,7 @@ from backend.admin_auth import (
 )
 from backend.admin_session import COOKIE_NAME, issue
 from backend.config import get_settings
-from backend.db.models import AuditLog, Source, SourceRun
+from backend.db.models import AuditLog, Fetch, Source, SourceRun
 from backend.db.store import Store, source_to_dict, utc_now
 from backend.jobs.run import cancel_cloud_run_execution, execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
@@ -95,6 +95,11 @@ class ConflictResolveRequest(BaseModel):
         "both_valid_distinct",
     ]
     notes: str | None = None
+
+
+class ParseRequest(BaseModel):
+    scope: Literal["all", "unparsed", "fetch_ids"] = "unparsed"
+    fetch_ids: list[uuid.UUID] | None = None
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -549,12 +554,39 @@ def create_app(store: Store | None = None) -> FastAPI:
     async def admin_source_parse(
         request: Request,
         source_id: uuid.UUID,
+        payload: ParseRequest | None = None,
     ) -> dict[str, str] | JSONResponse:
         require_admin(request)
+        payload = payload or ParseRequest()
         store = _store(request)
         source = store.get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
+        fetch_ids = payload.fetch_ids or []
+        if payload.scope == "fetch_ids":
+            if not fetch_ids:
+                raise HTTPException(status_code=400, detail="fetch_ids is required")
+            if len(fetch_ids) > 1000:
+                raise HTTPException(status_code=400, detail="fetch_ids is limited to 1000")
+            with store.session() as session:
+                owned_fetch_ids = set(
+                    session.execute(
+                        select(Fetch.id)
+                        .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+                        .where(SourceRun.source_id == source_id)
+                        .where(Fetch.id.in_(fetch_ids))
+                    ).scalars()
+                )
+            if owned_fetch_ids != set(fetch_ids):
+                raise HTTPException(
+                    status_code=400,
+                    detail="all fetch_ids must belong to this source",
+                )
+        elif fetch_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="fetch_ids is only valid when scope is fetch_ids",
+            )
         with store.session() as session:
             latest = session.execute(
                 select(SourceRun)
@@ -566,15 +598,27 @@ def create_app(store: Store | None = None) -> FastAPI:
         if latest is None:
             raise HTTPException(status_code=400, detail="no source run to parse — crawl first")
         try:
+            spec: dict[str, object] = {
+                "source_id": str(source.id),
+                "parse_source_run_id": str(latest.id),
+                "scope": payload.scope,
+            }
+            if payload.scope == "fetch_ids":
+                spec["fetch_ids"] = [str(fetch_id) for fetch_id in fetch_ids]
             run = store.create_source_run(
                 source_id=source.id,
                 kind="parse",
-                spec={
-                    "source_id": str(source.id),
-                    "parse_source_run_id": str(latest.id),
-                },
+                spec=spec,
                 triggered_by="admin",
                 status="queued",
+                audit_action="run.parse",
+                audit_actor=_admin_actor(request),
+                audit_request_ip=_request_ip(request),
+                audit_payload={
+                    "scope": payload.scope,
+                    "fetch_ids_count": len(fetch_ids),
+                    "fetch_ids_sample": [str(fetch_id) for fetch_id in fetch_ids[:20]],
+                },
             )
         except IntegrityError as exc:
             return _already_running_from_integrity_error(store, source_id, exc)
@@ -588,7 +632,10 @@ def create_app(store: Store | None = None) -> FastAPI:
                 finished=True,
             )
             raise HTTPException(status_code=502, detail="failed to queue parse job") from exc
-        append_log("info", f"Parse queued for {source.display_name or source.identifier}")
+        append_log(
+            "info",
+            f"Parse queued for {source.display_name or source.identifier} ({payload.scope})",
+        )
         return {"run_id": str(run.id), "status": "queued"}
 
     @app.get("/admin/runs/{run_id}/stream")
@@ -640,7 +687,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                     db_run.finished_at = db_run.finished_at or utc_now()
                     db_source = session.get(Source, db_run.source_id)
                     if db_source is not None:
-                        db_source.status = "paused"
+                        db_source.status = "active"
                 session.add(
                     AuditLog(
                         action="run.cancel",

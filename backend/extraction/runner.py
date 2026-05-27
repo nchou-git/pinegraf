@@ -16,6 +16,7 @@ async def extract_pending(
     limit: int | None = None,
     *,
     store: Store,
+    document_ids: list[uuid.UUID] | None = None,
     progress: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> list[uuid.UUID]:
     with store.session() as session:
@@ -24,6 +25,10 @@ async def extract_pending(
             .where(~exists().where(ClaimRaw.chunk_id == Chunk.id))
             .order_by(Chunk.created_at.asc())
         )
+        if document_ids is not None:
+            if not document_ids:
+                return []
+            query = query.where(Chunk.document_id.in_(document_ids))
         if limit is not None:
             query = query.limit(limit)
         chunks = list(session.execute(query).all())

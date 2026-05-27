@@ -5,6 +5,7 @@ const RUN_PROGRESS_KEY = "pinegraf_run_progress";
 const ASK_EXAMPLES = ["Tuck alums in tech", "Who worked on Gyrobike?"];
 const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
 const ARCHIVE_SOURCE_CONFIRM = "Derived data is preserved and the source can be restored later.";
+const MAX_TOASTS = 3;
 
 const state = {
   me: null,
@@ -102,6 +103,7 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   await Promise.all([loadMe(), loadStats()]);
+  ensureToastContainer();
   setupShell();
   renderShell();
   window.addEventListener("hashchange", renderRoute);
@@ -1641,13 +1643,10 @@ async function renderSources(parts) {
     </div>
     ${
       isAdmin()
-        ? `<details class="conflicts" open>
-             <summary class="conflicts-header">
-               <div class="conflicts-title-row">
-                 <i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>
-                 <span class="panel-title">Conflicts</span>
-                 <span class="conflicts-count-pill" id="conflict-count">0 unresolved</span>
-               </div>
+        ? `<details class="conflicts archived-sources" open>
+             <summary>
+               <i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>
+               <span id="conflict-summary-text">Conflicts (0 unresolved)</span>
              </summary>
              <div id="conflicts-body"><div class="muted small">Loading…</div></div>
            </details>`
@@ -1848,16 +1847,19 @@ function setupSourceRows(root, sources, { archived }) {
 function sourceSkeletonRow() {
   return `
     <div class="source-row source-skeleton" aria-label="Loading sources">
-      <div class="source-row-main">
-        <span class="skeleton-box source-row-icon" aria-hidden="true"></span>
-        <div class="source-row-copy">
-          <span class="skeleton-line skeleton-title" aria-hidden="true"></span>
-          <span class="skeleton-line skeleton-subtitle" aria-hidden="true"></span>
+      <div class="source-row-top">
+        <div class="source-row-main">
+          <span class="skeleton-box source-row-icon" aria-hidden="true"></span>
+          <div class="source-row-copy">
+            <span class="skeleton-line skeleton-title" aria-hidden="true"></span>
+            <span class="skeleton-line skeleton-subtitle" aria-hidden="true"></span>
+          </div>
         </div>
-      </div>
-      <div class="source-row-stats">
-        <span class="skeleton-line skeleton-stat" aria-hidden="true"></span>
-        <span class="skeleton-line skeleton-stat" aria-hidden="true"></span>
+        <div class="source-row-stats">
+          <span class="skeleton-line skeleton-stat" aria-hidden="true"></span>
+          <span class="skeleton-line skeleton-stat" aria-hidden="true"></span>
+        </div>
+        <div class="source-row-actions" aria-hidden="true"></div>
       </div>
     </div>
   `;
@@ -1977,26 +1979,28 @@ function sourceArchiveRow(source) {
   const kindIcon = sourceKindIcon(source);
   return `
     <article class="source-row archived" data-source-id="${escapeAttr(source.id)}">
-      <div class="source-row-main">
-        <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
-        <div class="source-row-copy">
-          <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
-          <div class="source-row-meta">
-            <span>${escapeHtml(kindLabel)}</span>
-            <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
+      <div class="source-row-top">
+        <div class="source-row-main">
+          <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
+          <div class="source-row-copy">
+            <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
+            <div class="source-row-meta">
+              <span>${escapeHtml(kindLabel)}</span>
+              <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="source-row-stats">
-        <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
-        <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
-        <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
-        <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
-        <span class="status-pill archived">Archived</span>
-      </div>
-      <div class="source-row-actions">
-        <button class="btn-secondary" data-action="restore" type="button">Restore</button>
-        <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>
+        <div class="source-row-stats">
+          <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+          <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
+          <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
+          <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
+          <span class="status-pill archived">Archived</span>
+        </div>
+        <div class="source-row-actions">
+          <button class="btn-secondary" data-action="restore" type="button">Restore</button>
+          <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>
+        </div>
       </div>
     </article>
   `;
@@ -2019,30 +2023,37 @@ function sourceRow(source, options = {}) {
   const progress = state.runProgress[source.id];
   const hasActiveRun = Boolean(source.active_run_id);
   const actions = sourceRowActions(source, { archived, paused, progress, hasActiveRun });
+  const progressStrip = !archived && hasActiveRun
+    ? (progress ? runProgressMarkup(progress) : runStartingMarkup(source.active_run_id))
+    : "";
   return `
     <article class="source-row ${paused ? "paused" : ""} ${archived ? "archived" : ""}" data-source-id="${escapeAttr(source.id)}">
-      <div class="source-row-main">
-        <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
-        <div class="source-row-copy">
-          <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
-          <div class="source-row-meta">
-            <span>${escapeHtml(kindLabel)}</span>
-            <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
+      <div class="source-row-top">
+        <div class="source-row-main">
+          <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
+          <div class="source-row-copy">
+            <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
+            <div class="source-row-meta">
+              <span>${escapeHtml(kindLabel)}</span>
+              <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
+            </div>
           </div>
         </div>
+        <div class="source-row-stats">
+          <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+          <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
+          <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
+          <span class="muted source-last-run">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
+          ${runProgressSummaryMarkup(source, progress)}
+          <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
+        </div>
+        ${
+          isAdmin()
+            ? `<div class="source-row-actions">${actions}</div>`
+            : ""
+        }
       </div>
-      <div class="source-row-stats">
-        <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
-        <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
-        <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
-        <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
-        <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
-      </div>
-      ${
-        isAdmin()
-          ? `<div class="source-row-actions">${actions}</div>`
-          : ""
-      }
+      ${progressStrip}
     </article>
   `;
 }
@@ -2053,8 +2064,7 @@ function sourceRowActions(source, { archived, paused, progress, hasActiveRun }) 
       <button class="btn-danger" data-action="delete" type="button">Delete permanently</button>`;
   }
   if (hasActiveRun) {
-    return `${progress ? runProgressMarkup(progress) : runStartingMarkup(source.active_run_id)}
-      <button class="btn-danger-outline" data-action="cancel" type="button"><i class="ti ti-x"></i> Cancel</button>`;
+    return `<button class="btn-danger-outline" data-action="cancel" type="button"><i class="ti ti-x"></i> Cancel</button>`;
   }
   if (paused) {
     return `<button class="btn-source" data-action="resume"><i class="ti ti-player-play"></i> Resume</button>`;
@@ -2063,17 +2073,8 @@ function sourceRowActions(source, { archived, paused, progress, hasActiveRun }) 
     ? `<button class="btn-icon-only" data-action="menu" aria-label="More"><i class="ti ti-dots"></i></button>`
     : "";
   return `<button class="btn-source" data-action="crawl" title="Fetch all documents from this source"><i class="ti ti-download"></i> Crawl</button>
-    <button class="btn-source" data-action="parse" title="Re-run extraction on already-fetched documents"><i class="ti ti-cpu"></i> Parse</button>
-    ${menuButton}
-    ${parseHint(source)}`;
-}
-
-function parseHint(source) {
-  const coverage = source.coverage || {};
-  if ((coverage.pages_fetched || 0) > 0 && (coverage.documents_parsed || 0) === 0) {
-    return `<span class="source-action-message">Crawl complete. Run parse to extract documents.</span>`;
-  }
-  return "";
+    <button class="btn-source" data-action="parse" title="Parse fetched documents that have not been parsed yet"><i class="ti ti-cpu"></i> Parse</button>
+    ${menuButton}`;
 }
 
 function runStartingMarkup(runId) {
@@ -2082,24 +2083,32 @@ function runStartingMarkup(runId) {
       <div class="run-progress-track">
         <div class="run-progress-fill"></div>
       </div>
-      <span class="run-progress-percent">Starting…</span>
-      <span class="run-progress-count"></span>
     </div>
   `;
 }
 
 function runProgressMarkup(progress) {
-  const percent = Number(progress.percent || 0).toFixed(1);
-  const count = runProgressCount(progress);
   return `
     <div class="run-progress" data-run-id="${escapeAttr(progress.runId)}">
       <div class="run-progress-track">
         <div class="run-progress-fill"></div>
       </div>
-      <span class="run-progress-percent">${escapeHtml(percent)}%</span>
-      <span class="run-progress-count">${escapeHtml(count)}</span>
     </div>
   `;
+}
+
+function runProgressSummaryMarkup(source, progress) {
+  if (!source.active_run_id) return "";
+  return `<span class="muted run-progress-summary">${escapeHtml(runProgressSummary(progress))}</span>`;
+}
+
+function runProgressSummary(progress) {
+  if (!progress) return "Active";
+  const parts = ["Active"];
+  const count = runProgressCount(progress);
+  if (count) parts.push(count);
+  parts.push(`${Number(progress.percent || 0).toFixed(1)}%`);
+  return parts.join(" · ");
 }
 
 function runProgressCount(progress) {
@@ -2201,7 +2210,7 @@ async function handleMenuAction(action, sourceId) {
       await patchSource(sourceId, { status: "archived" });
       loadSourcesList();
     } catch (error) {
-      showSourceActionMessage(sourceId, normalizeErrorMessage(error));
+      toast(normalizeErrorMessage(error), { level: "error" });
     }
   } else if (action === "download") {
     window.location.href = `/api/sources/${sourceId}/download`;
@@ -2245,19 +2254,18 @@ async function updateSourceStatus(id, status) {
     await patchSource(id, { status });
     await loadSourcesList();
   } catch (error) {
-    showSourceActionMessage(id, normalizeErrorMessage(error));
+    toast(normalizeErrorMessage(error), { level: "error" });
   }
 }
 
 async function resumeSourceRun(source) {
   if (!source?.id || !isAdmin()) return;
-  showSourceActionMessage(source.id, "");
   try {
     await patchSource(source.id, { status: "active" });
     await loadSourcesList();
     await runSourceAction(source.id, "crawl");
   } catch (error) {
-    showSourceActionMessage(source.id, normalizeErrorMessage(error));
+    toast(normalizeErrorMessage(error), { level: "error" });
   }
 }
 
@@ -2266,13 +2274,17 @@ async function runSourceAction(sourceId, action) {
   const source = (state.sourcesCache || []).find((item) => item.id === sourceId);
   let keepDisabled = false;
   setSourceActionButtonsDisabled(sourceId, true);
-  showSourceActionMessage(sourceId, "");
   try {
-    const res = await fetch(`/admin/sources/${sourceId}/${action}`, { method: "POST" });
+    const res = await fetch(`/admin/sources/${sourceId}/${action}`, {
+      method: "POST",
+      ...(action === "parse"
+        ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ scope: "unparsed" }) }
+        : {}),
+    });
     const data = await res.json().catch(() => ({}));
     if (res.status === 409 && data.error === "already_running") {
       keepDisabled = true;
-      showSourceActionMessage(sourceId, "A run is already in progress");
+      toast("A run is already in progress", { level: "warning" });
       return;
     }
     if (!res.ok) {
@@ -2280,8 +2292,9 @@ async function runSourceAction(sourceId, action) {
     }
     trackRun(sourceId, sourceDisplayName(source), action, data.run_id);
     await loadSourcesList();
+    toast(`${sourceRunKindLabel(action)} queued`, { level: "success" });
   } catch (error) {
-    showSourceActionMessage(sourceId, normalizeErrorMessage(error));
+    toast(normalizeErrorMessage(error), { level: "error" });
   }
   finally {
     if (!keepDisabled) setSourceActionButtonsDisabled(sourceId, false);
@@ -2291,7 +2304,6 @@ async function runSourceAction(sourceId, action) {
 async function cancelSourceRun(source) {
   if (!source?.active_run_id || !isAdmin()) return;
   setSourceActionButtonsDisabled(source.id, true);
-  showSourceActionMessage(source.id, "");
   try {
     await expectOk(fetch(`/admin/runs/${source.active_run_id}/cancel`, { method: "POST" }));
     const stream = state.runStreams[source.active_run_id];
@@ -2301,8 +2313,9 @@ async function cancelSourceRun(source) {
     }
     delete state.runProgress[source.id];
     await Promise.all([loadStats(), loadSourcesStats(), loadSourcesList()]);
+    toast("Run cancelled", { level: "success" });
   } catch (error) {
-    showSourceActionMessage(source.id, normalizeErrorMessage(error));
+    toast(normalizeErrorMessage(error), { level: "error" });
     setSourceActionButtonsDisabled(source.id, false);
   }
 }
@@ -2315,23 +2328,11 @@ function setSourceActionButtonsDisabled(sourceId, disabled) {
 
 function sourceActionButtons(sourceId) {
   return document.querySelectorAll(
-    `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=crawl], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=parse], ` +
+      `[data-source-id="${CSS.escape(sourceId)}"] [data-action=resume], ` +
       `[data-source-id="${CSS.escape(sourceId)}"] [data-action=cancel]`,
   );
-}
-
-function showSourceActionMessage(sourceId, message) {
-  document
-    .querySelectorAll(`[data-source-id="${CSS.escape(sourceId)}"] .source-row-actions`)
-    .forEach((container) => {
-      container.querySelector(".source-action-message")?.remove();
-      if (!message) return;
-      const label = document.createElement("span");
-      label.className = "source-action-message";
-      label.textContent = message;
-      container.appendChild(label);
-    });
 }
 
 function trackRun(sourceId, sourceName, action, runId) {
@@ -2395,19 +2396,16 @@ function persistRunProgress() {
 function updateRunProgressDom(sourceId) {
   const progress = state.runProgress[sourceId];
   const row = document.querySelector(`[data-source-id="${CSS.escape(sourceId)}"]`);
-  const actions = row?.querySelector(".source-row-actions");
-  if (!actions) return;
+  if (!row) return;
   if (!progress) return;
-  if (!actions.querySelector(".run-progress")) {
-    actions.insertAdjacentHTML("afterbegin", runProgressMarkup(progress));
+  if (!row.querySelector(".run-progress")) {
+    row.insertAdjacentHTML("beforeend", runProgressMarkup(progress));
   }
   const percent = Number(progress.percent || 0).toFixed(1);
-  const fill = actions.querySelector(".run-progress-fill");
-  const label = actions.querySelector(".run-progress-percent");
-  const count = actions.querySelector(".run-progress-count");
+  const fill = row.querySelector(".run-progress-fill");
+  const summary = row.querySelector(".run-progress-summary");
   if (fill) fill.style.width = `${percent}%`;
-  if (label) label.textContent = `${percent}%`;
-  if (count) count.textContent = runProgressCount(progress);
+  if (summary) summary.textContent = runProgressSummary(progress);
 }
 
 /* ───── Source detail ───── */
@@ -2469,43 +2467,29 @@ function renderSourceDetailTabs(source, activeTab) {
 
 function renderSourceDetailHead(source) {
   const head = byId("source-detail-head");
+  const kindIcon = sourceKindIcon(source);
+  const kindLabel = sourceKindLabel(source);
   head.innerHTML = `
-    <div class="source-detail-row-wrap" data-source-list="active">
-      ${sourceRow(source)}
+    <div class="source-detail-head">
+      <div class="source-row-main">
+        <i class="ti ${kindIcon} source-row-icon" aria-hidden="true"></i>
+        <div class="source-row-copy">
+          <div class="source-row-name">${escapeHtml(source.display_name || source.identifier)}</div>
+          <div class="source-row-meta">
+            <span>${escapeHtml(kindLabel)}</span>
+            <span class="source-row-identifier">${escapeHtml(source.identifier || "")}</span>
+          </div>
+        </div>
+      </div>
+      <div class="source-row-stats source-detail-stats">
+        <span><strong>${formatNumber(source.coverage.pages_fetched)}</strong> pages fetched</span>
+        <span><strong>${formatNumber(source.coverage.documents_parsed)}</strong> docs parsed</span>
+        <span><strong>${formatNumber(source.coverage.claims)}</strong> claims</span>
+        <span class="muted">${source.last_run_at ? `last run ${timeAgo(source.last_run_at)}` : "never run"}</span>
+        <span class="status-pill ${source.status}">${capitalize(source.status)}</span>
+      </div>
     </div>
   `;
-  setupSourceRows(head, [source], { archived: false });
-  ensureActiveRunStreams([source]);
-}
-
-function startSourceNameEdit(source) {
-  const title = byId("source-name-title");
-  const current = source.display_name || source.identifier;
-  title.innerHTML = `<input class="input source-title-input" aria-label="Source name" value="${escapeAttr(current)}" />`;
-  const input = title.querySelector("input");
-  let saving = false;
-  input.focus();
-  input.select();
-  input.onblur = () => {
-    if (!saving) renderSourceDetailHead(source);
-  };
-  input.onkeydown = async (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      renderSourceDetailHead(source);
-      return;
-    }
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    const next = input.value.trim();
-    if (!next || next === current) {
-      renderSourceDetailHead(source);
-      return;
-    }
-    saving = true;
-    await patchSource(source.id, { display_name: next });
-    renderSourceDetail(source.id, currentSourceDetailTab());
-  };
 }
 
 function currentSourceDetailTab() {
@@ -2523,9 +2507,11 @@ async function renderSourceDocuments(sourceId) {
       return;
     }
     wrap.innerHTML = `
+      ${isAdmin() ? `<div class="docs-selection-toolbar" id="docs-selection-toolbar" hidden></div>` : ""}
       <table class="docs-table">
         <thead>
           <tr>
+            ${isAdmin() ? `<th class="select-col"></th>` : ""}
             <th>Title</th>
             <th>Fetched</th>
             <th class="num">Words</th>
@@ -2539,6 +2525,11 @@ async function renderSourceDocuments(sourceId) {
             .map(
               (d) => `
             <tr>
+              ${
+                isAdmin()
+                  ? `<td class="select-col"><input type="checkbox" data-fetch-select="${escapeAttr(d.fetch_id || "")}" aria-label="Select document" ${d.fetch_id ? "" : "disabled"} /></td>`
+                  : ""
+              }
               <td>
                 <div class="cell-truncate">${escapeHtml(d.title || d.url || "")}</div>
                 <div class="muted small cell-truncate">${escapeHtml(d.url || "")}</div>
@@ -2568,8 +2559,54 @@ async function renderSourceDocuments(sourceId) {
     wrap.querySelectorAll("[data-delete-doc]").forEach((button) => {
       button.onclick = () => confirmDeleteDocument(sourceId, button.dataset.deleteDoc);
     });
+    setupDocumentSelectionToolbar(sourceId, wrap);
   } catch (e) {
     wrap.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+function setupDocumentSelectionToolbar(sourceId, wrap) {
+  const toolbar = byId("docs-selection-toolbar");
+  if (!toolbar) return;
+  const checkboxes = Array.from(wrap.querySelectorAll("[data-fetch-select]"));
+  const refresh = () => {
+    const selected = checkboxes.filter((input) => input.checked).map((input) => input.dataset.fetchSelect).filter(Boolean);
+    toolbar.hidden = selected.length === 0;
+    toolbar.innerHTML = selected.length
+      ? `<span class="muted small">${formatNumber(selected.length)} selected</span>
+         <button class="btn-primary" id="parse-selected-docs" type="button"><i class="ti ti-cpu"></i> Parse selected</button>`
+      : "";
+    const button = byId("parse-selected-docs");
+    if (button) {
+      button.onclick = () => parseSelectedFetches(sourceId, selected);
+    }
+  };
+  checkboxes.forEach((input) => {
+    input.onchange = refresh;
+  });
+  refresh();
+}
+
+async function parseSelectedFetches(sourceId, fetchIds) {
+  if (!isAdmin() || !fetchIds.length) return;
+  try {
+    const response = await fetch(`/admin/sources/${sourceId}/parse`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scope: "fetch_ids", fetch_ids: fetchIds }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.status === 409 && data.error === "already_running") {
+      toast("A run is already in progress", { level: "warning" });
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(data.detail || response.statusText);
+    }
+    toast("Parse queued", { level: "success" });
+    renderSourceDocuments(sourceId);
+  } catch (error) {
+    toast(normalizeErrorMessage(error), { level: "error" });
   }
 }
 
@@ -2941,7 +2978,7 @@ async function loadAdminConflicts() {
     });
     if (!data) return;
     const rows = data.results || [];
-    byId("conflict-count").textContent = `${data.total || 0} unresolved`;
+    byId("conflict-summary-text").textContent = `Conflicts (${formatNumber(data.total || 0)} unresolved)`;
     if (!rows.length) {
       byId("conflicts-body").innerHTML = `<div class="muted small">No conflicts. Sources agree (or there is no data yet).</div>`;
       return;
@@ -2970,12 +3007,17 @@ async function loadAdminConflicts() {
         b.onclick = async () => {
           const id = b.dataset.resolve;
           const resolution = b.dataset.side;
-          await expectOk(fetch(`/admin/conflicts/${id}/resolve`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ resolution }),
-          }));
-          loadAdminConflicts();
+          try {
+            await expectOk(fetch(`/admin/conflicts/${id}/resolve`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ resolution }),
+            }));
+            toast("Conflict resolved", { level: "success" });
+            loadAdminConflicts();
+          } catch (error) {
+            toast(normalizeErrorMessage(error), { level: "error" });
+          }
         };
       });
   } catch (e) {
@@ -3115,6 +3157,7 @@ function openConfirmModal({ title, body, danger = false, confirmLabel = "Confirm
       await onConfirm();
       closeModal();
     } catch (error) {
+      toast(normalizeErrorMessage(error), { level: "error" });
       if (errorBox) {
         errorBox.textContent = normalizeErrorMessage(error);
         errorBox.hidden = false;
@@ -3207,6 +3250,44 @@ function appendLog(line) {
   root.appendChild(entry);
   while (root.children.length > 1000) root.firstElementChild?.remove();
   root.scrollTop = root.scrollHeight;
+}
+
+function ensureToastContainer() {
+  if (byId("toast-container")) return byId("toast-container");
+  const container = document.createElement("div");
+  container.id = "toast-container";
+  container.className = "toast-container";
+  container.setAttribute("aria-live", "polite");
+  container.setAttribute("aria-atomic", "false");
+  document.body.appendChild(container);
+  return container;
+}
+
+function toast(message, options = {}) {
+  const text = String(message || "").trim();
+  if (!text) return;
+  const level = ["info", "success", "warning", "error"].includes(options.level)
+    ? options.level
+    : "info";
+  const duration = Number.isFinite(options.duration) ? options.duration : 4000;
+  const container = ensureToastContainer();
+  while (container.children.length >= MAX_TOASTS) {
+    container.firstElementChild?.remove();
+  }
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className = `toast toast-${level}`;
+  item.innerHTML = `<span>${escapeHtml(text)}</span>`;
+  item.onclick = () => dismissToast(item);
+  container.appendChild(item);
+  window.setTimeout(() => dismissToast(item), duration);
+}
+
+function dismissToast(item) {
+  if (!item || item.dataset.closing) return;
+  item.dataset.closing = "true";
+  item.classList.add("toast-dismissing");
+  window.setTimeout(() => item.remove(), 180);
 }
 
 /* ───── Utilities ───── */
