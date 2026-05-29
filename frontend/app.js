@@ -2313,6 +2313,16 @@ async function loadSourcesList() {
       }
       ${
         isAdmin()
+          ? `<details class="archived-sources" open>
+              <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span id="conflict-summary-text">Conflicts (0 unresolved)</span></summary>
+              <div class="archived-sources-list" id="conflicts-body">
+                <div class="muted small">Loading...</div>
+              </div>
+            </details>`
+          : ""
+      }
+      ${
+        isAdmin()
           ? `<details class="archived-sources">
               <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span>Archived (${formatNumber(archivedCount)})</span></summary>
               <div class="archived-sources-list" data-source-list="archived">
@@ -2321,16 +2331,6 @@ async function loadSourcesList() {
                     ? archivedSources.map((source) => sourceRow(source, { archived: true })).join("")
                     : `<div class="empty-state sources-empty compact"><i class="ti ti-archive-off" aria-hidden="true"></i><div>No archived sources.</div></div>`
                 }
-              </div>
-            </details>`
-          : ""
-      }
-      ${
-        isAdmin()
-          ? `<details class="archived-sources" open>
-              <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span id="conflict-summary-text">Conflicts (0 unresolved)</span></summary>
-              <div class="archived-sources-list" id="conflicts-body">
-                <div class="muted small">Loading...</div>
               </div>
             </details>`
           : ""
