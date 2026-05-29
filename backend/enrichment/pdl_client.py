@@ -47,7 +47,7 @@ class PdlClient:
         self,
         api_key: str,
         min_likelihood: int = DEFAULT_MIN_LIKELIHOOD,
-        timeout: float = 30.0,
+        timeout: float = 15.0,
     ) -> None:
         self.api_key = api_key
         self.min_likelihood = min_likelihood
