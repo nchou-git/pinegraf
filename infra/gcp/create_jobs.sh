@@ -32,6 +32,13 @@ fi
 upsert_job() {
   local job="$1"
   local mode="$2"
+  local env_vars="PINEGRAF_MODE=${mode},EXTRACTION_MODEL=gpt-5.5"
+  local secrets="DATABASE_URL=DATABASE_URL:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest"
+
+  if gcloud secrets describe PDL_API_KEY --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    secrets="${secrets},PDL_API_KEY=PDL_API_KEY:latest"
+  fi
+
   local args=(
     "--project=${PROJECT_ID}"
     "--region=${REGION}"
@@ -42,8 +49,8 @@ upsert_job() {
     "--service-account=${SERVICE_ACCOUNT}"
     "--command=python"
     "--args=-m,backend.jobs.run"
-    "--set-env-vars=PINEGRAF_MODE=${mode}"
-    "--set-secrets=DATABASE_URL=DATABASE_URL:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest"
+    "--set-env-vars=${env_vars}"
+    "--set-secrets=${secrets}"
   )
 
   if gcloud run jobs describe "${job}" --project="${PROJECT_ID}" --region="${REGION}" >/dev/null 2>&1; then
