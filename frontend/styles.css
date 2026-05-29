@@ -980,7 +980,7 @@
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: var(--space-3);
-  padding: var(--space-4) 0;
+  padding: var(--space-4) var(--space-6);
 }
 
 .sources-list {
@@ -992,7 +992,6 @@
 .source-row {
   min-height: calc(var(--row-h-data) + var(--space-1));
   padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--line);
   cursor: pointer;
   transition: background-color var(--motion);
 }

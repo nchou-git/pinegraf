@@ -3726,7 +3726,21 @@ async function loadAdminConflicts(targetId = "conflicts-body", summaryId = "conf
       targetId,
       title: "Sign in to view conflicts",
     });
-    if (!data) return;
+    if (!data) {
+      const target = byId(targetId);
+      if (target) {
+        target.innerHTML = `
+        <div class="empty-state sources-empty compact">
+          <i class="ti ti-alert-triangle-off" aria-hidden="true"></i>
+          <div>No conflicts. Sources agree.</div>
+        </div>`;
+      }
+      const summary = byId(summaryId);
+      if (summary) {
+        summary.textContent = "Conflicts (0 unresolved)";
+      }
+      return;
+    }
     const summary = byId(summaryId);
     if (summary) {
       summary.textContent = `Conflicts (${formatNumber(data.total || 0)} unresolved)`;
