@@ -82,19 +82,20 @@ async def test_ambiguous_llm_new_entity_creates_entity(store, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_high_cosine_skips_llm(store, monkeypatch) -> None:
+async def test_high_name_similarity_uses_llm(store, monkeypatch) -> None:
     entity = _add_entity(store, "Erik Snowberg", _vector(0.99, 0.14106736))
 
-    async def fail_disambiguate(*args, **kwargs):
-        raise AssertionError("LLM should not be called")
+    async def fake_disambiguate(mention, candidates, context_chunk):
+        del mention, candidates, context_chunk
+        return DisambiguationResult(entity.id, 0.92, "Typo of Erik Snowberg")
 
     monkeypatch.setattr(resolver, "embed_text", _embed_for_text)
-    monkeypatch.setattr(resolver, "disambiguate", fail_disambiguate)
+    monkeypatch.setattr(resolver, "disambiguate", fake_disambiguate)
 
     result = await resolver.resolve_mention("Erik Snoberg", "person", store=store)
 
     assert result.entity_id == entity.id
-    assert result.method == "embedding"
+    assert result.method == "llm"
 
 
 @pytest.mark.asyncio
@@ -117,7 +118,7 @@ async def test_low_cosine_skips_llm_and_creates_new(store, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_class_year_conflict_records_near_miss_without_llm(store, monkeypatch) -> None:
+async def test_class_year_conflict_excludes_candidate(store, monkeypatch) -> None:
     entity = _add_entity(store, "Erik Snowberg", _vector(0.7, 0.714142842))
     with store.session() as session:
         session.add(
@@ -145,9 +146,8 @@ async def test_class_year_conflict_records_near_miss_without_llm(store, monkeypa
     assert result.method == "new_entity"
     assert result.entity_id != entity.id
     with store.session() as session:
-        candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one()
-    assert candidate.candidate_entity_id == entity.id
-    assert candidate.llm_decision == "near_miss_review"
+        candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one_or_none()
+    assert candidate is None
 
 
 @pytest.mark.asyncio
@@ -162,16 +162,16 @@ async def test_affiliation_conflict_records_near_miss_without_llm(store, monkeyp
                 subject_entity_id=entity.id,
                 predicate="employed_by",
                 object_entity_id=org.id,
-                confidence_score=0.9,
             )
         )
         session.commit()
 
-    async def fail_disambiguate(*args, **kwargs):
-        raise AssertionError("Contradictory affiliation should block LLM merge")
+    async def fake_disambiguate(mention, candidates, context_chunk):
+        del mention, candidates, context_chunk
+        return DisambiguationResult(entity.id, 0.92, "Names are similar")
 
     monkeypatch.setattr(resolver, "embed_text", _embed_for_text)
-    monkeypatch.setattr(resolver, "disambiguate", fail_disambiguate)
+    monkeypatch.setattr(resolver, "disambiguate", fake_disambiguate)
 
     result = await resolver.resolve_mention(
         "Alex Exampel",
@@ -185,7 +185,7 @@ async def test_affiliation_conflict_records_near_miss_without_llm(store, monkeyp
     with store.session() as session:
         candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one()
     assert candidate.candidate_entity_id == entity.id
-    assert "affiliation" in candidate.llm_reasoning
+    assert candidate.llm_decision == "near_miss_review"
 
 
 @pytest.mark.asyncio
@@ -200,16 +200,16 @@ async def test_location_conflict_records_near_miss_without_llm(store, monkeypatc
                 subject_entity_id=entity.id,
                 predicate="located_in",
                 object_entity_id=place.id,
-                confidence_score=0.9,
             )
         )
         session.commit()
 
-    async def fail_disambiguate(*args, **kwargs):
-        raise AssertionError("Contradictory location should block LLM merge")
+    async def fake_disambiguate(mention, candidates, context_chunk):
+        del mention, candidates, context_chunk
+        return DisambiguationResult(entity.id, 0.92, "Names are similar")
 
     monkeypatch.setattr(resolver, "embed_text", _embed_for_text)
-    monkeypatch.setattr(resolver, "disambiguate", fail_disambiguate)
+    monkeypatch.setattr(resolver, "disambiguate", fake_disambiguate)
 
     result = await resolver.resolve_mention(
         "Jordan Sampl",
@@ -223,4 +223,4 @@ async def test_location_conflict_records_near_miss_without_llm(store, monkeypatc
     with store.session() as session:
         candidate = session.execute(select(EntityDisambiguationCandidate)).scalar_one()
     assert candidate.candidate_entity_id == entity.id
-    assert "location" in candidate.llm_reasoning
+    assert candidate.llm_decision == "near_miss_review"

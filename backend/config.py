@@ -14,6 +14,7 @@ class Settings(BaseModel):
 
     database_url: str
     openai_api_key: str = Field(default="")
+    pdl_api_key: str = Field(default="")
 
     pinegraf_admin_password: str
 
@@ -32,8 +33,7 @@ class Settings(BaseModel):
     db_pool_recycle_seconds: int = Field(default=1800, ge=30)
     db_pool_pre_ping: bool = Field(default=True)
     use_mock_embeddings: bool = Field(default=False)
-    cheap_model: str = Field(default="gpt-4o-mini")
-    frontier_model: str = Field(default="gpt-4o")
+    extraction_model: str = Field(default="gpt-5.5")
 
     workspace_display_name: str = Field(default="Tuck School of Business")
     workspace_slug: str = Field(default="tuck")
@@ -65,6 +65,7 @@ def get_settings() -> Settings:
         return Settings(
             database_url=database_url,
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+            pdl_api_key=os.getenv("PDL_API_KEY", ""),
             pinegraf_admin_password=admin_password,
             admin_session_secret=admin_secret,
             admin_session_max_age_seconds=int(os.getenv("ADMIN_SESSION_MAX_AGE_SECONDS", "28800")),
@@ -80,8 +81,7 @@ def get_settings() -> Settings:
             db_pool_recycle_seconds=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
             db_pool_pre_ping=os.getenv("DB_POOL_PRE_PING", "true"),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
-            cheap_model=os.getenv("CHEAP_MODEL", "gpt-4o-mini"),
-            frontier_model=os.getenv("FRONTIER_MODEL", "gpt-4o"),
+            extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.5"),
             workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),
             uploads_dir=os.getenv("UPLOADS_DIR", "/tmp/pinegraf_uploads"),

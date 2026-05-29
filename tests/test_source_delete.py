@@ -86,7 +86,6 @@ def test_delete_source_hard_deletes_source_scoped_data(store, tmp_path, monkeypa
             subject_entity_id=errik.id,
             predicate="founded",
             object_entity_id=company.id,
-            confidence_score=0.9,
         )
         session.add(claim)
         session.flush()
@@ -96,7 +95,6 @@ def test_delete_source_hard_deletes_source_scoped_data(store, tmp_path, monkeypa
                     claim_id=claim.id,
                     claim_raw_id=raw.id,
                     source_id=source.id,
-                    weight=1.0,
                 ),
                 EntityMention(
                     claim_raw_id=raw.id,
@@ -121,14 +119,12 @@ def test_delete_source_hard_deletes_source_scoped_data(store, tmp_path, monkeypa
                     primary_attributes={},
                     connection_count=1,
                     source_count=1,
-                    confidence_avg=0.9,
                 ),
                 EntityNeighborhood(
                     entity_id=errik.id,
                     neighbor_id=company.id,
                     predicates=["founded"],
                     evidence_count=1,
-                    confidence=0.9,
                 ),
             ]
         )
@@ -273,7 +269,6 @@ def test_delete_document_removes_derived_rows_but_keeps_entities(store, admin_he
             subject_entity_id=errik.id,
             predicate="founded",
             object_entity_id=company.id,
-            confidence_score=0.9,
         )
         session.add(claim)
         session.flush()
@@ -283,7 +278,6 @@ def test_delete_document_removes_derived_rows_but_keeps_entities(store, admin_he
                     claim_id=claim.id,
                     claim_raw_id=raw.id,
                     source_id=source.id,
-                    weight=1.0,
                 ),
                 EntityMention(
                     claim_raw_id=raw.id,

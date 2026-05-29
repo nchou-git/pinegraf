@@ -1176,14 +1176,6 @@
 .claims-filter-select {
   width: calc(var(--space-16) * 2 + var(--space-8));
 }
-.claims-confidence {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-}
 .claims-table .claim-row {
   cursor: pointer;
 }

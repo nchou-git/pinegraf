@@ -15,7 +15,7 @@ const state = {
   directoryRows: [],
   directoryOptionRows: [],
   claimsPage: 1,
-  claimsFilters: { q: "", predicate: "", source_id: "", min_confidence: 0, status: "current" },
+  claimsFilters: { q: "", predicate: "", source_id: "", status: "current" },
   claimPredicates: [],
   rawDataPage: 1,
   rawDataFilters: { q: "", predicate: "" },
@@ -72,6 +72,22 @@ const SOURCE_KINDS = [
         name: "file",
         label: "File",
         type: "file",
+        required: true,
+      },
+    ],
+  },
+  {
+    id: "enrichment",
+    kind: "enrichment",
+    label: "Alumni roster (PDL)",
+    description: "Upload an XLSX/CSV with First Name, Last Name, and Class columns. Each row is enriched via People Data Labs.",
+    icon: "ti-users",
+    fields: [
+      {
+        name: "file",
+        label: "Alumni file (XLSX or CSV)",
+        type: "file",
+        accept: ".xlsx,.csv,.xlsm",
         required: true,
       },
     ],
@@ -912,8 +928,7 @@ function claimAttribution(claimOrEvidence) {
 }
 
 function claimDisplayLine(claim) {
-  const confidence = Number(claim.confidence ?? claim.confidence_score ?? 0);
-  return `${claim.subject?.name || "Unknown"} ${claim.predicate || ""} ${claim.object?.name || claim.object_value || ""} (${confidence.toFixed(2)})`;
+  return `${claim.subject?.name || "Unknown"} ${claim.predicate || ""} ${claim.object?.name || claim.object_value || ""}`;
 }
 
 function claimEvidenceList(claimOrEvidence) {
@@ -1002,10 +1017,6 @@ async function renderClaims(parts = [], query = new URLSearchParams()) {
         <select class="input claims-filter-select" id="claims-source">
           <option value="">All sources</option>
         </select>
-        <label class="claims-confidence">
-          <span>Confidence</span>
-          <input id="claims-confidence" type="range" min="0" max="1" step="0.05" value="${escapeAttr(state.claimsFilters.min_confidence)}" />
-        </label>
       </section>
       <section class="directory-results" id="claims-results">
         <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
@@ -1047,7 +1058,6 @@ function setupClaimsFilters() {
     state.claimsFilters.predicate = byId("claims-predicate").value;
     state.claimsFilters.status = byId("claims-status").value;
     state.claimsFilters.source_id = byId("claims-source").value;
-    state.claimsFilters.min_confidence = Number(byId("claims-confidence").value || 0);
     state.claimsPage = 1;
     loadClaims();
   };
@@ -1057,7 +1067,6 @@ function setupClaimsFilters() {
   predicate.onchange = reload;
   source.onchange = reload;
   byId("claims-status").onchange = reload;
-  byId("claims-confidence").oninput = reload;
 }
 
 async function loadClaims(extraParams = {}) {
@@ -1065,7 +1074,6 @@ async function loadClaims(extraParams = {}) {
     q: state.claimsFilters.q || "",
     predicate: state.claimsFilters.predicate || "",
     source_id: state.claimsFilters.source_id || "",
-    min_confidence: String(state.claimsFilters.min_confidence || 0),
     status: state.claimsFilters.status || "current",
     page: String(state.claimsPage),
     page_size: "50",
@@ -1094,7 +1102,6 @@ function claimsList(claims, options = {}) {
           <th>Subject</th>
           <th>Predicate</th>
           <th>Object</th>
-          <th>Confidence</th>
           <th>Evidence</th>
           <th>Valid from</th>
           ${options.role ? `<th>Role</th>` : ""}
@@ -1108,7 +1115,6 @@ function claimsList(claims, options = {}) {
 }
 
 function claimsListRow(claim, options = {}) {
-  const confidence = Number(claim.confidence ?? claim.confidence_score ?? 0);
   const role = options.entityId
     ? claim.subject?.id === options.entityId ? "as subject" : "as object"
     : "";
@@ -1117,7 +1123,6 @@ function claimsListRow(claim, options = {}) {
       <td>${escapeHtml(claim.subject?.name || "Unknown")}</td>
       <td><span class="claim-predicate">${escapeHtml(claim.predicate || "")}</span></td>
       <td>${escapeHtml(claim.object?.name || claim.object_value || "")}</td>
-      <td>${confidence.toFixed(2)}</td>
       <td>${formatNumber(claim.evidence_count || 0)}</td>
       <td>${claim.valid_from ? escapeHtml(formatDate(claim.valid_from)) : ""}</td>
       ${options.role ? `<td><span class="source-badge">${escapeHtml(role)}</span></td>` : ""}
@@ -1166,7 +1171,7 @@ async function renderClaimDetail(claimId) {
       <div class="panel-header">
         <div>
           <div class="panel-title">${escapeHtml(data.statement || "")}</div>
-          <div class="muted small">${escapeHtml(data.predicate || "")} · confidence ${Number(data.confidence || 0).toFixed(2)}</div>
+          <div class="muted small">${escapeHtml(data.predicate || "")}</div>
         </div>
       </div>
       <div class="claim-detail-grid">
@@ -2027,7 +2032,6 @@ function drawGraph(data) {
       source: data.identity.entity_id,
       target: conn.neighbor_id,
       predicates: conn.predicates,
-      confidence: conn.confidence,
       evidence_count: conn.evidence_count,
       is_resolved: conn.is_resolved,
       claims: conn.claims || [],
@@ -2066,8 +2070,8 @@ function drawGraph(data) {
     .append("line")
     .attr("stroke", (d) => (d.is_resolved === false ? cssVar("--text-faint") : cssVar("--green")))
     .attr("stroke-dasharray", (d) => (d.is_resolved === false ? "4 3" : null))
-    .attr("stroke-width", (d) => Math.max(1, (d.confidence || 0.5) * 3))
-    .attr("opacity", (d) => 0.4 + 0.6 * (d.confidence || 0.5))
+    .attr("stroke-width", 2)
+    .attr("opacity", 0.7)
     .attr("cursor", "pointer")
     .on("click", (_e, d) => loadClaimForEdge(d));
 
@@ -2155,8 +2159,6 @@ function loadClaimForEdge(edge) {
     </div>
     <div class="claim-meta">
       <span><strong>${edge.evidence_count || 0}</strong> evidence rows</span>
-      <span>·</span>
-      <span>${Math.round((edge.confidence || 0) * 100)}% corroborated</span>
     </div>
     ${
       claims.length
@@ -3674,7 +3676,7 @@ async function submitAddSource() {
     return;
   }
   try {
-    if (kind === "file") {
+    if (kind === "file" || kind === "enrichment") {
       const input = byId("new-file");
       if (!input.files || !input.files[0]) {
         return;
@@ -3682,8 +3684,13 @@ async function submitAddSource() {
       const form = new FormData();
       form.append("display_name", display_name);
       form.append("file", input.files[0]);
-      const res = await fetch("/admin/sources/upload", { method: "POST", body: form });
-      if (!res.ok) throw new Error(`${res.status}`);
+      const url =
+        kind === "enrichment" ? "/admin/sources/upload-enrichment" : "/admin/sources/upload";
+      const res = await fetch(url, { method: "POST", body: form });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || res.statusText);
+      }
     } else {
       const identifier = byId("new-identifier").value.trim();
       if (!identifier) {
@@ -3706,7 +3713,9 @@ async function submitAddSource() {
     }
     closeModal();
     await Promise.all([loadSourcesStats(), loadSourcesList()]);
-  } catch (_) {}
+  } catch (error) {
+    toast(normalizeErrorMessage(error), { level: "error" });
+  }
 }
 
 /* ───── Source conflicts ───── */
@@ -3884,15 +3893,38 @@ function renderIdentityReviewList(target, data, reload) {
     button.onclick = async () => {
       const id = button.dataset.reviewId;
       const decision = button.dataset.reviewDecision;
-      if (decision === "defer") return;
+      const entityId = button.dataset.entityId;
       try {
-        await postJSON(`/admin/identity-review/${id}`, {
-          decision,
-          reviewer: state.me?.username || "admin",
-        });
-        toast(decision === "merge" ? "Entities merged" : "Identity review updated", {
-          level: "success",
-        });
+        if (decision === "alias-add") {
+          const input = document.querySelector(`input[data-alias-input-id="${id}"]`);
+          const aliasValue = (input && input.value.trim()) || "";
+          if (!aliasValue) {
+            toast("Alias text required", { level: "error" });
+            return;
+          }
+          await postJSON(`/admin/entities/${entityId}/alias`, {
+            alias: aliasValue,
+            reviewer: state.me?.username || "admin",
+          });
+          toast("Alias added", { level: "success" });
+        } else if (decision === "verify") {
+          await postJSON(`/admin/entities/${entityId}/verify`, {
+            reviewer: state.me?.username || "admin",
+          });
+          toast("Entity verified", { level: "success" });
+        } else {
+          await postJSON(`/admin/identity-review/${id}`, {
+            decision,
+            reviewer: state.me?.username || "admin",
+          });
+          const messages = {
+            merge: "Entities merged",
+            split: "Marked as separate entities",
+            confirm: "Identity review updated",
+            defer: "Deferred for later",
+          };
+          toast(messages[decision] || "Identity review updated", { level: "success" });
+        }
         await reload();
       } catch (error) {
         toast(normalizeErrorMessage(error), { level: "error" });
@@ -3919,10 +3951,14 @@ function identityReviewRow(row) {
       ${row.llm_reasoning ? `<div class="muted small">${escapeHtml(row.llm_reasoning)}</div>` : ""}
       <div class="conflict-actions">
         ${canMerge ? `<button class="btn-source" data-review-id="${escapeAttr(row.id)}" data-review-decision="merge">Merge</button>` : ""}
-        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="split">Confirm split</button>
-        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="confirm">Confirm</button>
+        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="split">Different entity</button>
         <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="defer">Defer</button>
+        ${candidate.id ? `<button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="verify" data-entity-id="${escapeAttr(candidate.id)}">Verify candidate</button>` : ""}
       </div>
+      ${candidate.id ? `<div class="conflict-actions">
+        <input class="input" type="text" placeholder="Add alias to candidate..." data-alias-input-id="${escapeAttr(row.id)}" />
+        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="alias-add" data-entity-id="${escapeAttr(candidate.id)}">Add alias</button>
+      </div>` : ""}
     </article>
   `;
 }

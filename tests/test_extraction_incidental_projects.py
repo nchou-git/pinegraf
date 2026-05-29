@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.extraction.cascading_extractor import extract_claims
+from backend.extraction.extractor import extract_claims
 
 
 @pytest.mark.asyncio

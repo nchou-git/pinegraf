@@ -43,6 +43,7 @@ from backend.db.stats_queries import (
     source_coverage_many,
 )
 from backend.db.store import Store, utc_now
+from backend.extraction.extractor import is_structurally_valid_name
 from backend.resolution.embedder import embed_texts
 from backend.util.vector import cosine, vector_values
 
@@ -141,7 +142,6 @@ def list_directory(
     org: str = "",
     class_year: str = "",
     source: str = "",
-    min_confidence: float = 0.0,
     page: int = 1,
     page_size: int = 25,
 ) -> dict[str, object]:
@@ -155,10 +155,7 @@ def list_directory(
             session.execute(
                 select(EntitySummary, Entity)
                 .join(Entity, Entity.id == EntitySummary.entity_id)
-                .order_by(
-                    EntitySummary.confidence_avg.desc().nullslast(),
-                    Entity.canonical_name.asc(),
-                )
+                .order_by(Entity.canonical_name.asc())
             ).all()
         )
         filtered = []
@@ -176,8 +173,6 @@ def list_directory(
             if org_filters and not any(value in haystack for value in org_filters):
                 continue
             if class_year_filters and not any(value in haystack for value in class_year_filters):
-                continue
-            if summary.confidence_avg is not None and summary.confidence_avg < min_confidence:
                 continue
             source_mix = _source_mix(session, entity.id)
             source_keys = {identifier.casefold() for identifier in source_mix}
@@ -199,7 +194,6 @@ def list_directory(
                     "primary_attribute_claims": _primary_attribute_claims(
                         session, entity.id, summary.primary_attributes or {}
                     ),
-                    "confidence_avg": summary.confidence_avg,
                     "connection_count": summary.connection_count,
                     "source_count": summary.source_count,
                     "source_mix": source_mix,
@@ -235,7 +229,7 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
                 select(EntityNeighborhood, Entity)
                 .join(Entity, Entity.id == EntityNeighborhood.neighbor_id)
                 .where(EntityNeighborhood.entity_id == entity_id)
-                .order_by(EntityNeighborhood.confidence.desc())
+                .order_by(EntityNeighborhood.evidence_count.desc())
             ).all()
         )
         attributes = _attribute_claims(session, entity_id)
@@ -259,7 +253,6 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
                     "neighbor_name": neighbor.canonical_name,
                     "neighbor_kind": neighbor.kind,
                     "predicates": row.predicates,
-                    "confidence": row.confidence,
                     "evidence_count": row.evidence_count,
                     "is_resolved": True,
                     "claims": _connection_claims(
@@ -287,7 +280,6 @@ def list_claims(
     subject_entity_id: uuid.UUID | None = None,
     object_entity_id: uuid.UUID | None = None,
     source_id: uuid.UUID | None = None,
-    min_confidence: float = 0.0,
     status: str = "current",
     q: str = "",
     page: int = 1,
@@ -318,8 +310,6 @@ def list_claims(
                 .where(ClaimEvidence.source_id == source_id)
                 .exists()
             )
-        if min_confidence:
-            conditions.append(Claim.confidence_score >= min_confidence)
         if status == "current":
             conditions.append(Claim.valid_to.is_(None))
         elif status == "superseded":
@@ -340,7 +330,7 @@ def list_claims(
         ).scalar_one()
         rows = list(
             session.execute(
-                query.order_by(Claim.confidence_score.desc(), Claim.first_seen_at.desc())
+                query.order_by(Claim.first_seen_at.desc())
                 .offset((page - 1) * page_size)
                 .limit(page_size)
             ).scalars()
@@ -355,7 +345,6 @@ def list_claims(
                 "subject_entity_id": str(subject_entity_id) if subject_entity_id else None,
                 "object_entity_id": str(object_entity_id) if object_entity_id else None,
                 "source_id": str(source_id) if source_id else None,
-                "min_confidence": min_confidence,
                 "status": status,
                 "q": q or None,
             },
@@ -419,7 +408,7 @@ async def ask_stream(
             question=question,
             chunks=chunks,
             claims=claims,
-            model=settings.frontier_model,
+            model=settings.extraction_model,
             api_key=settings.openai_api_key,
         ):
             parts.append(token)
@@ -1348,27 +1337,51 @@ def resolve_conflict(
 def list_identity_review(
     store: Store,
     *,
-    page: int = 1,
-    page_size: int = 25,
+    filter: str = "pending",
+    low_signal_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    page: int | None = None,
+    page_size: int | None = None,
 ) -> dict[str, object]:
-    page = max(page, 1)
-    page_size = min(max(page_size, 1), 100)
+    if page is not None or page_size is not None:
+        page = max(page or 1, 1)
+        limit = page_size or limit
+        offset = (page - 1) * limit
+    limit = min(max(limit, 1), 200)
+    offset = max(offset, 0)
     with store.session() as session:
-        base = select(EntityDisambiguationCandidate).where(
-            EntityDisambiguationCandidate.review_decision.is_(None)
-        )
+        _auto_split_invalid_identity_candidates(session)
+        base = select(EntityDisambiguationCandidate)
+        if filter == "pending":
+            base = base.where(EntityDisambiguationCandidate.review_decision.is_(None))
+        elif filter != "all":
+            base = base.where(EntityDisambiguationCandidate.review_decision == filter)
+        if low_signal_only:
+            base = base.join(
+                EntityMention,
+                EntityMention.id == EntityDisambiguationCandidate.mention_id,
+            )
+            base = base.join(Entity, Entity.id == EntityMention.entity_id).where(
+                Entity.needs_human_disambiguation.is_(True)
+            )
         total = session.execute(select(func.count()).select_from(base.subquery())).scalar_one()
         rows = list(
             session.execute(
-                base.order_by(EntityDisambiguationCandidate.created_at.desc())
-                .offset((page - 1) * page_size)
-                .limit(page_size)
+                base.order_by(
+                    EntityDisambiguationCandidate.name_similarity_score.desc().nullslast(),
+                    EntityDisambiguationCandidate.created_at.desc(),
+                )
+                .offset(offset)
+                .limit(limit)
             ).scalars()
         )
         return {
             "total": total,
-            "page": page,
-            "page_size": page_size,
+            "page": (offset // limit) + 1,
+            "page_size": limit,
+            "limit": limit,
+            "offset": offset,
             "results": [_identity_review_payload(session, row) for row in rows],
         }
 
@@ -1382,8 +1395,10 @@ def review_identity_candidate(
     audit_actor: str | None,
     audit_request_ip: str | None,
 ) -> dict[str, object]:
-    if decision not in {"confirm", "merge", "split"}:
-        raise HTTPException(status_code=400, detail="decision must be confirm, merge, or split")
+    if decision == "confirm":
+        decision = "split"
+    if decision not in {"merge", "split", "defer"}:
+        raise HTTPException(status_code=400, detail="decision must be merge, split, or defer")
     with store.session() as session:
         row = session.get(EntityDisambiguationCandidate, candidate_id)
         if row is None:
@@ -1394,7 +1409,7 @@ def review_identity_candidate(
                 detail="identity review candidate already reviewed",
             )
         if decision == "merge":
-            result = _merge_identity_candidate(session, row)
+            result = _merge_identity_candidate(session, row, reviewer or audit_actor or "admin")
         else:
             result = {"merged": False}
         row.review_decision = decision
@@ -1419,6 +1434,112 @@ def review_identity_candidate(
         return {"status": "ok", "candidate": payload, **result}
 
 
+def add_entity_alias(
+    store: Store,
+    *,
+    entity_id: uuid.UUID,
+    alias: str,
+    reviewer: str,
+    audit_actor: str | None,
+    audit_request_ip: str | None,
+) -> dict[str, object]:
+    alias = alias.strip()
+    if not alias:
+        raise HTTPException(status_code=400, detail="alias is required")
+    with store.session() as session:
+        entity = session.get(Entity, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        existing = session.execute(
+            select(EntityAlias).where(
+                EntityAlias.entity_id == entity_id,
+                func.lower(EntityAlias.alias) == alias.casefold(),
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                EntityAlias(
+                    entity_id=entity_id,
+                    alias=alias,
+                    confidence=1.0,
+                    source=f"human:{reviewer}",
+                )
+            )
+        _add_audit_row(
+            session,
+            action="entity.alias_added",
+            target_table="entities",
+            target_id=entity_id,
+            actor=audit_actor,
+            request_ip=audit_request_ip,
+            payload={"alias": alias, "reviewer": reviewer},
+        )
+        session.commit()
+        return {"status": "ok", "entity": _entity_record(session, entity_id)}
+
+
+def verify_entity(
+    store: Store,
+    *,
+    entity_id: uuid.UUID,
+    reviewer: str,
+    audit_actor: str | None,
+    audit_request_ip: str | None,
+) -> dict[str, object]:
+    with store.session() as session:
+        entity = session.get(Entity, entity_id)
+        if entity is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        entity.verified_by = reviewer
+        entity.verified_at = utc_now()
+        _add_audit_row(
+            session,
+            action="entity.verified",
+            target_table="entities",
+            target_id=entity_id,
+            actor=audit_actor,
+            request_ip=audit_request_ip,
+            payload={"reviewer": reviewer},
+        )
+        session.commit()
+        return {"status": "ok", "entity": _entity_record(session, entity_id)}
+
+
+def _auto_split_invalid_identity_candidates(session) -> None:
+    rows = list(
+        session.execute(
+            select(EntityDisambiguationCandidate, Entity)
+            .join(Entity, Entity.id == EntityDisambiguationCandidate.candidate_entity_id)
+            .where(EntityDisambiguationCandidate.review_decision.is_(None))
+        ).all()
+    )
+    changed = False
+    for row, candidate in rows:
+        if candidate.kind != "person" or is_structurally_valid_name(
+            candidate.canonical_name, "person"
+        ):
+            continue
+        row.review_decision = "split"
+        row.reviewed_by = "auto"
+        row.reviewed_at = utc_now()
+        _add_audit_row(
+            session,
+            action="identity_review.auto_split",
+            target_table="entity_disambiguation_candidates",
+            target_id=row.id,
+            actor="system",
+            request_ip=None,
+            payload={
+                "reason": "auto-split: name pattern is not a structurally valid person name",
+                "candidate_entity_id": str(candidate.id),
+                "candidate_name": candidate.canonical_name,
+            },
+        )
+        changed = True
+    if changed:
+        session.flush()
+
+
 def _identity_review_payload(
     session,
     row: EntityDisambiguationCandidate,
@@ -1426,6 +1547,9 @@ def _identity_review_payload(
     mention = session.get(EntityMention, row.mention_id) if row.mention_id else None
     candidate = session.get(Entity, row.candidate_entity_id)
     source_entity = session.get(Entity, mention.entity_id) if mention else None
+    if source_entity is None and candidate is not None and candidate.needs_human_disambiguation:
+        source_entity = candidate
+    chunk = session.get(Chunk, row.context_chunk_id) if row.context_chunk_id else None
     return {
         "id": str(row.id),
         "created_at": row.created_at.isoformat(),
@@ -1435,6 +1559,9 @@ def _identity_review_payload(
         "review_decision": row.review_decision,
         "reviewed_by": row.reviewed_by,
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+        "mention_text": row.mention_text or (mention.mention_text if mention else None),
+        "context_chunk_id": str(row.context_chunk_id) if row.context_chunk_id else None,
+        "context_chunk_text": chunk.text if chunk is not None else None,
         "mention": (
             {
                 "id": str(mention.id),
@@ -1451,12 +1578,41 @@ def _identity_review_payload(
         if source_entity
         else {},
         "candidate_qualifiers": _entity_review_qualifiers(session, row.candidate_entity_id),
+        "candidate_top_claims": _identity_review_top_claims(session, row.candidate_entity_id),
     }
+
+
+def _identity_review_top_claims(session, entity_id: uuid.UUID) -> list[dict[str, object]]:
+    rows = session.execute(
+        select(Claim, Entity, Source, Document)
+        .outerjoin(Entity, Entity.id == Claim.object_entity_id)
+        .outerjoin(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
+        .outerjoin(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
+        .outerjoin(Chunk, Chunk.id == ClaimRaw.chunk_id)
+        .outerjoin(Document, Document.id == Chunk.document_id)
+        .outerjoin(Source, Source.id == ClaimEvidence.source_id)
+        .where(or_(Claim.subject_entity_id == entity_id, Claim.object_entity_id == entity_id))
+        .order_by(Claim.last_corroborated_at.desc())
+        .limit(5)
+    ).all()
+    output = []
+    for claim, object_entity, source, document in rows:
+        output.append(
+            {
+                "id": str(claim.id),
+                "predicate": claim.predicate,
+                "object": object_entity.canonical_name if object_entity else claim.object_value,
+                "source_url": document.canonical_url if document else None,
+                "source_name": source.display_name or source.identifier if source else None,
+            }
+        )
+    return output
 
 
 def _merge_identity_candidate(
     session,
     row: EntityDisambiguationCandidate,
+    reviewer: str = "admin",
 ) -> dict[str, object]:
     mention = session.get(EntityMention, row.mention_id) if row.mention_id else None
     target = session.get(Entity, row.candidate_entity_id)
@@ -1506,7 +1662,13 @@ def _merge_identity_candidate(
         .execution_options(synchronize_session=False)
     )
     source.superseded_by_entity_id = target_id
+    source.status = "merged"
+    source.merged_into_entity_id = target_id
     source.updated_at = utc_now()
+    if row.mention_text:
+        _add_alias_if_missing(session, target, row.mention_text, f"human:{reviewer}")
+    target.verified_by = reviewer
+    target.verified_at = utc_now()
     target.updated_at = utc_now()
     return {
         "merged": True,
@@ -1547,6 +1709,28 @@ def _migrate_aliases(session, source: Entity, target: Entity) -> None:
         alias.entity_id = target.id
         alias.source = alias.source or "identity_review:merge"
         target_aliases.add(key)
+
+
+def _add_alias_if_missing(session, entity: Entity, alias_text: str, source: str) -> None:
+    key = _alias_key(alias_text)
+    if not key or key == _alias_key(entity.canonical_name):
+        return
+    existing_keys = {
+        _alias_key(alias)
+        for alias in session.execute(
+            select(EntityAlias.alias).where(EntityAlias.entity_id == entity.id)
+        ).scalars()
+    }
+    if key in existing_keys:
+        return
+    session.add(
+        EntityAlias(
+            entity_id=entity.id,
+            alias=alias_text.strip(),
+            confidence=1.0,
+            source=source,
+        )
+    )
 
 
 def _alias_key(value: str | None) -> str:
@@ -1626,7 +1810,7 @@ def _attribute_claims(session, entity_id: uuid.UUID) -> dict[str, list[dict[str,
             select(Claim)
             .where(Claim.subject_entity_id == entity_id)
             .where(Claim.object_entity_id.is_(None))
-            .order_by(Claim.confidence_score.desc())
+            .order_by(Claim.first_seen_at.desc())
         ).scalars()
     )
     grouped: dict[str, list[dict[str, object]]] = {}
@@ -1635,7 +1819,6 @@ def _attribute_claims(session, entity_id: uuid.UUID) -> dict[str, list[dict[str,
             {
                 "claim_id": str(claim.id),
                 "object_value": claim.object_value,
-                "confidence_score": claim.confidence_score,
                 "evidence": _claim_evidence(session, claim.id),
             }
         )
@@ -1674,9 +1857,7 @@ def _connection_claims(
     )
     if predicates:
         query = query.where(Claim.predicate.in_(predicates))
-    claims = list(
-        session.execute(query.order_by(Claim.confidence_score.desc()).limit(10)).scalars()
-    )
+    claims = list(session.execute(query.order_by(Claim.first_seen_at.desc()).limit(10)).scalars())
     return [claim for claim in (_claim_to_dict(session, row.id) for row in claims) if claim]
 
 
@@ -1703,14 +1884,11 @@ def _claim_response(
         if object_entity is not None and claim.object_entity_id is not None
         else {"id": None, "name": claim.object_value or ""}
     )
-    confidence = claim.confidence if claim.confidence is not None else claim.confidence_score
     evidence = _claim_evidence(session, claim.id)
     response = {
         "id": str(claim.id),
         "claim_id": str(claim.id),
         "predicate": claim.predicate,
-        "confidence": confidence,
-        "confidence_score": claim.confidence_score,
         "subject": subject_ref,
         "object": object_ref,
         "object_value": claim.object_value,
@@ -1758,14 +1936,11 @@ def _claim_list_responses(session, claims: list[Claim]) -> list[dict[str, object
             if object_entity is not None and claim.object_entity_id is not None
             else {"id": None, "name": claim.object_value or ""}
         )
-        confidence = claim.confidence if claim.confidence is not None else claim.confidence_score
         output.append(
             {
                 "id": str(claim.id),
                 "claim_id": str(claim.id),
                 "predicate": claim.predicate,
-                "confidence": confidence,
-                "confidence_score": claim.confidence_score,
                 "subject": subject_ref,
                 "object": object_ref,
                 "object_value": claim.object_value,
@@ -1852,6 +2027,14 @@ def _entity_record(session, entity_id: uuid.UUID | None) -> dict[str, object] | 
         "display_name": entity.canonical_name,
         "canonical_name": entity.canonical_name,
         "type": entity.kind,
+        "kind": entity.kind,
+        "verified_by": entity.verified_by,
+        "verified_at": entity.verified_at.isoformat() if entity.verified_at else None,
+        "needs_human_disambiguation": entity.needs_human_disambiguation,
+        "status": entity.status,
+        "merged_into_entity_id": (
+            str(entity.merged_into_entity_id) if entity.merged_into_entity_id else None
+        ),
         "superseded_by_entity_id": (
             str(entity.superseded_by_entity_id) if entity.superseded_by_entity_id else None
         ),
@@ -1911,7 +2094,6 @@ def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
                 "url": fetch.url,
                 "live_url": document_url,
                 "fetched_at": fetch.fetched_at.isoformat(),
-                "weight": evidence.weight,
                 "raw_quote": snippet,
                 "snippet": snippet,
                 "added_at": evidence.added_at.isoformat(),
@@ -1976,35 +2158,6 @@ def _sentence_trim(text: str, *, max_chars: int) -> str:
     if stop >= max_chars // 3:
         return window[: stop + 1].strip()
     return f"{window.rstrip(' ,.;:')}..."
-
-
-async def _answer_from_graph(
-    store: Store,
-    question: str,
-    *,
-    max_results: int,
-) -> tuple[str, list[dict[str, object]]]:
-    settings, chunks, claims, citations = await _answer_materials(
-        store, question, max_results=max_results
-    )
-    if not claims and not chunks:
-        return (
-            "No extracted graph evidence is available yet. Run ingestion and parse first.",
-            [],
-        )
-    if settings.openai_api_key:
-        return await _llm_answer(
-            question=question,
-            chunks=chunks,
-            claims=claims,
-            citations=citations,
-            model=settings.frontier_model,
-            api_key=settings.openai_api_key,
-        )
-    return (
-        f"Based on the current graph, I found {len(claims)} relevant claims for: {question}",
-        citations,
-    )
 
 
 async def _answer_materials(
@@ -2107,10 +2260,7 @@ async def _llm_answer_tokens(
         f"[chunk {index + 1}] {chunk.text}" for index, chunk in enumerate(chunks)
     )
     claim_context = "\n".join(
-        (
-            f"- {payload['statement']} "
-            f"(claim_id={payload['id']}, confidence={float(payload.get('confidence') or 0):.2f})"
-        )
+        f"- {payload['statement']} (claim_id={payload['id']})"
         for payload in claims
     )
     client = AsyncOpenAI(api_key=api_key)
@@ -2182,7 +2332,7 @@ def _lexical_chunks(session, query_terms: list[str], *, limit: int) -> list[Chun
 
 
 def _claims_for_question(session, query_terms: list[str], *, max_results: int) -> list[Claim]:
-    query = select(Claim).order_by(Claim.confidence_score.desc()).limit(max_results)
+    query = select(Claim).order_by(Claim.first_seen_at.desc()).limit(max_results)
     if not query_terms:
         return list(session.execute(query).scalars())
     subject = Entity.__table__.alias("ask_claim_subject")
@@ -2208,7 +2358,7 @@ def _claims_for_question(session, query_terms: list[str], *, max_results: int) -
             .outerjoin(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
             .outerjoin(Chunk, Chunk.id == ClaimRaw.chunk_id)
             .where(or_(*conditions))
-            .order_by(Claim.confidence_score.desc())
+            .order_by(Claim.first_seen_at.desc())
             .limit(max_results)
         )
         .unique()

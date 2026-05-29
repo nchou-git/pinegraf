@@ -16,7 +16,6 @@ def test_claim_rendering_resolves_entity_names(store) -> None:
         "name": "Tuck School of Business",
     }
     assert payload["predicate"] == "employed_by"
-    assert payload["confidence"] == 0.81
     assert payload["evidence_count"] == 1
 
 

@@ -45,7 +45,7 @@ class Source(Base):
     __tablename__ = "sources"
     __table_args__ = (
         CheckConstraint(
-            "kind in ('domain','file')",
+            "kind in ('domain','file','enrichment')",
             name="ck_sources_kind",
         ),
         CheckConstraint(
@@ -79,7 +79,7 @@ class SourceRun(Base):
     __tablename__ = "source_runs"
     __table_args__ = (
         CheckConstraint(
-            "kind in ('sitemap','seed','parse')",
+            "kind in ('sitemap','seed','parse','enrichment')",
             name="ck_source_runs_kind",
         ),
         CheckConstraint(
@@ -306,6 +306,7 @@ class ClaimRaw(Base):
         nullable=False,
     )
     subject_text: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_type: Mapped[str] = mapped_column(Text, nullable=False, default="person")
     predicate: Mapped[str] = mapped_column(Text, nullable=False)
     object_text: Mapped[str | None] = mapped_column(Text)
     object_type: Mapped[str | None] = mapped_column(Text)
@@ -326,14 +327,31 @@ class Entity(Base):
             "kind in ('person','org','project','place','event')",
             name="ck_entities_kind",
         ),
+        CheckConstraint(
+            "status in ('active','archived','merged')",
+            name="ck_entities_status",
+        ),
         Index("ix_entities_kind", "kind"),
         Index("ix_entities_superseded_by_entity_id", "superseded_by_entity_id"),
+        Index("ix_entities_needs_human_disambiguation", "needs_human_disambiguation"),
+        Index("ix_entities_status", "status"),
+        Index("ix_entities_merged_into_entity_id", "merged_into_entity_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
     superseded_by_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+    )
+    needs_human_disambiguation: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    verified_by: Mapped[str | None] = mapped_column(Text)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    merged_into_entity_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("entities.id", ondelete="SET NULL"),
     )
@@ -377,7 +395,8 @@ class EntityMention(Base):
             name="ck_entity_mentions_position",
         ),
         CheckConstraint(
-            "resolution_method in ('exact_match','alias','embedding','llm','human','new_entity')",
+            "resolution_method in "
+            "('exact_match','alias','embedding','llm','human','new_entity','strict_qualifier')",
             name="ck_entity_mentions_resolution_method",
         ),
         Index("ix_entity_mentions_claim_raw_id", "claim_raw_id"),
@@ -413,7 +432,7 @@ class EntityDisambiguationCandidate(Base):
             name="ck_entity_disambiguation_candidates_llm_decision",
         ),
         CheckConstraint(
-            "review_decision is null or review_decision in ('confirm','merge','split')",
+            "review_decision is null or review_decision in ('confirm','merge','split','defer')",
             name="ck_entity_disambiguation_candidates_review_decision",
         ),
         Index("ix_entity_disambiguation_candidates_mention_id", "mention_id"),
@@ -428,6 +447,11 @@ class EntityDisambiguationCandidate(Base):
     mention_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("entity_mentions.id", ondelete="SET NULL"),
+    )
+    mention_text: Mapped[str | None] = mapped_column(Text)
+    context_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("chunks.id", ondelete="SET NULL"),
     )
     candidate_entity_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -456,10 +480,6 @@ class Claim(Base):
             "object_entity_id is not null or object_value is not null",
             name="ck_claims_object_present",
         ),
-        CheckConstraint(
-            "confidence is null or (confidence >= 0 and confidence <= 1)",
-            name="ck_claims_confidence_range",
-        ),
         Index("ix_claims_subject_predicate", "subject_entity_id", "predicate"),
         Index(
             "ix_claims_subject_predicate_valid",
@@ -469,7 +489,6 @@ class Claim(Base):
         ),
         Index("ix_claims_object_entity_id", "object_entity_id"),
         Index("ix_claims_predicate", "predicate"),
-        Index("ix_claims_confidence_score_desc", "confidence_score"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -485,8 +504,6 @@ class Claim(Base):
     )
     object_value: Mapped[str | None] = mapped_column(Text)
     qualifiers: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
-    confidence_score: Mapped[float] = mapped_column(Float, nullable=False, default=0)
-    confidence: Mapped[float | None] = mapped_column(REAL)
     valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     superseded_by_claim_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -526,7 +543,6 @@ class ClaimEvidence(Base):
         ForeignKey("sources.id"),
         nullable=False,
     )
-    weight: Mapped[float] = mapped_column(Float, nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -604,7 +620,6 @@ class EntitySummary(Base):
     primary_attributes: Mapped[dict[str, object] | None] = mapped_column(JSONDict)
     connection_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     source_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    confidence_avg: Mapped[float | None] = mapped_column(Float)
     last_updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -626,7 +641,6 @@ class EntityNeighborhood(Base):
     )
     predicates: Mapped[list[str]] = mapped_column(TextArray, nullable=False)
     evidence_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
     last_updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )

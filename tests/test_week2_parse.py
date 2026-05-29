@@ -11,7 +11,7 @@ from backend.db.models import (
     EntityNeighborhood,
     EntitySummary,
 )
-from backend.extraction.cascading_extractor import extract_claims
+from backend.extraction.extractor import extract_claims
 from backend.normalization import normalizer
 from backend.normalization.chunker import Chunk
 from backend.parse.orchestrator import run_full_parse
@@ -114,7 +114,6 @@ async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypa
     assert sam.id in rebuilt
     assert claim.subject_entity_id == sam.id
     assert claim.object_entity_id == mia.id
-    assert claim.confidence_score > 0
     assert evidence_count == 1
     assert mention_count == 2
     assert summary is not None

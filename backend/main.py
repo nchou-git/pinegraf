@@ -50,6 +50,7 @@ from backend.progress import subscribe as subscribe_progress
 from backend.source_identifiers import normalize_identifier
 from backend.web_api import (
     ActiveSourceRunError,
+    add_entity_alias,
     archived_source_count,
     ask_stream,
     claim_detail,
@@ -72,6 +73,7 @@ from backend.web_api import (
     source_detail,
     stats,
     update_source,
+    verify_entity,
 )
 
 
@@ -117,7 +119,16 @@ class ConflictResolveRequest(BaseModel):
 
 
 class IdentityReviewRequest(BaseModel):
-    decision: Literal["confirm", "merge", "split"]
+    decision: Literal["confirm", "merge", "split", "defer"]
+    reviewer: str | None = None
+
+
+class EntityAliasRequest(BaseModel):
+    alias: str
+    reviewer: str | None = None
+
+
+class EntityVerifyRequest(BaseModel):
     reviewer: str | None = None
 
 
@@ -139,7 +150,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0021_identity_review"
+EXPECTED_ALEMBIC_HEAD = "0022_entity_curation"
 LOGGER = logging.getLogger("uvicorn.error")
 OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/directory"}
 
@@ -437,7 +448,6 @@ def create_app(store: Store | None = None) -> FastAPI:
         org: str = "",
         class_year: str = "",
         source: str = "",
-        min_confidence: float = 0.0,
         page: int = 1,
         page_size: int = 25,
     ) -> dict[str, object]:
@@ -447,7 +457,6 @@ def create_app(store: Store | None = None) -> FastAPI:
             org=org,
             class_year=class_year,
             source=source,
-            min_confidence=min_confidence,
             page=page,
             page_size=page_size,
         )
@@ -466,7 +475,6 @@ def create_app(store: Store | None = None) -> FastAPI:
         subject_entity_id: uuid.UUID | None = None,
         object_entity_id: uuid.UUID | None = None,
         source_id: uuid.UUID | None = None,
-        min_confidence: float = 0.0,
         status: str = "current",
         q: str = "",
         page: int = 1,
@@ -478,7 +486,6 @@ def create_app(store: Store | None = None) -> FastAPI:
             subject_entity_id=subject_entity_id,
             object_entity_id=object_entity_id,
             source_id=source_id,
-            min_confidence=min(max(min_confidence, 0.0), 1.0),
             status=status,
             q=q,
             page=page,
@@ -544,6 +551,42 @@ def create_app(store: Store | None = None) -> FastAPI:
             **source_to_dict(source),
             "size_bytes": len(body),
             "original_filename": original_name,
+        }
+
+    @app.post("/admin/sources/upload-enrichment")
+    async def admin_upload_enrichment_source(
+        request: Request,
+        display_name: str = Form(...),
+        trust_weight: float = Form(0.7),
+        notes: str | None = Form(None),
+        file: UploadFile = File(...),
+    ) -> dict[str, object]:
+        require_admin(request)
+        settings = get_settings()
+        if not settings.pdl_api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="PDL_API_KEY not configured on server; cannot create enrichment source",
+            )
+        stored_name, original_name, body = await _store_upload(
+            file,
+            display_name=display_name,
+            uploads_dir=settings.uploads_dir,
+            validate_extension=False,
+        )
+        identifier = f"people-data-labs:{stored_name}"
+        source = _store(request).upsert_source(
+            kind="enrichment",
+            identifier=identifier,
+            trust_weight=trust_weight,
+            display_name=display_name,
+            notes=notes,
+        )
+        return {
+            **source_to_dict(source),
+            "size_bytes": len(body),
+            "original_filename": original_name,
+            "seed_file_path": str(Path(settings.uploads_dir) / stored_name),
         }
 
     @app.post("/admin/sources/{source_id}/upload")
@@ -649,7 +692,13 @@ def create_app(store: Store | None = None) -> FastAPI:
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
         run_kind = (
-            "sitemap" if source.kind == "domain" else "seed" if source.kind == "file" else None
+            "sitemap"
+            if source.kind == "domain"
+            else "seed"
+            if source.kind == "file"
+            else "enrichment"
+            if source.kind == "enrichment"
+            else None
         )
         try:
             if source.kind == "domain":
@@ -666,6 +715,25 @@ def create_app(store: Store | None = None) -> FastAPI:
                     source_id=source.id,
                     kind="seed",
                     spec={"source_id": str(source.id), "seed_file_path": str(seed_path)},
+                    triggered_by="admin",
+                    status="queued",
+                )
+            elif source.kind == "enrichment":
+                _, _, stored_name = source.identifier.partition(":")
+                if not stored_name:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="enrichment source identifier missing stored file name",
+                    )
+                seed_path = Path(get_settings().uploads_dir) / stored_name
+                run = store.create_source_run(
+                    source_id=source.id,
+                    kind="enrichment",
+                    spec={
+                        "source_id": str(source.id),
+                        "seed_file_path": str(seed_path),
+                        "workspace_name": get_settings().workspace_display_name,
+                    },
                     triggered_by="admin",
                     status="queued",
                 )
@@ -861,6 +929,37 @@ def create_app(store: Store | None = None) -> FastAPI:
             candidate_id=candidate_id,
             decision=payload.decision,
             reviewer=payload.reviewer or _admin_actor(request),
+            audit_actor=_admin_actor(request),
+            audit_request_ip=_request_ip(request),
+        )
+
+    @app.post("/admin/entities/{entity_id}/alias")
+    async def admin_entity_add_alias(
+        request: Request,
+        entity_id: uuid.UUID,
+        payload: EntityAliasRequest,
+    ) -> dict[str, object]:
+        require_admin(request)
+        return add_entity_alias(
+            _store(request),
+            entity_id=entity_id,
+            alias=payload.alias,
+            reviewer=payload.reviewer or _admin_actor(request) or "admin",
+            audit_actor=_admin_actor(request),
+            audit_request_ip=_request_ip(request),
+        )
+
+    @app.post("/admin/entities/{entity_id}/verify")
+    async def admin_entity_verify(
+        request: Request,
+        entity_id: uuid.UUID,
+        payload: EntityVerifyRequest,
+    ) -> dict[str, object]:
+        require_admin(request)
+        return verify_entity(
+            _store(request),
+            entity_id=entity_id,
+            reviewer=payload.reviewer or _admin_actor(request) or "admin",
             audit_actor=_admin_actor(request),
             audit_request_ip=_request_ip(request),
         )

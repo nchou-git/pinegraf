@@ -64,7 +64,6 @@ def create_claim_graph(
             subject_entity_id=subject.id,
             predicate=predicate,
             object_entity_id=obj.id,
-            confidence_score=confidence,
         )
         session.add_all([raw, claim])
         session.flush()
@@ -73,7 +72,6 @@ def create_claim_graph(
                 claim_id=claim.id,
                 claim_raw_id=raw.id,
                 source_id=source.id,
-                weight=confidence,
             )
         )
         session.commit()

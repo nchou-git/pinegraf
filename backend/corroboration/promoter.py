@@ -89,20 +89,11 @@ def promote_claim_raw(
         source = _source_for_raw(session, raw.id)
         if source is None:
             return None
-        resolution_confidence = min(
-            [mention.resolution_confidence for mention in mentions.values()] or [1.0]
-        )
-        weight = (
-            source.trust_weight
-            * resolution_confidence
-            * (raw.confidence_internal if raw.confidence_internal is not None else 0.5)
-        )
         session.add(
             ClaimEvidence(
                 claim_id=claim.id,
                 claim_raw_id=raw.id,
                 source_id=source.id,
-                weight=max(min(weight, 1.0), 0.0),
             )
         )
         try:

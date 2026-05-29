@@ -97,11 +97,11 @@ def test_identity_review_confirm_records_review_decision(store, admin_headers) -
     with store.session() as session:
         row = session.get(EntityDisambiguationCandidate, ids["candidate_id"])
         audit = session.execute(
-            select(AuditLog).where(AuditLog.action == "identity_review.confirm")
+            select(AuditLog).where(AuditLog.action == "identity_review.split")
         ).scalar_one()
-    assert row.review_decision == "confirm"
+    assert row.review_decision == "split"
     assert row.reviewed_by == "reviewer@example.com"
-    assert audit.payload["decision"] == "confirm"
+    assert audit.payload["decision"] == "split"
 
 
 def test_identity_review_split_records_review_decision(store, admin_headers) -> None:

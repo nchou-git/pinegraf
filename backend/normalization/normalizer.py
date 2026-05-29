@@ -5,8 +5,10 @@ from datetime import datetime
 
 from backend.db.store import Store, content_digest
 from backend.normalization.chunker import chunk_text
-from backend.normalization.cleaner import clean_html, detect_language
+from backend.normalization.cleaner import clean_html, clean_pdl_person, detect_language
 from backend.normalization.embedder import embed_chunks
+
+PDL_PERSON_CONTENT_TYPE = "application/pdl-person+json"
 
 
 async def normalize_fetch(
@@ -31,7 +33,10 @@ async def normalize_fetch(
         store.link_document_fetch(existing.id, fetch_uuid)
         return existing.id
 
-    cleaned_text, title = clean_html(fetch.body_bytes)
+    if fetch.content_type == PDL_PERSON_CONTENT_TYPE:
+        cleaned_text, title = clean_pdl_person(fetch.body_bytes)
+    else:
+        cleaned_text, title = clean_html(fetch.body_bytes)
     chunks = chunk_text(cleaned_text)
     embeddings = await embed_chunks([chunk.text for chunk in chunks])
     chunk_rows = [

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import statistics
 import uuid
 from collections import defaultdict
 
@@ -100,7 +99,6 @@ def rebuild_entity_projections(
             } | {
                 claim.subject_entity_id for claim in related if claim.object_entity_id == entity_id
             }
-            confidence_values = [claim.confidence_score for claim in related]
             session.add(
                 EntitySummary(
                     entity_id=entity_id,
@@ -108,9 +106,6 @@ def rebuild_entity_projections(
                     primary_attributes=_primary_attributes(related),
                     connection_count=len(neighbors),
                     source_count=source_counts.get(entity_id, 0),
-                    confidence_avg=statistics.mean(confidence_values)
-                    if confidence_values
-                    else None,
                 )
             )
 
@@ -123,7 +118,6 @@ def rebuild_entity_projections(
                         neighbor_id=neighbor_id,
                         predicates=sorted(data["predicates"]),
                         evidence_count=int(data["evidence_count"]),
-                        confidence=float(data["confidence"]),
                     )
                 )
         session.commit()
@@ -132,7 +126,7 @@ def rebuild_entity_projections(
 
 def _primary_attributes(claims: list[Claim]) -> dict[str, object]:
     output: dict[str, object] = {}
-    for claim in sorted(claims, key=lambda row: row.confidence_score, reverse=True):
+    for claim in sorted(claims, key=lambda row: row.first_seen_at, reverse=True):
         if claim.predicate not in PRIMARY_ATTRIBUTE_PREDICATES:
             continue
         if claim.predicate in output:
@@ -174,8 +168,7 @@ def _neighborhood_rows(claims: list[Claim], evidence_per_claim: dict[uuid.UUID, 
             (claim.object_entity_id, claim.subject_entity_id),
         ):
             key = (entity_id, neighbor_id)
-            rows.setdefault(key, {"predicates": set(), "evidence_count": 0, "confidence": 0.0})
+            rows.setdefault(key, {"predicates": set(), "evidence_count": 0})
             rows[key]["predicates"].add(claim.predicate)
             rows[key]["evidence_count"] += evidence_per_claim.get(claim.id, 0)
-            rows[key]["confidence"] = max(float(rows[key]["confidence"]), claim.confidence_score)
     return rows

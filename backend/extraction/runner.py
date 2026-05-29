@@ -7,9 +7,10 @@ from decimal import Decimal
 from sqlalchemy import exists, select
 
 from backend.class_year import normalize_class_year
-from backend.db.models import Chunk, ClaimRaw, ExtractorRun
+from backend.config import get_settings
+from backend.db.models import AuditLog, Chunk, ClaimRaw, ExtractorRun
 from backend.db.store import Store, utc_now
-from backend.extraction.cascading_extractor import PROMPT_VERSION, ExtractedClaim, extract_claims
+from backend.extraction.extractor import PROMPT_VERSION, ExtractedClaim, extract_claims
 
 
 async def extract_pending(
@@ -51,6 +52,16 @@ async def extract_pending(
             total_cost += result.cost_usd
             model_names.add(result.model)
             with store.session() as session:
+                if result.rejected_claims:
+                    session.add(
+                        AuditLog(
+                            action="extraction.rejected",
+                            target_table="chunks",
+                            target_id=str(chunk_id),
+                            actor="system",
+                            payload={"rejected": result.rejected_claims},
+                        )
+                    )
                 for claim in result.claims:
                     claim = normalize_extracted_claim(claim)
                     session.add(
@@ -58,6 +69,7 @@ async def extract_pending(
                             chunk_id=chunk_id,
                             extractor_run_id=extractor_run.id,
                             subject_text=claim.subject_text,
+                            subject_type=claim.subject_type,
                             predicate=claim.predicate,
                             object_text=claim.object_text,
                             object_type=claim.object_type,
@@ -112,7 +124,11 @@ def normalize_extracted_claim(claim: ExtractedClaim) -> ExtractedClaim:
 
 def _create_run(store: Store) -> ExtractorRun:
     with store.session() as session:
-        row = ExtractorRun(model="cascade", prompt_version=PROMPT_VERSION, status="running")
+        row = ExtractorRun(
+            model=get_settings().extraction_model,
+            prompt_version=PROMPT_VERSION,
+            status="running",
+        )
         session.add(row)
         session.commit()
         return row

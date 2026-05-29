@@ -29,10 +29,6 @@ def test_claims_api_filters_and_paginates(store) -> None:
     assert by_subject["total"] == 1
     assert by_subject["claims"][0]["subject"]["name"] == "Jane Doe"
 
-    confident = list_claims(store, min_confidence=0.8)
-    assert confident["total"] == 1
-    assert confident["claims"][0]["confidence"] == 0.9
-
     by_source = list_claims(store, source_id=first["source"].id)
     assert by_source["total"] == 1
     assert by_source["claims"][0]["sources"][0]["url"] == "https://claims.example/profile"

@@ -20,7 +20,6 @@ def test_user_api_is_public_and_lists_directory(store) -> None:
                 primary_attributes={"current_employer": "Example"},
                 connection_count=2,
                 source_count=1,
-                confidence_avg=0.91,
             )
         )
         session.commit()

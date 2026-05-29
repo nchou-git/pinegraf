@@ -108,5 +108,4 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
     assert [claim.valid_from for claim in claims] == [first_snapshot, second_snapshot]
     assert [claim.valid_to for claim in claims] == [None, None]
     assert [claim.superseded_by_claim_id for claim in claims] == [None, None]
-    assert [claim.confidence for claim in claims] == [None, None]
     assert len({claim.id for claim in claims}) == 2

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -11,11 +12,18 @@ from pydantic import BaseModel, Field, ValidationError
 
 from backend.config import get_settings
 from backend.extraction.cost import estimate_cost
-from backend.extraction.prompts import OBJECT_TYPES, PREDICATES, SYSTEM_PROMPT, user_prompt
+from backend.extraction.prompts import (
+    ENTITY_TYPES,
+    OBJECT_TYPES,
+    PREDICATES,
+    SYSTEM_PROMPT,
+    user_prompt,
+)
 
-PROMPT_VERSION = "week2_v1"
-LOW_CONFIDENCE_THRESHOLD = 0.6
-PERSON_PATTERN = r"[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+"
+logger = logging.getLogger(__name__)
+
+PROMPT_VERSION = "week3_v1"
+PERSON_PATTERN = r"[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){1,4}"
 OBJECT_PATTERN = r"[A-Z][A-Za-z0-9&'.-]+(?:\s+[A-Z][A-Za-z0-9&'.-]+)*"
 ORG_PATTERN = (
     r"(?:[Tt]he\s+)?[A-Z][A-Za-z0-9&'.-]+"
@@ -26,10 +34,100 @@ TITLE_PATTERN = (
     r"(?:dean|professor|lecturer|faculty director|faculty member|director|chair)"
 )
 TITLE_MATCH = rf"(?i:{TITLE_PATTERN})"
+PRONOUNS = frozenset(
+    {
+        "he",
+        "she",
+        "they",
+        "it",
+        "we",
+        "i",
+        "you",
+        "his",
+        "her",
+        "their",
+        "its",
+        "our",
+        "your",
+    }
+)
+ORG_SUFFIXES = (
+    " LLC",
+    " L.L.C.",
+    " LLC.",
+    " Inc",
+    " Inc.",
+    " Incorporated",
+    " Co.",
+    " Co",
+    " Corp",
+    " Corp.",
+    " Corporation",
+    " Ltd",
+    " Ltd.",
+    " Limited",
+    " LLP",
+    " L.L.P.",
+    " LP",
+    " L.P.",
+    " PLLC",
+    " PBC",
+    " GmbH",
+    " AG",
+    " S.A.",
+    " S.A.S.",
+    " S.A.R.L.",
+    " N.V.",
+    " B.V.",
+    " Pty Ltd",
+    " Pty. Ltd.",
+)
+HEADLINE_PREFIXES = ("Meet ", "Introducing ", "About ", "Q&A with ", "A Conversation with ")
+NEWS_HEADLINE_TOKENS = frozenset(
+    {
+        "selloff",
+        "sell-off",
+        "rally",
+        "crash",
+        "surge",
+        "plunge",
+        "rebound",
+        "drop",
+        "drops",
+        "halts",
+        "halt",
+        "resumes",
+        "resume",
+        "launches",
+        "launch",
+        "announces",
+        "announce",
+        "kicks",
+        "kicked",
+        "opens",
+        "closes",
+        "ends",
+        "begins",
+        "starts",
+        "reveals",
+        "unveils",
+        "tops",
+        "beats",
+        "misses",
+        "gains",
+        "loses",
+        "posts",
+        "reports",
+        "breaking",
+        "exclusive",
+        "update",
+    }
+)
 
 
 class ExtractedClaim(BaseModel):
     subject_text: str
+    subject_type: str = Field(default="person")
     predicate: str
     object_text: str | None = None
     object_type: str | None = None
@@ -51,34 +149,22 @@ class ExtractionResult:
     cost_usd: float
     input_tokens: int
     output_tokens: int
+    rejected_claims: list[dict[str, Any]] | None = None
 
 
 async def extract_claims(chunk_text: str) -> ExtractionResult:
     settings = get_settings()
-    cheap = settings.cheap_model
-    frontier = settings.frontier_model
-    first = await _extract_with_model(chunk_text, cheap)
-    if _needs_frontier(chunk_text, first.claims):
-        second = await _extract_with_model(chunk_text, frontier)
-        return ExtractionResult(
-            claims=second.claims,
-            model=f"{cheap}->{frontier}",
-            cost_usd=round(first.cost_usd + second.cost_usd, 6),
-            input_tokens=first.input_tokens + second.input_tokens,
-            output_tokens=first.output_tokens + second.output_tokens,
-        )
-    return first
-
-
-async def _extract_with_model(chunk_text: str, model: str) -> ExtractionResult:
-    settings = get_settings()
     if not settings.openai_api_key:
-        return _heuristic_extract(chunk_text, model)
+        logger.warning(
+            "extraction.heuristic_fallback openai_api_key not configured; "
+            "using heuristic regex extractor — quality will be poor"
+        )
+        return _heuristic_extract(chunk_text, settings.extraction_model)
 
     prompt = user_prompt(chunk_text)
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     response = await client.chat.completions.create(
-        model=model,
+        model=settings.extraction_model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -87,20 +173,23 @@ async def _extract_with_model(chunk_text: str, model: str) -> ExtractionResult:
     )
     content = response.choices[0].message.content or '{"claims":[]}'
     parsed = _parse_response(content)
+    claims, rejected = _valid_claims(parsed.claims)
     usage = response.usage
     input_tokens = usage.prompt_tokens if usage is not None else _token_count(prompt)
     output_tokens = usage.completion_tokens if usage is not None else _token_count(content)
     return ExtractionResult(
-        claims=_valid_claims(parsed.claims),
-        model=model,
-        cost_usd=estimate_cost(model, input_tokens, output_tokens),
+        claims=claims,
+        model=settings.extraction_model,
+        cost_usd=estimate_cost(settings.extraction_model, input_tokens, output_tokens),
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        rejected_claims=rejected,
     )
 
 
 def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
     claims: list[ExtractedClaim] = []
+    rejected: list[dict[str, Any]] = []
     patterns = [
         (
             rf"(?P<s>{PERSON_PATTERN})"
@@ -157,6 +246,7 @@ def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
             quote = match.group(0)
             _append_claim(
                 claims,
+                rejected,
                 subject_text=match.group("s"),
                 predicate=predicate,
                 object_text=match.group("o"),
@@ -165,7 +255,7 @@ def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
                 span_start=match.start(),
                 span_end=match.end(),
             )
-    _extract_role_claims(chunk_text, claims)
+    _extract_role_claims(chunk_text, claims, rejected)
     input_tokens = _token_count(chunk_text)
     output_tokens = max(1, sum(_token_count(claim.model_dump_json()) for claim in claims))
     return ExtractionResult(
@@ -174,10 +264,15 @@ def _heuristic_extract(chunk_text: str, model: str) -> ExtractionResult:
         cost_usd=estimate_cost(model, input_tokens, output_tokens),
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        rejected_claims=rejected,
     )
 
 
-def _extract_role_claims(chunk_text: str, claims: list[ExtractedClaim]) -> None:
+def _extract_role_claims(
+    chunk_text: str,
+    claims: list[ExtractedClaim],
+    rejected: list[dict[str, Any]],
+) -> None:
     role_patterns = [
         rf"(?P<s>{PERSON_PATTERN})\s+(?:is|serves as|served as|was named|was appointed)\s+"
         rf"(?:the\s+|an?\s+)?(?P<t>{TITLE_MATCH})\s+(?P<link>of|at|for)\s+(?P<o>{ORG_PATTERN})",
@@ -194,6 +289,7 @@ def _extract_role_claims(chunk_text: str, claims: list[ExtractedClaim]) -> None:
             quote = match.group(0)
             _append_claim(
                 claims,
+                rejected,
                 subject_text=subject,
                 predicate="current_title",
                 object_text=title,
@@ -204,6 +300,7 @@ def _extract_role_claims(chunk_text: str, claims: list[ExtractedClaim]) -> None:
             )
             _append_claim(
                 claims,
+                rejected,
                 subject_text=subject,
                 predicate=(
                     "affiliated_with"
@@ -228,6 +325,7 @@ def _extract_role_claims(chunk_text: str, claims: list[ExtractedClaim]) -> None:
             continue
         _append_claim(
             claims,
+            rejected,
             subject_text=match.group("s"),
             predicate="current_title",
             object_text=title,
@@ -240,6 +338,7 @@ def _extract_role_claims(chunk_text: str, claims: list[ExtractedClaim]) -> None:
 
 def _append_claim(
     claims: list[ExtractedClaim],
+    rejected: list[dict[str, Any]],
     *,
     subject_text: str,
     predicate: str,
@@ -249,6 +348,43 @@ def _append_claim(
     span_start: int | None,
     span_end: int | None,
 ) -> None:
+    subject_text, subject_rewritten = _strip_with_flag(subject_text)
+    object_text, object_rewritten = _strip_with_flag(object_text)
+    if not is_structurally_valid_name(subject_text, "person"):
+        rejected.append(
+            _rejection_payload(
+                subject_text=subject_text,
+                predicate=predicate,
+                object_text=object_text,
+                object_type=object_type,
+                raw_quote=raw_quote,
+                reason="invalid_subject",
+            )
+        )
+        return
+    if object_text and not is_structurally_valid_name(object_text, object_type or "org"):
+        rejected.append(
+            _rejection_payload(
+                subject_text=subject_text,
+                predicate=predicate,
+                object_text=object_text,
+                object_type=object_type,
+                raw_quote=raw_quote,
+                reason="invalid_object",
+            )
+        )
+        return
+    if subject_rewritten or object_rewritten:
+        rejected.append(
+            _rejection_payload(
+                subject_text=subject_text,
+                predicate=predicate,
+                object_text=object_text,
+                object_type=object_type,
+                raw_quote=raw_quote,
+                reason="headline_prefix_stripped",
+            )
+        )
     key = (
         subject_text.strip().casefold(),
         predicate,
@@ -283,6 +419,77 @@ def _append_claim(
     )
 
 
+def strip_headline_prefix(text: str) -> str:
+    for prefix in HEADLINE_PREFIXES:
+        if text.startswith(prefix):
+            return text[len(prefix) :].strip()
+    return text
+
+
+def is_structurally_valid_name(text: str, kind: str) -> bool:
+    text = text.strip()
+    if not text or len(text) > 80:
+        return False
+    if "\n" in text or "\t" in text:
+        return False
+    if re.search(r"\.\s+[A-Z]", text):
+        return False
+    if re.search(r"[,;:!?]$", text):
+        return False
+    tokens = text.split()
+    if not tokens:
+        return False
+    for token in tokens:
+        if token.casefold() in PRONOUNS:
+            return False
+    if kind == "person":
+        if len(tokens) < 2 or len(tokens) > 5:
+            return False
+        for token in tokens:
+            if token.casefold() in NEWS_HEADLINE_TOKENS:
+                return False
+        for token in tokens:
+            if not token[:1].isupper():
+                return False
+            if sum(1 for c in token if c.isalpha()) < max(2, len(token) - 1):
+                return False
+        for suffix in ORG_SUFFIXES:
+            if text.endswith(suffix):
+                return False
+        return True
+    if kind in ("org", "place", "project", "event"):
+        if any(not token[:1].isalnum() for token in tokens):
+            return False
+        return True
+    return True
+
+
+def _strip_with_flag(text: str | None) -> tuple[str | None, bool]:
+    if text is None:
+        return None, False
+    stripped = strip_headline_prefix(text.strip())
+    return stripped, stripped != text.strip()
+
+
+def _rejection_payload(
+    *,
+    subject_text: str | None,
+    predicate: str,
+    object_text: str | None,
+    object_type: str | None,
+    raw_quote: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "subject_text": subject_text,
+        "predicate": predicate,
+        "object_text": object_text,
+        "object_type": object_type,
+        "raw_quote": raw_quote,
+        "reason": reason,
+    }
+
+
 def _normalize_title(value: str) -> str:
     words = re.sub(r"\s+", " ", value.strip().strip(".,;:")).split(" ")
     small = {"of", "and", "for", "the"}
@@ -305,21 +512,62 @@ def _parse_response(content: str) -> ExtractionResponse:
         return ExtractionResponse()
 
 
-def _valid_claims(claims: list[ExtractedClaim]) -> list[ExtractedClaim]:
-    return [
-        claim
-        for claim in claims
-        if claim.predicate in PREDICATES
-        and (claim.object_type is None or claim.object_type in OBJECT_TYPES)
-        and claim.raw_quote.strip()
-    ]
+def _valid_claims(
+    claims: list[ExtractedClaim],
+) -> tuple[list[ExtractedClaim], list[dict[str, Any]]]:
+    accepted: list[ExtractedClaim] = []
+    rejected: list[dict[str, Any]] = []
+    for claim in claims:
+        reason = None
+        if claim.predicate not in PREDICATES:
+            reason = "invalid_predicate"
+        elif claim.subject_type not in ENTITY_TYPES:
+            reason = "invalid_subject_type"
+        elif claim.object_type is not None and claim.object_type not in OBJECT_TYPES:
+            reason = "invalid_object_type"
+        elif not claim.raw_quote.strip():
+            reason = "empty_quote"
 
-
-def _needs_frontier(chunk_text: str, claims: list[ExtractedClaim]) -> bool:
-    if any(claim.confidence_internal < LOW_CONFIDENCE_THRESHOLD for claim in claims):
-        return True
-    entity_count = len(re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", chunk_text))
-    return entity_count >= 4 and len(claims) < 2
+        subject_text, subject_rewritten = _strip_with_flag(claim.subject_text)
+        object_text, object_rewritten = _strip_with_flag(claim.object_text)
+        if reason is None and not is_structurally_valid_name(
+            subject_text or "",
+            claim.subject_type,
+        ):
+            reason = "invalid_subject"
+        if (
+            reason is None
+            and object_text
+            and not is_structurally_valid_name(object_text, claim.object_type or "org")
+        ):
+            reason = "invalid_object"
+        if reason is not None:
+            rejected.append(
+                _rejection_payload(
+                    subject_text=subject_text,
+                    predicate=claim.predicate,
+                    object_text=object_text,
+                    object_type=claim.object_type,
+                    raw_quote=claim.raw_quote,
+                    reason=reason,
+                )
+            )
+            continue
+        if subject_rewritten or object_rewritten:
+            rejected.append(
+                _rejection_payload(
+                    subject_text=subject_text,
+                    predicate=claim.predicate,
+                    object_text=object_text,
+                    object_type=claim.object_type,
+                    raw_quote=claim.raw_quote,
+                    reason="headline_prefix_stripped",
+                )
+            )
+        accepted.append(
+            claim.model_copy(update={"subject_text": subject_text, "object_text": object_text})
+        )
+    return accepted, rejected
 
 
 def _token_count(text: str) -> int:

@@ -22,13 +22,12 @@ from backend.db.models import (
     EntitySummary,
 )
 from backend.db.store import Store, utc_now
+from backend.extraction.extractor import is_structurally_valid_name
 from backend.resolution.embedder import embed_text
 from backend.resolution.llm_disambiguator import EntityCandidate, ExtractedMention, disambiguate
-from backend.util.vector import cosine, vector_values
 
 ENTITY_OBJECT_TYPES = {"person", "org", "project", "place", "event"}
-STOPWORDS = {"tuck", "dartmouth", "school", "business", "team", "company"}
-AFFILIATION_KEYS = {"affiliated_with", "employed_by"}
+GENERIC_TITLE_PATTERN = re.compile(r"^the\s+(?:dean|professor|director|chair|lecturer)\b", re.I)
 QUALIFIER_PREDICATES = {
     "class_year",
     "affiliated_with",
@@ -45,6 +44,7 @@ class Resolution:
     method: str
     confidence: float
     reasoning: str | None = None
+    review_candidate_id: uuid.UUID | None = None
 
 
 async def resolve_mention(
@@ -53,62 +53,156 @@ async def resolve_mention(
     *,
     store: Store,
     context_chunk: str = "",
+    context_chunk_id: uuid.UUID | None = None,
 ) -> Resolution | None:
     mention_year = normalize_class_year(mention_text)
-    normalized = normalize_name(mention_text)
+    normalized = normalize_name_strict(mention_text)
     if not normalized:
         return None
-    exact = _exact_match(store, normalized, kind, mention_year)
-    if exact is not None:
-        return exact
-    alias = _fuzzy_alias_match(store, normalized, kind, mention_year)
-    if alias is not None and alias.confidence >= 0.85:
-        return alias
-    embedding = await _embedding_match(store, normalized, kind, mention_year)
-    if embedding is not None and embedding.confidence >= 0.85:
-        block = _two_strike_block_for_entity(
+
+    if _is_low_signal_mention(mention_text, kind):
+        resolution = await _create_entity(
             store,
-            entity_id=embedding.entity_id,
-            mention_year=mention_year,
-            context_chunk=context_chunk,
-            similarity=embedding.confidence,
+            mention_text,
+            kind,
+            needs_human_disambiguation=True,
         )
-        if block is not None:
-            _record_disambiguation_candidate(
-                store,
-                candidate=block["candidate"],
-                decision="near_miss_review",
-                reasoning=str(block["reasoning"]),
-            )
-            _record_resolution_audit(
-                store,
-                action="resolution.near_miss_review",
-                target_id=embedding.entity_id,
-                payload={
-                    "mention": mention_text,
-                    "confidence": embedding.confidence,
-                    "reasoning": str(block["reasoning"]),
-                },
-            )
-            return await _create_entity(store, mention_text, kind)
-        _ensure_alias(store, embedding.entity_id, mention_text, source="resolution:embedding")
-        return embedding
-    if embedding is not None and 0.60 <= embedding.confidence < 0.85:
-        llm = await _llm_match(
+        review = _queue_review_candidate_for_entity(
             store,
             mention_text=mention_text,
-            kind=kind,
-            normalized=normalized,
-            mention_year=mention_year,
-            context_chunk=context_chunk,
+            context_chunk_id=context_chunk_id,
+            entity_id=resolution.entity_id,
+            decision="near_miss_review",
+            reasoning="low-signal mention skipped deterministic matching",
+            similarity=0.0,
         )
-        if llm is not None:
-            if llm.method == "llm":
-                _ensure_alias(store, llm.entity_id, mention_text, source="resolution:llm")
-            return llm
-    if looks_like_entity(mention_text):
-        return await _create_entity(store, mention_text, kind)
-    return None
+        _record_resolution_audit(
+            store,
+            action="resolution.low_signal_skip",
+            target_id=resolution.entity_id,
+            payload={"mention": mention_text, "kind": kind},
+        )
+        return Resolution(
+            resolution.entity_id,
+            resolution.method,
+            resolution.confidence,
+            resolution.reasoning,
+            review_candidate_id=review,
+        )
+
+    exact = _strict_exact_match(store, normalized, kind, mention_year)
+    if exact is not None:
+        return exact
+
+    mention_qualifiers = _mention_qualifiers(mention_text, context_chunk)
+    strict = _strict_qualifier_match(
+        store,
+        normalized=normalized,
+        kind=kind,
+        mention_year=mention_year,
+        mention_qualifiers=mention_qualifiers,
+    )
+    if strict is not None:
+        return strict
+
+    candidates = _name_candidates(
+        store,
+        normalized=normalized,
+        kind=kind,
+        mention_year=mention_year,
+    )
+    top = candidates[0] if candidates else None
+    if top is not None and top.similarity >= 0.80:
+        result = await disambiguate(
+            ExtractedMention(
+                text=mention_text,
+                type=kind,
+                qualifiers=mention_qualifiers,
+            ),
+            candidates[:5],
+            context_chunk,
+        )
+        matched = next(
+            (candidate for candidate in candidates if candidate.entity_id == result.entity_id),
+            None,
+        )
+        if matched is not None:
+            candidate_qualifiers = matched.qualifiers
+            threshold = 0.70 if matched.verified_by else 0.85
+            if (
+                result.confidence >= threshold
+                and _qualifiers_corroborate(mention_qualifiers, candidate_qualifiers)
+            ):
+                _ensure_alias(store, matched.entity_id, mention_text, source="resolution:llm")
+                _record_resolution_audit(
+                    store,
+                    action="resolution.llm_merged",
+                    target_id=matched.entity_id,
+                    payload={
+                        "mention": mention_text,
+                        "confidence": result.confidence,
+                        "reasoning": result.reasoning,
+                        "verified_candidate": bool(matched.verified_by),
+                    },
+                )
+                return Resolution(matched.entity_id, "llm", result.confidence, result.reasoning)
+        review = _queue_review_candidate(
+            store,
+            mention_text=mention_text,
+            context_chunk_id=context_chunk_id,
+            candidate=top,
+            decision="near_miss_review",
+            reasoning=result.reasoning,
+            source_entity_id=None,
+        )
+        entity = await _create_entity(store, mention_text, kind)
+        _record_resolution_audit(
+            store,
+            action="resolution.review_queued",
+            target_id=entity.entity_id,
+            payload={
+                "mention": mention_text,
+                "candidate_entity_id": str(top.entity_id),
+                "review_candidate_id": str(review),
+            },
+        )
+        return Resolution(
+            entity.entity_id,
+            entity.method,
+            entity.confidence,
+            result.reasoning,
+            review_candidate_id=review,
+        )
+
+    if top is not None:
+        review = _queue_review_candidate(
+            store,
+            mention_text=mention_text,
+            context_chunk_id=context_chunk_id,
+            candidate=top,
+            decision="near_miss_review",
+            reasoning="advisory candidate below LLM threshold",
+            source_entity_id=None,
+        )
+        entity = await _create_entity(store, mention_text, kind)
+        _record_resolution_audit(
+            store,
+            action="resolution.review_queued",
+            target_id=entity.entity_id,
+            payload={
+                "mention": mention_text,
+                "candidate_entity_id": str(top.entity_id),
+                "review_candidate_id": str(review),
+            },
+        )
+        return Resolution(
+            entity.entity_id,
+            entity.method,
+            entity.confidence,
+            review_candidate_id=review,
+        )
+
+    return await _create_entity(store, mention_text, kind)
 
 
 def write_mention(
@@ -128,16 +222,20 @@ def write_mention(
         ).scalar_one_or_none()
         if exists is not None:
             return
-        session.add(
-            EntityMention(
-                claim_raw_id=claim_raw_id,
-                position=position,
-                entity_id=resolution.entity_id,
-                mention_text=mention_text,
-                resolution_method=resolution.method,
-                resolution_confidence=resolution.confidence,
-            )
+        mention = EntityMention(
+            claim_raw_id=claim_raw_id,
+            position=position,
+            entity_id=resolution.entity_id,
+            mention_text=mention_text,
+            resolution_method=resolution.method,
+            resolution_confidence=resolution.confidence,
         )
+        session.add(mention)
+        session.flush()
+        if resolution.review_candidate_id is not None:
+            candidate = session.get(EntityDisambiguationCandidate, resolution.review_candidate_id)
+            if candidate is not None:
+                candidate.mention_id = mention.id
         session.commit()
 
 
@@ -147,75 +245,177 @@ def normalize_name(value: str | None) -> str:
     return text
 
 
-def looks_like_entity(value: str) -> bool:
-    words = [word for word in re.split(r"\s+", value.strip()) if word]
-    if len(words) < 2:
-        return False
-    if normalize_name(value) in STOPWORDS:
-        return False
-    return any(word[:1].isupper() for word in words)
+def normalize_name_strict(value: str | None) -> str:
+    text = CLASS_YEAR_RE.sub("", value or "")
+    text = re.sub(r"\s+", " ", text).strip().casefold()
+    for prefix in ("mr ", "mrs ", "ms ", "dr ", "prof ", "professor "):
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+    for suffix in (" jr", " sr", " ii", " iii", " iv", " phd", " md", " mba"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return text.strip()
 
 
-def _exact_match(
+def _is_low_signal_mention(mention_text: str, kind: str) -> bool:
+    normalized_text = normalize_name_strict(mention_text)
+    tokens = [token for token in normalized_text.split() if token]
+    structural_text = re.sub(r"\s+", " ", CLASS_YEAR_RE.sub("", mention_text)).strip()
+    if kind == "person" and len(tokens) < 2:
+        return True
+    if kind == "person" and not is_structurally_valid_name(structural_text, "person"):
+        return True
+    return kind == "person" and bool(GENERIC_TITLE_PATTERN.match(mention_text.strip()))
+
+
+def _strict_exact_match(
     store: Store,
     normalized: str,
     kind: str,
     mention_year: int | None,
 ) -> Resolution | None:
     with store.session() as session:
-        entities = list(session.execute(select(Entity).where(Entity.kind == kind)).scalars())
+        entities = list(
+            session.execute(
+                select(Entity).where(Entity.kind == kind, Entity.status == "active")
+            ).scalars()
+        )
         for entity in entities:
-            if normalize_name(entity.canonical_name) == normalized and _class_year_compatible(
-                mention_year, _entity_class_year(session, entity)
-            ):
+            name_matches = normalize_name_strict(entity.canonical_name) == normalized
+            year_matches = _class_year_compatible(
+                mention_year,
+                _entity_class_year(session, entity),
+            )
+            if name_matches and year_matches:
                 return Resolution(entity.id, "exact_match", 1.0)
         aliases = list(
             session.execute(
                 select(EntityAlias, Entity)
                 .join(Entity, Entity.id == EntityAlias.entity_id)
-                .where(Entity.kind == kind)
+                .where(Entity.kind == kind, Entity.status == "active")
             ).all()
         )
         for alias, entity in aliases:
-            if normalize_name(alias.alias) == normalized and _class_year_compatible(
+            if normalize_name_strict(alias.alias) == normalized and _class_year_compatible(
                 mention_year, _entity_class_year(session, entity, alias.alias)
             ):
                 return Resolution(alias.entity_id, "exact_match", 1.0)
     return None
 
 
-def _fuzzy_alias_match(
+def _strict_qualifier_match(
     store: Store,
+    *,
     normalized: str,
     kind: str,
     mention_year: int | None,
+    mention_qualifiers: dict[str, list[str]],
 ) -> Resolution | None:
-    best: Resolution | None = None
+    if not any(mention_qualifiers.values()):
+        return None
+    best: tuple[Entity, float, dict[str, list[str]]] | None = None
     with store.session() as session:
-        rows = list(
+        entities = list(
             session.execute(
-                select(EntityAlias, Entity)
-                .join(Entity, Entity.id == EntityAlias.entity_id)
-                .where(Entity.kind == kind)
-            ).all()
+                select(Entity).where(Entity.kind == kind, Entity.status == "active")
+            ).scalars()
         )
-        scored_rows = [
-            (alias, entity, _entity_class_year(session, entity, alias.alias))
-            for alias, entity in rows
-        ]
-    for alias, _entity, candidate_year in scored_rows:
-        if not _class_year_compatible(mention_year, candidate_year):
-            continue
-        score = SequenceMatcher(None, normalized, normalize_name(alias.alias)).ratio()
-        if mention_year is not None and mention_year == candidate_year:
-            score = min(1.0, score + 0.05)
-        if best is None or score > best.confidence:
-            best = Resolution(alias.entity_id, "alias", score)
-    return best
+        for entity in entities:
+            candidate_year = _entity_class_year(session, entity)
+            if not _class_year_compatible(mention_year, candidate_year):
+                continue
+            names = [entity.canonical_name, *list(
+                session.execute(
+                    select(EntityAlias.alias).where(EntityAlias.entity_id == entity.id)
+                ).scalars()
+            )]
+            score = max(
+                SequenceMatcher(None, normalized, normalize_name_strict(name)).ratio()
+                for name in names
+            )
+            qualifiers = _candidate_qualifiers(session, entity)
+            if score >= 0.92 and _qualifiers_corroborate(mention_qualifiers, qualifiers):
+                if best is None or score > best[1]:
+                    best = (entity, score, qualifiers)
+    if best is None:
+        return None
+    return Resolution(best[0].id, "strict_qualifier", best[1])
 
 
 def _class_year_compatible(mention_year: int | None, candidate_year: int | None) -> bool:
     return mention_year is None or candidate_year is None or mention_year == candidate_year
+
+
+def _name_candidates(
+    store: Store,
+    *,
+    normalized: str,
+    kind: str,
+    mention_year: int | None,
+) -> list[EntityCandidate]:
+    candidates: list[EntityCandidate] = []
+    with store.session() as session:
+        entities = list(
+            session.execute(
+                select(Entity).where(Entity.kind == kind, Entity.status == "active")
+            ).scalars()
+        )
+        for entity in entities:
+            candidate_year = _entity_class_year(session, entity)
+            if not _class_year_compatible(mention_year, candidate_year):
+                continue
+            aliases = list(
+                session.execute(
+                    select(EntityAlias.alias).where(EntityAlias.entity_id == entity.id)
+                ).scalars()
+            )
+            names = [entity.canonical_name, *aliases]
+            name_score = max(
+                SequenceMatcher(None, normalized, normalize_name_strict(name)).ratio()
+                for name in names
+            )
+            score = name_score
+            if score < 0.60:
+                continue
+            qualifiers = _candidate_qualifiers(session, entity)
+            document_count, last_seen_at = _candidate_document_stats(session, entity)
+            candidates.append(
+                EntityCandidate(
+                    entity_id=entity.id,
+                    name=entity.canonical_name,
+                    kind=entity.kind,
+                    aliases=aliases,
+                    document_count=document_count,
+                    last_seen_at=last_seen_at,
+                    similarity=score,
+                    qualifiers=qualifiers,
+                    verified_by=entity.verified_by,
+                    recent_claims=_recent_claim_summaries(session, entity.id),
+                )
+            )
+    return sorted(candidates, key=lambda item: item.similarity, reverse=True)[:10]
+
+
+def _qualifiers_corroborate(
+    mention: dict[str, list[str]],
+    candidate: dict[str, list[str]],
+) -> bool:
+    if not any(mention.values()):
+        return True
+    matched = False
+    for key, mention_values in mention.items():
+        if not mention_values:
+            continue
+        candidate_values = candidate.get(key, [])
+        if not candidate_values:
+            continue
+        mention_set = {value.casefold() for value in mention_values}
+        candidate_set = {value.casefold() for value in candidate_values}
+        if mention_set & candidate_set:
+            matched = True
+        else:
+            return False
+    return matched
 
 
 def _entity_class_year(
@@ -232,168 +432,6 @@ def _entity_class_year(
         return None
     primary = summary.primary_attributes or {}
     return normalize_class_year(str(primary.get("class_year", "")))
-
-
-async def _embedding_match(
-    store: Store,
-    normalized: str,
-    kind: str,
-    mention_year: int | None,
-) -> Resolution | None:
-    mention_embedding = await embed_text(normalized)
-    best: Resolution | None = None
-    with store.session() as session:
-        rows = list(
-            session.execute(
-                select(Entity).where(
-                    Entity.kind == kind,
-                    Entity.embedding.is_not(None),
-                )
-            ).all()
-        )
-        scored_rows = [(entity, _entity_class_year(session, entity)) for (entity,) in rows]
-    for entity, candidate_year in scored_rows:
-        score = cosine(mention_embedding, vector_values(entity.embedding))
-        if mention_year is not None and mention_year == candidate_year:
-            score = min(1.0, score + 0.05)
-        if best is None or score > best.confidence:
-            best = Resolution(entity.id, "embedding", score)
-    return best
-
-
-async def _llm_match(
-    store: Store,
-    *,
-    mention_text: str,
-    kind: str,
-    normalized: str,
-    mention_year: int | None,
-    context_chunk: str,
-) -> Resolution | None:
-    candidates = await _ambiguous_candidates(
-        store,
-        normalized=normalized,
-        kind=kind,
-        mention_year=mention_year,
-    )
-    if not candidates:
-        return None
-    mention_qualifiers = _mention_qualifiers(mention_text, context_chunk)
-    block = _two_strike_block(
-        candidates[0],
-        mention_year,
-        context_chunk,
-        mention_qualifiers,
-    )
-    if block is not None:
-        _record_disambiguation_candidate(
-            store,
-            candidate=candidates[0],
-            decision="near_miss_review",
-            reasoning=block,
-        )
-        _record_resolution_audit(
-            store,
-            action="resolution.near_miss_review",
-            target_id=candidates[0].entity_id,
-            payload={
-                "mention": mention_text,
-                "confidence": candidates[0].similarity,
-                "reasoning": block,
-            },
-        )
-        return await _create_entity(store, mention_text, kind)
-    result = await disambiguate(
-        ExtractedMention(
-            text=mention_text,
-            type=kind,
-            qualifiers=mention_qualifiers,
-        ),
-        candidates,
-        context_chunk,
-    )
-    if result.entity_id is None:
-        top = candidates[0]
-        decision = "near_miss_review" if top.similarity >= 0.70 else "split"
-        _record_disambiguation_candidate(
-            store,
-            candidate=top,
-            decision=decision,
-            reasoning=result.reasoning,
-        )
-        _record_resolution_audit(
-            store,
-            action="resolution.llm_new_entity",
-            target_id=mention_text,
-            payload={"confidence": result.confidence, "reasoning": result.reasoning},
-        )
-        return await _create_entity(store, mention_text, kind)
-    matched = next(
-        (candidate for candidate in candidates if candidate.entity_id == result.entity_id),
-        None,
-    )
-    if matched is not None:
-        _record_disambiguation_candidate(
-            store,
-            candidate=matched,
-            decision="merged",
-            reasoning=result.reasoning,
-        )
-    _record_resolution_audit(
-        store,
-        action="resolution.llm_match",
-        target_id=result.entity_id,
-        payload={
-            "mention": mention_text,
-            "confidence": result.confidence,
-            "reasoning": result.reasoning,
-        },
-    )
-    return Resolution(result.entity_id, "llm", result.confidence, result.reasoning)
-
-
-async def _ambiguous_candidates(
-    store: Store,
-    *,
-    normalized: str,
-    kind: str,
-    mention_year: int | None,
-) -> list[EntityCandidate]:
-    del mention_year
-    mention_embedding = await embed_text(normalized)
-    rows: list[tuple[Entity, list[str], dict[str, list[str]], int, object | None]] = []
-    with store.session() as session:
-        entities = list(
-            session.execute(
-                select(Entity).where(Entity.kind == kind, Entity.embedding.is_not(None))
-            ).scalars()
-        )
-        for entity in entities:
-            aliases = list(
-                session.execute(
-                    select(EntityAlias.alias).where(EntityAlias.entity_id == entity.id)
-                ).scalars()
-            )
-            qualifiers = _candidate_qualifiers(session, entity)
-            document_count, last_seen_at = _candidate_document_stats(session, entity)
-            rows.append((entity, aliases, qualifiers, document_count, last_seen_at))
-    candidates: list[EntityCandidate] = []
-    for entity, aliases, qualifiers, document_count, last_seen_at in rows:
-        score = cosine(mention_embedding, vector_values(entity.embedding))
-        if 0.60 <= score < 0.85:
-            candidates.append(
-                EntityCandidate(
-                    entity_id=entity.id,
-                    name=entity.canonical_name,
-                    kind=entity.kind,
-                    aliases=aliases,
-                    document_count=document_count,
-                    last_seen_at=last_seen_at,
-                    similarity=score,
-                    qualifiers=qualifiers,
-                )
-            )
-    return sorted(candidates, key=lambda item: item.similarity, reverse=True)[:5]
 
 
 def _candidate_qualifiers(session, entity: Entity) -> dict[str, list[str]]:
@@ -440,6 +478,28 @@ def _candidate_document_stats(session, entity: Entity) -> tuple[int, object | No
         .where(EntityMention.entity_id == entity.id)
     ).one()
     return int(row[0] or 0), row[1]
+
+
+def _recent_claim_summaries(session, entity_id: uuid.UUID) -> list[str]:
+    rows = session.execute(
+        select(Claim, Entity)
+        .outerjoin(Entity, Entity.id == Claim.object_entity_id)
+        .where(or_(Claim.subject_entity_id == entity_id, Claim.object_entity_id == entity_id))
+        .order_by(Claim.last_corroborated_at.desc())
+        .limit(10)
+    ).all()
+    summaries: list[str] = []
+    for claim, object_entity in rows:
+        if claim.subject_entity_id == entity_id:
+            value = object_entity.canonical_name if object_entity else claim.object_value
+            summaries.append(f"{claim.predicate}: {value or 'unknown'}")
+        else:
+            subject = session.get(Entity, claim.subject_entity_id)
+            summaries.append(
+                f"object_of_{claim.predicate}: "
+                f"{subject.canonical_name if subject else claim.subject_entity_id}"
+            )
+    return summaries
 
 
 def _mention_qualifiers(mention_text: str, context_chunk: str) -> dict[str, list[str]]:
@@ -493,153 +553,55 @@ def _dedupe(values: list[str]) -> list[str]:
     return output
 
 
-def _two_strike_block_for_entity(
+def _queue_review_candidate(
     store: Store,
     *,
-    entity_id: uuid.UUID,
-    mention_year: int | None,
-    context_chunk: str,
-    similarity: float,
-) -> dict[str, object] | None:
-    with store.session() as session:
-        entity = session.get(Entity, entity_id)
-        if entity is None:
-            return None
-        candidate = EntityCandidate(
-            entity_id=entity.id,
-            name=entity.canonical_name,
-            kind=entity.kind,
-            aliases=list(
-                session.execute(
-                    select(EntityAlias.alias).where(EntityAlias.entity_id == entity.id)
-                ).scalars()
-            ),
-            document_count=0,
-            last_seen_at=None,
-            similarity=similarity,
-            qualifiers=_candidate_qualifiers(session, entity),
-        )
-    reasoning = _two_strike_block(
-        candidate,
-        mention_year,
-        context_chunk,
-        _mention_qualifiers("", context_chunk),
-    )
-    if reasoning is None:
-        return None
-    return {"candidate": candidate, "reasoning": reasoning}
-
-
-def _two_strike_block(
-    candidate: EntityCandidate,
-    mention_year: int | None,
-    context_chunk: str,
-    mention_qualifiers: dict[str, list[str]] | None = None,
-) -> str | None:
-    mention_qualifiers = mention_qualifiers or {}
-    candidate_years = {
-        normalize_class_year(value)
-        for value in candidate.qualifiers.get("class_year", [])
-        if normalize_class_year(value) is not None
-    }
-    if mention_year is not None and candidate_years and mention_year not in candidate_years:
-        return (
-            f"near miss: mention class year {mention_year} conflicts with candidate "
-            f"class_year {sorted(candidate_years)}"
-        )
-    affiliation_reason = _qualifier_conflict_reason(
-        mention_qualifiers,
-        candidate.qualifiers,
-        mention_keys=AFFILIATION_KEYS,
-        candidate_keys=AFFILIATION_KEYS,
-        label="affiliation",
-    )
-    if affiliation_reason is not None:
-        return affiliation_reason
-    location_reason = _qualifier_conflict_reason(
-        mention_qualifiers,
-        candidate.qualifiers,
-        mention_keys={"located_in"},
-        candidate_keys={"located_in"},
-        label="location",
-    )
-    if location_reason is not None:
-        return location_reason
-    mention_has_qualifiers = (
-        mention_year is not None
-        or _context_has_strong_alignment(context_chunk, candidate)
-        or any(
-            mention_qualifiers.get(key) for key in ("affiliated_with", "employed_by", "located_in")
-        )
-    )
-    if not mention_has_qualifiers and candidate.qualifiers and candidate.similarity < 0.78:
-        return (
-            "near miss: mention has no qualifiers while candidate has qualifiers; "
-            "insufficient context for a safe merge"
-        )
-    return None
-
-
-def _qualifier_conflict_reason(
-    mention_qualifiers: dict[str, list[str]],
-    candidate_qualifiers: dict[str, list[str]],
-    *,
-    mention_keys: set[str],
-    candidate_keys: set[str],
-    label: str,
-) -> str | None:
-    mention_values = _normalized_qualifier_values(mention_qualifiers, mention_keys)
-    candidate_values = _normalized_qualifier_values(candidate_qualifiers, candidate_keys)
-    if not mention_values or not candidate_values:
-        return None
-    if set(mention_values).isdisjoint(set(candidate_values)):
-        return (
-            f"near miss: mention {label} {sorted(mention_values.values())} conflicts "
-            f"with candidate {label} {sorted(candidate_values.values())}"
-        )
-    return None
-
-
-def _normalized_qualifier_values(
-    qualifiers: dict[str, list[str]],
-    keys: set[str],
-) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for key in keys:
-        for value in qualifiers.get(key, []):
-            normalized = normalize_name(value)
-            if normalized:
-                values[normalized] = value
-    return values
-
-
-def _context_has_strong_alignment(context_chunk: str, candidate: EntityCandidate) -> bool:
-    normalized_context = normalize_name(context_chunk)
-    for values in candidate.qualifiers.values():
-        for value in values:
-            if normalize_name(value) and normalize_name(value) in normalized_context:
-                return True
-    return False
-
-
-def _record_disambiguation_candidate(
-    store: Store,
-    *,
+    mention_text: str,
+    context_chunk_id: uuid.UUID | None,
     candidate: EntityCandidate,
     decision: str,
     reasoning: str,
-) -> None:
+    source_entity_id: uuid.UUID | None,
+) -> uuid.UUID:
+    del source_entity_id
     with store.session() as session:
-        session.add(
-            EntityDisambiguationCandidate(
-                mention_id=None,
-                candidate_entity_id=candidate.entity_id,
-                llm_decision=decision,
-                llm_reasoning=reasoning,
-                name_similarity_score=candidate.similarity,
-            )
+        row = EntityDisambiguationCandidate(
+            mention_id=None,
+            mention_text=mention_text,
+            context_chunk_id=context_chunk_id,
+            candidate_entity_id=candidate.entity_id,
+            llm_decision=decision,
+            llm_reasoning=reasoning,
+            name_similarity_score=candidate.similarity,
         )
+        session.add(row)
         session.commit()
+        return row.id
+
+
+def _queue_review_candidate_for_entity(
+    store: Store,
+    *,
+    mention_text: str,
+    context_chunk_id: uuid.UUID | None,
+    entity_id: uuid.UUID,
+    decision: str,
+    reasoning: str,
+    similarity: float,
+) -> uuid.UUID:
+    with store.session() as session:
+        row = EntityDisambiguationCandidate(
+            mention_id=None,
+            mention_text=mention_text,
+            context_chunk_id=context_chunk_id,
+            candidate_entity_id=entity_id,
+            llm_decision=decision,
+            llm_reasoning=reasoning,
+            name_similarity_score=similarity,
+        )
+        session.add(row)
+        session.commit()
+        return row.id
 
 
 def _ensure_alias(store: Store, entity_id: uuid.UUID, mention_text: str, *, source: str) -> None:
@@ -691,13 +653,20 @@ def _record_resolution_audit(
         session.commit()
 
 
-async def _create_entity(store: Store, mention_text: str, kind: str) -> Resolution:
+async def _create_entity(
+    store: Store,
+    mention_text: str,
+    kind: str,
+    *,
+    needs_human_disambiguation: bool = False,
+) -> Resolution:
     embedding = await embed_text(mention_text)
     with store.session() as session:
         entity = Entity(
             kind=kind,
             canonical_name=mention_text.strip(),
             embedding=embedding,
+            needs_human_disambiguation=needs_human_disambiguation,
             updated_at=utc_now(),
         )
         session.add(entity)

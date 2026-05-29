@@ -4,7 +4,7 @@ import pytest
 
 from backend.class_year import expand_class_year_synonyms, normalize_class_year
 from backend.db.models import Entity, EntitySummary
-from backend.extraction.cascading_extractor import ExtractedClaim
+from backend.extraction.extractor import ExtractedClaim
 from backend.extraction.runner import normalize_extracted_claim
 from backend.resolution.resolver import resolve_mention
 
@@ -74,7 +74,6 @@ async def test_resolver_uses_class_year_as_positive_match_signal(store) -> None:
                 primary_attributes={"class_year": "2017"},
                 connection_count=0,
                 source_count=1,
-                confidence_avg=0.9,
             )
         )
         session.commit()

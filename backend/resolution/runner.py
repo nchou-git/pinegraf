@@ -31,9 +31,10 @@ async def resolve_pending(
     for index, row in enumerate(rows, start=1):
         subject = await resolve_mention(
             row.subject_text,
-            "person",
+            row.subject_type,
             store=store,
             context_chunk=_context_chunk(store, row.chunk_id),
+            context_chunk_id=row.chunk_id,
         )
         if subject is not None:
             write_mention(
@@ -50,6 +51,7 @@ async def resolve_pending(
                 row.object_type or "org",
                 store=store,
                 context_chunk=_context_chunk(store, row.chunk_id),
+                context_chunk_id=row.chunk_id,
             )
             if object_resolution is not None:
                 write_mention(

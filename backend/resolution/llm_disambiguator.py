@@ -27,6 +27,8 @@ class EntityCandidate:
     last_seen_at: datetime | None
     similarity: float
     qualifiers: dict[str, list[str]]
+    verified_by: str | None = None
+    recent_claims: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ async def disambiguate(
     prompt = _prompt(mention, candidates, context_chunk)
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     response = await client.chat.completions.create(
-        model=settings.cheap_model,
+        model=settings.extraction_model,
         messages=[
             {
                 "role": "system",
@@ -80,11 +82,14 @@ def _prompt(
     for index, candidate in enumerate(candidates, start=1):
         aliases = f"aliases: {candidate.aliases}" if candidate.aliases else "no aliases"
         last_seen = candidate.last_seen_at.date().isoformat() if candidate.last_seen_at else "never"
+        verified = f"verified by {candidate.verified_by}" if candidate.verified_by else "unverified"
+        claims = "; ".join((candidate.recent_claims or [])[:10]) or "no recent claims"
         candidate_lines.append(
             (
                 f'{index}. "{candidate.name}" - {candidate.kind}, {aliases}, '
-                f"appears in {candidate.document_count} documents, last seen {last_seen}; "
-                f"qualifiers: {_format_qualifiers(candidate.qualifiers)}"
+                f"appears in {candidate.document_count} documents, last seen {last_seen}, "
+                f"{verified}; qualifiers: {_format_qualifiers(candidate.qualifiers)}; "
+                f"recent claims: {claims}"
             )
         )
     mention_qualifiers = _format_qualifiers(mention.qualifiers or {})
