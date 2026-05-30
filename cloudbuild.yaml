@@ -67,9 +67,9 @@ steps:
         python -m alembic upgrade head
         pytest -q
   - name: "gcr.io/cloud-builders/docker"
-    args: [push, ${_IMAGE_REPO}:${_ENVIRONMENT}-$BUILD_ID]
+    args: [push, "${_IMAGE_REPO}:${_ENVIRONMENT}-$BUILD_ID"]
   - name: "gcr.io/cloud-builders/docker"
-    args: [push, ${_IMAGE_REPO}:latest-${_ENVIRONMENT}]
+    args: [push, "${_IMAGE_REPO}:latest-${_ENVIRONMENT}"]
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: bash
     args:
