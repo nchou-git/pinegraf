@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from backend import main as main_module
+from backend.admin_session import COOKIE_NAME, issue
+from backend.config import get_settings
 from backend.db.models import AuditLog, SourceRun
 
 
@@ -330,3 +332,43 @@ def test_admin_login_rejects_invalid_json(store) -> None:
         )
         assert response.status_code == 400
         assert response.json()["detail"] == "Admin login JSON body must be an object."
+
+
+def test_demo_index_forces_login_only_for_anonymous_visitors(monkeypatch) -> None:
+    monkeypatch.setenv("PINEGRAF_DEMO_MODE", "true")
+    get_settings.cache_clear()
+    client = TestClient(main_module.create_app(object()))
+    anonymous = client.get("/")
+    assert anonymous.status_code == 200
+    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" in anonymous.text
+
+    client.cookies.set(COOKIE_NAME, issue())
+    admin = client.get("/")
+    assert admin.status_code == 200
+    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in admin.text
+
+
+def test_prod_index_does_not_force_login(monkeypatch) -> None:
+    monkeypatch.setenv("PINEGRAF_DEMO_MODE", "false")
+    get_settings.cache_clear()
+    client = TestClient(main_module.create_app(object()))
+    anonymous = client.get("/")
+    assert anonymous.status_code == 200
+    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in anonymous.text
+
+    client.cookies.set(COOKIE_NAME, issue())
+    admin = client.get("/")
+    assert admin.status_code == 200
+    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in admin.text
+
+
+def test_demo_env_enables_demo_index_login_gate(monkeypatch) -> None:
+    monkeypatch.delenv("PINEGRAF_DEMO_MODE", raising=False)
+    monkeypatch.setenv("PINEGRAF_ENV", "demo")
+    get_settings.cache_clear()
+    client = TestClient(main_module.create_app(object()))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" in response.text

@@ -238,12 +238,19 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/")
-    async def index() -> Response:
+    async def index(request: Request) -> Response:
         html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
         if os.getenv("PINEGRAF_ENV", "prod") != "prod":
             html = html.replace(
                 "<head>",
                 '<head>\n    <meta name="robots" content="noindex,nofollow">',
+                1,
+            )
+        settings = get_settings()
+        if settings.demo_mode and not is_admin_request(request):
+            html = html.replace(
+                "<head>",
+                "<head>\n    <script>window.__PINEGRAF_FORCE_LOGIN__ = true;</script>",
                 1,
             )
         return HTMLResponse(content=html, headers=FRONTEND_HTML_HEADERS)

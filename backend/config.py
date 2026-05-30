@@ -82,7 +82,10 @@ def get_settings() -> Settings:
             db_pool_recycle_seconds=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
             db_pool_pre_ping=os.getenv("DB_POOL_PRE_PING", "true"),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
-            demo_mode=os.getenv("PINEGRAF_DEMO_MODE", "false"),
+            demo_mode=os.getenv(
+                "PINEGRAF_DEMO_MODE",
+                "true" if os.getenv("PINEGRAF_ENV") == "demo" else "false",
+            ),
             extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.5"),
             workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),

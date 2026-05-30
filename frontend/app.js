@@ -128,6 +128,10 @@ const STAT_CARDS = [
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
+  if (window.__PINEGRAF_FORCE_LOGIN__ === true) {
+    renderLoginGate();
+    return;
+  }
   ensureToastContainer();
   setupShell();
   renderShell();
@@ -136,6 +140,90 @@ async function init() {
   await Promise.all([loadMe(), loadStats()]);
   renderShell();
   renderRoute();
+}
+
+function renderLoginGate() {
+  document.body.className = "login-body";
+  document.body.innerHTML = `
+    <main class="login-shell">
+      <div class="login-card">
+        <div class="login-brand">
+          <svg
+            class="login-mark"
+            viewBox="0 0 40 40"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <polygon
+              points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
+              fill="currentColor"
+            />
+            <rect x="18" y="32" width="4" height="4" fill="currentColor"/>
+          </svg>
+          <div>
+            <div class="wordmark">Pinegraf</div>
+            <div class="login-note">Demo environment</div>
+          </div>
+        </div>
+        <div class="login-error" id="login-gate-error" hidden></div>
+        <form class="login-form" id="login-gate-form">
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input
+              class="input"
+              id="login-gate-username"
+              name="username"
+              autocomplete="username"
+              value="pinegraf"
+              autofocus
+              required
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input
+              class="input"
+              id="login-gate-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+          </label>
+          <button type="submit" class="btn-primary" id="login-gate-submit">Submit</button>
+        </form>
+      </div>
+    </main>
+  `;
+
+  const form = byId("login-gate-form");
+  const error = byId("login-gate-error");
+  const submit = byId("login-gate-submit");
+  byId("login-gate-username").focus();
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    error.hidden = true;
+    submit.disabled = true;
+    try {
+      const response = await fetch("/admin/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: byId("login-gate-username").value,
+          password: byId("login-gate-password").value,
+          next: "/",
+        }),
+      });
+      if (!response.ok) throw new Error("Wrong username or password.");
+      location.reload();
+    } catch (err) {
+      error.textContent = err.message || "Unable to sign in.";
+      error.hidden = false;
+      submit.disabled = false;
+      byId("login-gate-password").focus();
+    }
+  });
 }
 
 function renderInitialRouteSkeleton() {
