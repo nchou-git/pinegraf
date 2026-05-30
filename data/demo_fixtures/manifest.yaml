@@ -1,0 +1,9 @@
+fixtures:
+  - filename: sarah-ketterer.html
+    original_url: https://tuck.dartmouth.edu/mba/alumni-stories/sarah-ketterer
+    source: tuck
+    display_name: Sarah Ketterer alumni story
+  - filename: daniella-reichstetter-t07.html
+    original_url: https://tuck.dartmouth.edu/faculty/faculty-directory/daniella-reichstetter-t07
+    source: tuck
+    display_name: Daniella Reichstetter faculty profile

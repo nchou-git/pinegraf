@@ -137,3 +137,26 @@ the domain mapping command.
 - Basic auth credentials live in `DEMO_BASIC_AUTH_CREDENTIALS` as
   `username:password`. To rotate, add a new secret version and deploy a new
   Cloud Run revision.
+
+## Reset demo data
+
+The boot seed only runs when the demo database has no rows in `sources`. For a
+clean reseed after fixture changes, drop and recreate the demo database:
+
+```bash
+gcloud sql databases delete pinegraf \
+  --project=pinegraf-prod \
+  --instance=pinegraf-demo-db
+
+gcloud sql databases create pinegraf \
+  --project=pinegraf-prod \
+  --instance=pinegraf-demo-db
+
+DEMO_DATABASE_URL="$(gcloud secrets versions access latest \
+  --project=pinegraf-prod \
+  --secret=DEMO_DATABASE_URL)"
+DATABASE_URL="$DEMO_DATABASE_URL" .venv/bin/alembic upgrade head
+```
+
+Then deploy the `demo` branch again. The next `pinegrafdemo` boot will import
+fixture files from `data/demo_fixtures/`.

@@ -46,6 +46,7 @@ from backend.db.store import (
     start_query_metrics,
     utc_now,
 )
+from backend.demo_seed import run_demo_seed_if_needed
 from backend.jobs.run import cancel_cloud_run_execution, execute_cloud_run_job
 from backend.live_logs import append_log, install_log_handler, subscribe_logs
 from backend.maintenance.integrity import verify_source_integrity
@@ -190,9 +191,15 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        os.makedirs(get_settings().uploads_dir, exist_ok=True)
+        settings = get_settings()
+        os.makedirs(settings.uploads_dir, exist_ok=True)
         LOGGER.info("database pool startup config %s", engine_pool_config(app_store.engine))
         _warn_if_empty_database_since_deploy(app_store)
+        if settings.demo_mode:
+            try:
+                await run_demo_seed_if_needed(app_store)
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("demo seed failed")
         append_log("info", "Pinegraf started", store=app_store)
         yield
 

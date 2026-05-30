@@ -83,6 +83,10 @@ steps:
         if [[ -n "${_SECRET_BASIC_AUTH}" ]]; then
           secrets="$${secrets},BASIC_AUTH_CREDENTIALS=${_SECRET_BASIC_AUTH}:latest"
         fi
+        env_vars="EXTRACTION_MODEL=gpt-5.5,PINEGRAF_ENV=${_ENVIRONMENT},PINEGRAF_SERVICE=${_SERVICE},PINEGRAF_REGION=us-east4"
+        if [[ "${_ENVIRONMENT}" == "demo" ]]; then
+          env_vars="$${env_vars},PINEGRAF_DEMO_MODE=true"
+        fi
         gcloud run deploy ${_SERVICE} \
           --image=${_IMAGE_REPO}:${_ENVIRONMENT}-$BUILD_ID \
           --region=us-east4 \
@@ -94,7 +98,7 @@ steps:
           --max-instances=${_MAX_INSTANCES} \
           --concurrency=80 \
           --timeout=300 \
-          --set-env-vars=EXTRACTION_MODEL=gpt-5.5,PINEGRAF_ENV=${_ENVIRONMENT},PINEGRAF_SERVICE=${_SERVICE},PINEGRAF_REGION=us-east4 \
+          --set-env-vars="$${env_vars}" \
           --set-secrets="$${secrets}"
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: bash

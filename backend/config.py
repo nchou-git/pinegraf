@@ -33,6 +33,7 @@ class Settings(BaseModel):
     db_pool_recycle_seconds: int = Field(default=1800, ge=30)
     db_pool_pre_ping: bool = Field(default=True)
     use_mock_embeddings: bool = Field(default=False)
+    demo_mode: bool = Field(default=False)
     extraction_model: str = Field(default="gpt-5.5")
 
     workspace_display_name: str = Field(default="Tuck School of Business")
@@ -40,7 +41,7 @@ class Settings(BaseModel):
 
     uploads_dir: str = Field(default="/tmp/pinegraf_uploads")
 
-    @field_validator("use_mock_embeddings", "secure_cookies", mode="before")
+    @field_validator("use_mock_embeddings", "secure_cookies", "demo_mode", mode="before")
     @classmethod
     def parse_bool(_cls, value: object) -> bool:
         if isinstance(value, bool):
@@ -81,6 +82,7 @@ def get_settings() -> Settings:
             db_pool_recycle_seconds=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
             db_pool_pre_ping=os.getenv("DB_POOL_PRE_PING", "true"),
             use_mock_embeddings=os.getenv("USE_MOCK_EMBEDDINGS", "false"),
+            demo_mode=os.getenv("PINEGRAF_DEMO_MODE", "false"),
             extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.5"),
             workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),
