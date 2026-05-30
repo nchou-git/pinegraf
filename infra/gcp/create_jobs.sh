@@ -32,11 +32,16 @@ fi
 upsert_job() {
   local job="$1"
   local mode="$2"
-  local env_vars="PINEGRAF_MODE=${mode},EXTRACTION_MODEL=gpt-5.5"
-  local secrets="DATABASE_URL=DATABASE_URL:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest"
+  local db_secret="${DATABASE_URL_SECRET:-DATABASE_URL}"
+  local openai_secret="${OPENAI_API_KEY_SECRET:-OPENAI_API_KEY}"
+  local pdl_secret="${PDL_API_KEY_SECRET:-PDL_API_KEY}"
+  local admin_pw_secret="${PINEGRAF_ADMIN_PASSWORD_SECRET:-PINEGRAF_ADMIN_PASSWORD}"
+  local session_secret="${ADMIN_SESSION_SECRET_NAME:-ADMIN_SESSION_SECRET}"
+  local env_vars="PINEGRAF_MODE=${mode},EXTRACTION_MODEL=gpt-5.5,PINEGRAF_SERVICE=${SERVICE},PINEGRAF_REGION=${REGION}"
+  local secrets="DATABASE_URL=${db_secret}:latest,PINEGRAF_ADMIN_PASSWORD=${admin_pw_secret}:latest,ADMIN_SESSION_SECRET=${session_secret}:latest,OPENAI_API_KEY=${openai_secret}:latest"
 
-  if gcloud secrets describe PDL_API_KEY --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    secrets="${secrets},PDL_API_KEY=PDL_API_KEY:latest"
+  if gcloud secrets describe "${pdl_secret}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+    secrets="${secrets},PDL_API_KEY=${pdl_secret}:latest"
   fi
 
   local args=(
@@ -60,6 +65,6 @@ upsert_job() {
   fi
 }
 
-upsert_job pinegraf-crawl crawl
-upsert_job pinegraf-parse parse
-upsert_job pinegraf-maintenance maintenance
+upsert_job "${SERVICE}-crawl" crawl
+upsert_job "${SERVICE}-parse" parse
+upsert_job "${SERVICE}-maintenance" maintenance

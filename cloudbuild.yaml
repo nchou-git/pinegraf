@@ -1,11 +1,25 @@
+substitutions:
+  _SERVICE: pinegraf
+  _IMAGE_REPO: us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app
+  _ENVIRONMENT: prod
+  _MIN_INSTANCES: "1"
+  _MAX_INSTANCES: "4"
+  _SECRET_DATABASE_URL: DATABASE_URL
+  _SECRET_OPENAI: OPENAI_API_KEY
+  _SECRET_PDL: PDL_API_KEY
+  _SECRET_SESSION: ADMIN_SESSION_SECRET
+  _SECRET_ADMIN_PASSWORD: PINEGRAF_ADMIN_PASSWORD
+  _SECRET_DB_PASSWORD: DB_PASSWORD
+  _SECRET_BASIC_AUTH: ""
+
 steps:
   - name: "gcr.io/cloud-builders/docker"
     args:
       - build
       - -t
-      - us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID
+      - ${_IMAGE_REPO}:${_ENVIRONMENT}-$BUILD_ID
       - -t
-      - us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:latest
+      - ${_IMAGE_REPO}:latest-${_ENVIRONMENT}
       - .
   - name: "gcr.io/cloud-builders/docker"
     id: "start-test-postgres"
@@ -53,34 +67,46 @@ steps:
         python -m alembic upgrade head
         pytest -q
   - name: "gcr.io/cloud-builders/docker"
-    args: [push, us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID]
+    args: [push, ${_IMAGE_REPO}:${_ENVIRONMENT}-$BUILD_ID]
   - name: "gcr.io/cloud-builders/docker"
-    args: [push, us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:latest]
+    args: [push, ${_IMAGE_REPO}:latest-${_ENVIRONMENT}]
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
-        secrets="OPENAI_API_KEY=OPENAI_API_KEY:latest,PINEGRAF_ADMIN_PASSWORD=PINEGRAF_ADMIN_PASSWORD:latest,ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,DATABASE_URL=DATABASE_URL:latest,DB_PASSWORD=DB_PASSWORD:latest"
-        if gcloud secrets describe PDL_API_KEY --project=pinegraf-prod >/dev/null 2>&1; then
-          secrets="$${secrets},PDL_API_KEY=PDL_API_KEY:latest"
+        secrets="OPENAI_API_KEY=${_SECRET_OPENAI}:latest,PINEGRAF_ADMIN_PASSWORD=${_SECRET_ADMIN_PASSWORD}:latest,ADMIN_SESSION_SECRET=${_SECRET_SESSION}:latest,DATABASE_URL=${_SECRET_DATABASE_URL}:latest,DB_PASSWORD=${_SECRET_DB_PASSWORD}:latest"
+        if gcloud secrets describe ${_SECRET_PDL} --project=pinegraf-prod >/dev/null 2>&1; then
+          secrets="$${secrets},PDL_API_KEY=${_SECRET_PDL}:latest"
         fi
-        gcloud run deploy pinegraf \
-          --image=us-east4-docker.pkg.dev/pinegraf-prod/pinegraf/app:$BUILD_ID \
+        if [[ -n "${_SECRET_BASIC_AUTH}" ]]; then
+          secrets="$${secrets},BASIC_AUTH_CREDENTIALS=${_SECRET_BASIC_AUTH}:latest"
+        fi
+        gcloud run deploy ${_SERVICE} \
+          --image=${_IMAGE_REPO}:${_ENVIRONMENT}-$BUILD_ID \
           --region=us-east4 \
           --platform=managed \
           --allow-unauthenticated \
           --memory=1Gi \
           --cpu=1 \
-          --min-instances=1 \
-          --max-instances=4 \
+          --min-instances=${_MIN_INSTANCES} \
+          --max-instances=${_MAX_INSTANCES} \
           --concurrency=80 \
           --timeout=300 \
-          --set-env-vars=EXTRACTION_MODEL=gpt-5.5 \
+          --set-env-vars=EXTRACTION_MODEL=gpt-5.5,PINEGRAF_ENV=${_ENVIRONMENT},PINEGRAF_SERVICE=${_SERVICE},PINEGRAF_REGION=us-east4 \
           --set-secrets="$${secrets}"
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: bash
-    args: ["infra/gcp/create_jobs.sh"]
+    args:
+      - -c
+      - |
+        SERVICE=${_SERVICE} \
+        DATABASE_URL_SECRET=${_SECRET_DATABASE_URL} \
+        OPENAI_API_KEY_SECRET=${_SECRET_OPENAI} \
+        PDL_API_KEY_SECRET=${_SECRET_PDL} \
+        PINEGRAF_ADMIN_PASSWORD_SECRET=${_SECRET_ADMIN_PASSWORD} \
+        ADMIN_SESSION_SECRET_NAME=${_SECRET_SESSION} \
+        ./infra/gcp/create_jobs.sh
 options:
   logging: CLOUD_LOGGING_ONLY

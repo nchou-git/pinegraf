@@ -10,12 +10,13 @@ from backend.ingestion.orchestrator import run_source_run
 from backend.maintenance.reconcile import reconcile_all_sources
 from backend.parse.orchestrator import run_full_parse
 
-PROJECT_ID = "pinegraf-prod"
-REGION = "us-east4"
+PROJECT_ID = os.getenv("PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT", "pinegraf-prod")
+REGION = os.getenv("PINEGRAF_REGION", "us-east4")
+SERVICE = os.getenv("PINEGRAF_SERVICE", "pinegraf")
 JOB_BY_MODE = {
-    "crawl": "pinegraf-crawl",
-    "parse": "pinegraf-parse",
-    "maintenance": "pinegraf-maintenance",
+    "crawl": f"{SERVICE}-crawl",
+    "parse": f"{SERVICE}-parse",
+    "maintenance": f"{SERVICE}-maintenance",
 }
 
 

@@ -19,7 +19,9 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    PlainTextResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from pydantic import BaseModel, Field, model_validator
@@ -33,6 +35,7 @@ from backend.admin_auth import (
     valid_admin_credentials,
 )
 from backend.admin_session import COOKIE_NAME, issue
+from backend.basic_auth import install_basic_auth
 from backend.config import get_settings
 from backend.db.models import AuditLog, Fetch, Source, SourceRun
 from backend.db.store import (
@@ -194,6 +197,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         yield
 
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
+    install_basic_auth(app)
     app.state.store = app_store
 
     @app.middleware("http")
@@ -227,8 +231,21 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.get("/")
-    async def index() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "index.html", headers=FRONTEND_HTML_HEADERS)
+    async def index() -> Response:
+        html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        if os.getenv("PINEGRAF_ENV", "prod") != "prod":
+            html = html.replace(
+                "<head>",
+                '<head>\n    <meta name="robots" content="noindex,nofollow">',
+                1,
+            )
+        return HTMLResponse(content=html, headers=FRONTEND_HTML_HEADERS)
+
+    @app.get("/robots.txt")
+    async def robots() -> Response:
+        if os.getenv("PINEGRAF_ENV", "prod") == "prod":
+            return PlainTextResponse("User-agent: *\nAllow: /\n")
+        return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
     @app.get("/app.js")
     async def app_js() -> FileResponse:
