@@ -940,40 +940,6 @@
   font-weight: 400;
 }
 
-/* ─── Logs ─────────────────────────────────────────────────────────── */
-
-.logs-view {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  width: 100%;
-}
-
-.logs-terminal {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-4);
-  border-radius: var(--radius-md);
-  background-color: var(--text);
-  color: var(--green-tint-2);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: var(--fs-xs);
-  line-height: var(--lh-snug);
-}
-
-.log-line {
-  white-space: pre-wrap;
-}
-
-.log-line .log-time {
-  color: var(--text-faint);
-}
-
-.log-line.error {
-  color: var(--conflict-bg);
-}
-
 /* ─── Sources ──────────────────────────────────────────────────────── */
 
 .stats-grid {
@@ -1172,45 +1138,6 @@
   font-size: var(--fs-xs);
   white-space: pre-wrap;
 }
-.claims-filter-select {
-  width: calc(var(--space-16) * 2 + var(--space-8));
-}
-.claims-table .claim-row {
-  cursor: pointer;
-}
-.conflicts-page {
-  display: grid;
-  gap: var(--space-4);
-}
-.conflicts-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  width: fit-content;
-  padding: var(--space-1);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-}
-.conflicts-tab {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--space-9);
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-pill);
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  text-decoration: none;
-  white-space: nowrap;
-}
-.conflicts-tab:hover {
-  color: var(--text);
-}
-.conflicts-tab.active {
-  background: var(--bg);
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
-}
 .raw-predicate-input {
   width: calc(var(--space-16) * 3);
   flex: 0 0 auto;
@@ -1277,24 +1204,6 @@
   border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--text-muted);
-  font-size: var(--fs-sm);
-}
-.claim-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-  padding: 0 var(--space-4) var(--space-4);
-}
-.claim-entity-card {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--surface);
-}
-.claim-entity-card a {
-  color: var(--green);
   font-size: var(--fs-sm);
 }
 .source-detail-head {
