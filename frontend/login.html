@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pinegraf</title>
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Pinegraf &mdash; Sign in</title>
     <link rel="icon" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css?v=demo-login" />
   </head>
@@ -56,9 +57,6 @@
           <div class="demo-login-error" id="demo-login-error" role="status" aria-live="polite"></div>
         </div>
 
-        <p class="login-note demo-login-note">
-          This is a demonstration environment. Production deployments use SSO.
-        </p>
       </section>
     </main>
 
@@ -73,7 +71,7 @@
         const setLoading = (isLoading) => {
           submit.disabled = isLoading;
           submit.classList.toggle("is-loading", isLoading);
-          submitLabel.textContent = isLoading ? "Signing in" : "Sign in";
+          submitLabel.textContent = isLoading ? "Signing in..." : "Sign in";
         };
 
         const showError = (message) => {

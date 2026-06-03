@@ -39,6 +39,7 @@ from backend.basic_auth import (
     COOKIE_NAME as DEMO_COOKIE_NAME,
 )
 from backend.basic_auth import (
+    DEMO_SESSION_MAX_AGE_SECONDS,
     install_basic_auth,
     issue_demo_session,
     valid_basic_credentials,
@@ -167,7 +168,7 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0022_entity_curation"
+EXPECTED_ALEMBIC_HEAD = "0026_claim_stale_warning"
 LOGGER = logging.getLogger("uvicorn.error")
 OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/directory"}
 
@@ -284,15 +285,16 @@ def create_app(store: Store | None = None) -> FastAPI:
             return JSONResponse({"error": "Invalid credentials"}, status_code=401)
         username = str(data.get("username", ""))
         password = str(data.get("password", ""))
-        if not valid_basic_credentials(username, password) or not valid_admin_credentials(
-            username, password
-        ):
-            return JSONResponse({"error": "Invalid credentials"}, status_code=401)
+        expected = os.getenv("BASIC_AUTH_CREDENTIALS", "")
+        if not expected or ":" not in expected:
+            return JSONResponse({"error": "auth not configured"}, status_code=500)
+        if not valid_basic_credentials(username, password):
+            return JSONResponse({"error": "Invalid username or password"}, status_code=401)
 
         settings = get_settings()
         response = JSONResponse({"ok": True})
         cookie_options = {
-            "max_age": settings.admin_session_max_age_seconds,
+            "max_age": DEMO_SESSION_MAX_AGE_SECONDS,
             "httponly": True,
             "samesite": "lax",
             "secure": settings.secure_cookies,

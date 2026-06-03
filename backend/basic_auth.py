@@ -25,6 +25,7 @@ COOKIE_NAME = "demo_session"
 SALT = "pinegraf.demo.session.v1"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 EXEMPT_PATHS = frozenset({"/health", "/robots.txt", "/demo-login", "/favicon.svg", "/styles.css"})
+DEMO_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 EXEMPT_PREFIXES = ("/styles/", "/assets/")
 
 
@@ -43,7 +44,8 @@ def verify_demo_session(token: str | None) -> dict[str, object] | None:
         return None
     try:
         settings = get_settings()
-        data = _serializer().loads(token, max_age=settings.admin_session_max_age_seconds)
+        max_age = max(settings.admin_session_max_age_seconds, DEMO_SESSION_MAX_AGE_SECONDS)
+        data = _serializer().loads(token, max_age=max_age)
     except SignatureExpired:
         return None
     except BadSignature:
@@ -67,18 +69,18 @@ def _is_exempt_path(path: str) -> bool:
     return path in EXEMPT_PATHS or path.startswith(EXEMPT_PREFIXES)
 
 
+def _is_api_path(path: str) -> bool:
+    return path.startswith("/api/") or path.startswith("/admin/")
+
+
 def _wants_json(request: Request) -> bool:
     path = request.url.path
     accept = request.headers.get("accept", "")
-    return path.startswith("/api/") or path.startswith("/admin/") or "application/json" in accept
+    return _is_api_path(path) or "application/json" in accept
 
 
 def _wants_html(request: Request) -> bool:
-    return "text/html" in request.headers.get("accept", "")
-
-
-def _has_basic_authorization(request: Request) -> bool:
-    return request.headers.get("authorization", "").startswith("Basic ")
+    return "text/html" in request.headers.get("accept", "") and not _is_api_path(request.url.path)
 
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
@@ -94,23 +96,21 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         header = request.headers.get("authorization", "")
         if header == self._expected:
             return await call_next(request)
-        if _wants_json(request):
-            return JSONResponse(
-                {"error": "unauthorized"},
-                status_code=401,
-                media_type="application/json",
-            )
         if _wants_html(request):
             return HTMLResponse(
                 (FRONTEND_DIR / "login.html").read_text(encoding="utf-8"),
                 status_code=200,
                 media_type="text/html",
             )
-        headers = {"WWW-Authenticate": "Basic"} if _has_basic_authorization(request) else None
+        if _wants_json(request):
+            return JSONResponse(
+                {"error": "unauthorized"},
+                status_code=401,
+                media_type="application/json",
+            )
         return JSONResponse(
             {"error": "unauthorized"},
             status_code=401,
-            headers=headers,
             media_type="application/json",
         )
 

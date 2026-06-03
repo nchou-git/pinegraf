@@ -25,7 +25,10 @@ def verify(token: str | None) -> dict[str, object] | None:
         return None
     try:
         settings = get_settings()
-        data = _serializer().loads(token, max_age=settings.admin_session_max_age_seconds)
+        max_age = settings.admin_session_max_age_seconds
+        if settings.demo_mode:
+            max_age = max(max_age, 60 * 60 * 24 * 7)
+        data = _serializer().loads(token, max_age=max_age)
     except SignatureExpired:
         return None
     except BadSignature:

@@ -344,7 +344,7 @@ def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch
         assert html_response.status_code == 200
         assert "WWW-Authenticate" not in html_response.headers
         assert html_response.headers["content-type"].startswith("text/html")
-        assert "<title>Pinegraf</title>" in html_response.text
+        assert "<title>Pinegraf &mdash; Sign in</title>" in html_response.text
         assert "Demo environment" in html_response.text
 
         api_response = client.get("/api/anything", headers={"Accept": "application/json"})
@@ -370,7 +370,7 @@ def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch
             headers={"Authorization": f"Basic {basic_token}", "Accept": "text/plain"},
         )
         assert curl_response.status_code == 401
-        assert curl_response.headers["WWW-Authenticate"] == "Basic"
+        assert "WWW-Authenticate" not in curl_response.headers
         assert curl_response.json() == {"error": "unauthorized"}
 
         failed_login = client.post(
@@ -378,7 +378,7 @@ def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch
             json={"username": "pinegraf", "password": "wrong"},
         )
         assert failed_login.status_code == 401
-        assert failed_login.json() == {"error": "Invalid credentials"}
+        assert failed_login.json() == {"error": "Invalid username or password"}
 
         login = client.post(
             "/demo-login",
