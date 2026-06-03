@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pinegraf</title>
+    <link rel="icon" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css?v=demo-login" />
+  </head>
+  <body class="login-body" data-workspace="tuck">
+    <main class="login-shell" aria-label="Pinegraf demo login">
+      <section class="login-card demo-login-card">
+        <div class="demo-login-brand" aria-label="Pinegraf">
+          <svg
+            class="demo-login-mark"
+            viewBox="0 0 40 40"
+            xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true"
+          >
+            <polygon
+              points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
+              fill="currentColor"
+            />
+            <rect x="18" y="32" width="4" height="4" fill="currentColor" />
+          </svg>
+          <div class="demo-login-wordmark">Pinegraf</div>
+          <p class="demo-login-subtitle">Demo environment</p>
+        </div>
+
+        <div class="login-form" role="group" aria-labelledby="demo-login-title">
+          <h1 class="sr-only" id="demo-login-title">Pinegraf demo login</h1>
+          <label class="field">
+            <span class="field-label">Username</span>
+            <input
+              class="input"
+              id="demo-username"
+              name="username"
+              autocomplete="username"
+              autofocus
+            />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input
+              class="input"
+              id="demo-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+            />
+          </label>
+          <button class="btn-primary demo-login-submit" id="demo-login-submit" type="button">
+            <span class="demo-login-spinner" aria-hidden="true"></span>
+            <span id="demo-login-submit-label">Sign in</span>
+          </button>
+          <div class="demo-login-error" id="demo-login-error" role="status" aria-live="polite"></div>
+        </div>
+
+        <p class="login-note demo-login-note">
+          This is a demonstration environment. Production deployments use SSO.
+        </p>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        const username = document.getElementById("demo-username");
+        const password = document.getElementById("demo-password");
+        const submit = document.getElementById("demo-login-submit");
+        const submitLabel = document.getElementById("demo-login-submit-label");
+        const error = document.getElementById("demo-login-error");
+
+        const setLoading = (isLoading) => {
+          submit.disabled = isLoading;
+          submit.classList.toggle("is-loading", isLoading);
+          submitLabel.textContent = isLoading ? "Signing in" : "Sign in";
+        };
+
+        const showError = (message) => {
+          error.textContent = message;
+          error.classList.add("is-visible");
+        };
+
+        const signIn = async () => {
+          error.textContent = "";
+          error.classList.remove("is-visible");
+          setLoading(true);
+          try {
+            const response = await fetch("/demo-login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                username: username.value,
+                password: password.value,
+              }),
+            });
+            if (response.ok) {
+              window.location.assign("/");
+              return;
+            }
+            if (response.status === 401) {
+              showError("Invalid username or password");
+              return;
+            }
+            showError("Something went wrong. Please try again.");
+          } catch (_error) {
+            showError("Something went wrong. Please try again.");
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        submit.addEventListener("click", signIn);
+        password.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            signIn();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

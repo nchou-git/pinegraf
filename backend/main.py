@@ -35,7 +35,14 @@ from backend.admin_auth import (
     valid_admin_credentials,
 )
 from backend.admin_session import COOKIE_NAME, issue
-from backend.basic_auth import install_basic_auth
+from backend.basic_auth import (
+    COOKIE_NAME as DEMO_COOKIE_NAME,
+)
+from backend.basic_auth import (
+    install_basic_auth,
+    issue_demo_session,
+    valid_basic_credentials,
+)
 from backend.config import get_settings
 from backend.db.models import AuditLog, Fetch, Source, SourceRun
 from backend.db.store import (
@@ -106,9 +113,15 @@ class SourceUpdate(BaseModel):
     notes: str | None = None
 
 
+class AskTurn(BaseModel):
+    question: str = Field(default="", max_length=4000)
+    answer: str = Field(default="", max_length=12000)
+
+
 class AskRequest(BaseModel):
     question: str
     max_results: int = Field(default=10, ge=1, le=50)
+    history: list[AskTurn] = Field(default_factory=list, max_length=6)
 
 
 class ConflictResolveRequest(BaseModel):
@@ -260,6 +273,42 @@ def create_app(store: Store | None = None) -> FastAPI:
         if os.getenv("PINEGRAF_ENV", "prod") == "prod":
             return PlainTextResponse("User-agent: *\nAllow: /\n")
         return PlainTextResponse("User-agent: *\nDisallow: /\n")
+
+    @app.post("/demo-login")
+    async def demo_login(request: Request) -> JSONResponse:
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "Invalid credentials"}, status_code=401)
+        if not isinstance(data, dict):
+            return JSONResponse({"error": "Invalid credentials"}, status_code=401)
+        username = str(data.get("username", ""))
+        password = str(data.get("password", ""))
+        if not valid_basic_credentials(username, password) or not valid_admin_credentials(
+            username, password
+        ):
+            return JSONResponse({"error": "Invalid credentials"}, status_code=401)
+
+        settings = get_settings()
+        response = JSONResponse({"ok": True})
+        cookie_options = {
+            "max_age": settings.admin_session_max_age_seconds,
+            "httponly": True,
+            "samesite": "lax",
+            "secure": settings.secure_cookies,
+            "path": "/",
+        }
+        response.set_cookie(
+            DEMO_COOKIE_NAME,
+            issue_demo_session(user=username),
+            **cookie_options,
+        )
+        response.set_cookie(
+            COOKIE_NAME,
+            issue(user=ADMIN_USERNAME),
+            **cookie_options,
+        )
+        return response
 
     @app.get("/app.js")
     async def app_js() -> FileResponse:
@@ -537,7 +586,12 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.post("/api/ask")
     async def api_ask(request: Request, payload: AskRequest) -> StreamingResponse:
         return StreamingResponse(
-            ask_stream(_store(request), question=payload.question, max_results=payload.max_results),
+            ask_stream(
+                _store(request),
+                question=payload.question,
+                max_results=payload.max_results,
+                history=[turn.model_dump() for turn in payload.history],
+            ),
             media_type="text/event-stream",
         )
 

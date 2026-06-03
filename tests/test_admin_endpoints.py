@@ -334,6 +334,72 @@ def test_admin_login_rejects_invalid_json(store) -> None:
         assert response.json()["detail"] == "Admin login JSON body must be an object."
 
 
+def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch) -> None:
+    monkeypatch.setenv("BASIC_AUTH_CREDENTIALS", "pinegraf:Pinegrafposen$")
+    monkeypatch.setenv("SECURE_COOKIES", "false")
+    get_settings.cache_clear()
+    client = TestClient(main_module.create_app())
+    try:
+        html_response = client.get("/", headers={"Accept": "text/html"})
+        assert html_response.status_code == 200
+        assert "WWW-Authenticate" not in html_response.headers
+        assert html_response.headers["content-type"].startswith("text/html")
+        assert "<title>Pinegraf</title>" in html_response.text
+        assert "Demo environment" in html_response.text
+
+        api_response = client.get("/api/anything", headers={"Accept": "application/json"})
+        assert api_response.status_code == 401
+        assert "WWW-Authenticate" not in api_response.headers
+        assert api_response.headers["content-type"].startswith("application/json")
+        assert api_response.json() == {"error": "unauthorized"}
+
+        admin_response = client.get("/admin/sources", headers={"Accept": "text/html"})
+        assert admin_response.status_code == 401
+        assert "WWW-Authenticate" not in admin_response.headers
+        assert admin_response.headers["content-type"].startswith("application/json")
+        assert admin_response.json() == {"error": "unauthorized"}
+
+        json_accept_response = client.get("/", headers={"Accept": "application/json"})
+        assert json_accept_response.status_code == 401
+        assert "WWW-Authenticate" not in json_accept_response.headers
+        assert json_accept_response.headers["content-type"].startswith("application/json")
+
+        basic_token = base64.b64encode(b"pinegraf:wrong").decode("ascii")
+        curl_response = client.get(
+            "/non-api",
+            headers={"Authorization": f"Basic {basic_token}", "Accept": "text/plain"},
+        )
+        assert curl_response.status_code == 401
+        assert curl_response.headers["WWW-Authenticate"] == "Basic"
+        assert curl_response.json() == {"error": "unauthorized"}
+
+        failed_login = client.post(
+            "/demo-login",
+            json={"username": "pinegraf", "password": "wrong"},
+        )
+        assert failed_login.status_code == 401
+        assert failed_login.json() == {"error": "Invalid credentials"}
+
+        login = client.post(
+            "/demo-login",
+            json={"username": "pinegraf", "password": "Pinegrafposen$"},
+        )
+        assert login.status_code == 200
+        assert "demo_session=" in login.headers["set-cookie"]
+        assert "pg_admin=" in login.headers["set-cookie"]
+
+        me = client.get("/api/me")
+        assert me.status_code == 200
+        assert me.json()["is_admin"] is True
+
+        client.cookies.clear()
+        logged_out = client.get("/", headers={"Accept": "text/html"})
+        assert logged_out.status_code == 200
+        assert "WWW-Authenticate" not in logged_out.headers
+    finally:
+        get_settings.cache_clear()
+
+
 def test_demo_index_forces_login_only_for_anonymous_visitors(monkeypatch) -> None:
     monkeypatch.setenv("PINEGRAF_DEMO_MODE", "true")
     get_settings.cache_clear()

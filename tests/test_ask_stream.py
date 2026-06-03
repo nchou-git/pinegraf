@@ -73,10 +73,15 @@ async def test_ask_stream_uses_openai_stream_and_caches_final_answer(
         chunks=[("Errik Anderson founded Example.", 4, None)],
     )
 
-    first_events = await _collect_ask_events(store)
-    second_events = await _collect_ask_events(store)
+    history = [{"question": "Who is Sarah?", "answer": "Sarah is an alumna."}]
+    first_events = await _collect_ask_events(store, history=history)
+    second_events = await _collect_ask_events(store, history=history)
 
     assert create_calls[0]["stream"] is True
+    messages = create_calls[0]["messages"]
+    assert messages[1] == {"role": "user", "content": "Who is Sarah?"}
+    assert messages[2] == {"role": "assistant", "content": "Sarah is an alumna."}
+    assert "Who founded Example?" in messages[-1]["content"]
     assert [event["text"] for event in first_events if event["kind"] == "token"] == [
         "Hello",
         " world",
@@ -89,9 +94,13 @@ async def _fake_embed_texts(_texts):
     return []
 
 
-async def _collect_ask_events(store):
+async def _collect_ask_events(store, history=None):
     events = []
-    async for chunk in web_api.ask_stream(store, question="Who founded Example?"):
+    async for chunk in web_api.ask_stream(
+        store,
+        question="Who founded Example?",
+        history=history,
+    ):
         payload = chunk.decode("utf-8").removeprefix("data: ").strip()
         events.append(json.loads(payload))
     return events

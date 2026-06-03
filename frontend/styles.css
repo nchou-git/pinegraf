@@ -332,126 +332,164 @@
 
 .ask-page {
   min-height: calc(100vh - var(--space-16) - var(--space-12));
-}
-
-.ask-page.is-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding-bottom: var(--space-16);
-}
-
-.ask-empty-shell {
-  width: 100%;
-  max-width: calc(var(--space-16) * 11 + var(--space-4));
-  margin: 0 auto;
-  text-align: center;
-}
-
-.ask-empty {
-  width: 100%;
-}
-
-.ask-empty-shell .ask-composer {
-  width: 100%;
-}
-
-.ask-empty h2 {
-  margin: 0;
-  font-size: var(--fs-2xl);
-  font-weight: 500;
-  line-height: var(--lh-tight);
-  color: var(--text);
-}
-
-.ask-examples {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: var(--space-5) 0 0;
-}
-
-.ask-page.has-session {
-  display: flex;
-  flex-direction: column;
-}
-
-.ask-thread {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  gap: var(--space-8);
-  padding: var(--space-6) 0 var(--space-12);
-}
-
-.ask-pair {
-  width: min(calc(var(--space-16) * 11 + var(--space-4)), 100%);
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
-.ask-question-block {
-  max-width: calc(var(--space-16) * 11 + var(--space-4));
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background-color: var(--surface);
-  color: var(--text);
+.ask-empty {
+  width: min(calc(var(--space-16) * 8), 100%);
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.ask-empty-mark {
+  width: var(--space-10);
+  height: var(--space-10);
+  color: var(--green);
+}
+
+.ask-empty p {
+  max-width: calc(var(--space-16) * 7);
+  margin: 0;
   font-size: var(--fs-md);
   line-height: var(--lh-normal);
 }
 
-.ask-answer-block {
-  max-width: calc(var(--space-16) * 11 + var(--space-4));
+.ask-thread {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  overflow-y: auto;
+  padding: var(--space-4) 0 var(--space-6);
+}
+
+.ask-turn {
+  width: min(calc(var(--space-16) * 11 + var(--space-4)), 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ask-message {
+  display: flex;
+}
+
+.ask-user {
+  justify-content: flex-end;
+}
+
+.ask-assistant {
+  justify-content: flex-start;
+}
+
+.ask-question-block {
+  max-width: min(calc(var(--space-16) * 8), 82%);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background-color: var(--green-tint);
   color: var(--text);
   font-size: var(--fs-md);
   line-height: var(--lh-normal);
   white-space: pre-wrap;
 }
 
-.ask-answer-block:empty::after {
-  content: "";
+.ask-answer-block {
+  width: min(calc(var(--space-16) * 10), 100%);
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+}
+
+.ask-answer-block p,
+.ask-answer-block ul,
+.ask-answer-block ol,
+.ask-answer-block pre {
+  margin: 0 0 var(--space-3);
+}
+
+.ask-answer-block p:last-child,
+.ask-answer-block ul:last-child,
+.ask-answer-block ol:last-child,
+.ask-answer-block pre:last-child {
+  margin-bottom: 0;
+}
+
+.ask-answer-block ul,
+.ask-answer-block ol {
+  padding-left: var(--space-5);
+}
+
+.ask-answer-block code {
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.ask-answer-block pre {
+  overflow-x: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background-color: var(--surface);
+}
+
+.ask-answer-block pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.ask-cursor {
   display: inline-block;
-  width: var(--space-2);
+  width: 2px;
   height: var(--space-4);
-  border-radius: var(--radius-pill);
   background-color: var(--green);
-  opacity: 1;
+  transform: translateY(2px);
+  animation: ask-cursor-blink 900ms steps(2, start) infinite;
+}
+
+@keyframes ask-cursor-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .ask-composer {
   width: min(calc(var(--space-16) * 11 + var(--space-4)), 100%);
-  margin: var(--space-6) auto 0;
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  margin: auto auto var(--space-4);
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
   padding: var(--space-2);
   border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   background-color: var(--bg);
   box-shadow: var(--shadow-md);
 }
 
-.ask-composer.is-pinned {
-  position: sticky;
-  bottom: 0;
-  z-index: var(--z-base);
-  margin-top: auto;
-  margin-bottom: var(--space-4);
-}
-
 .ask-input {
-  min-height: var(--input-h);
-  max-height: calc(var(--input-h) * 4);
+  min-height: calc(var(--input-h) + var(--space-2));
+  max-height: 156px;
   border: none;
   resize: none;
   overflow-y: auto;
   background-color: transparent;
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
 }
 
 .ask-input:focus {
@@ -463,6 +501,40 @@
   flex: 0 0 auto;
   width: var(--button-h-default);
   height: var(--button-h-default);
+}
+
+.ask-citation-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.ask-citation-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: var(--space-5);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background-color: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: var(--lh-snug);
+  text-decoration: none;
+  vertical-align: baseline;
+}
+
+.ask-citation-chip.is-inline {
+  margin: 0 2px;
+}
+
+.ask-citation-chip:hover,
+.ask-citation-chip:focus-visible {
+  border-color: var(--green);
+  color: var(--green);
 }
 
 .ask-sources {

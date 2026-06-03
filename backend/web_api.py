@@ -384,8 +384,16 @@ async def ask_stream(
     *,
     question: str,
     max_results: int = 10,
+    history: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[bytes]:
-    key = " ".join(question.casefold().split())
+    conversation_history = _clean_ask_history(history)
+    key = json.dumps(
+        {
+            "question": " ".join(question.casefold().split()),
+            "history": conversation_history,
+        },
+        sort_keys=True,
+    )
     cached = _ASK_CACHE.get(key)
     if cached and time.monotonic() - cached[0] < ASK_CACHE_SECONDS:
         answer, citations = cached[1], cached[2]
@@ -400,7 +408,11 @@ async def ask_stream(
     )
     answer = ""
     if not claims and not chunks:
-        answer = "No extracted graph evidence is available yet. Run ingestion and parse first."
+        answer = (
+            "The current graph doesn't contain information about that topic. "
+            "The demo graph indexes a curated subset of Tuck's alumni network; try exploring "
+            "alumni, companies, roles, or sources already present in the directory."
+        )
         yield _sse({"kind": "token", "text": answer})
     elif settings.openai_api_key:
         parts: list[str] = []
@@ -408,6 +420,7 @@ async def ask_stream(
             question=question,
             chunks=chunks,
             claims=claims,
+            history=conversation_history,
             model=settings.extraction_model,
             api_key=settings.openai_api_key,
         ):
@@ -2231,6 +2244,7 @@ async def _llm_answer(
     chunks: list[Chunk],
     claims: list[dict[str, object]],
     citations: list[dict[str, object]],
+    history: list[dict[str, str]] | None = None,
     model: str,
     api_key: str,
 ) -> tuple[str, list[dict[str, object]]]:
@@ -2240,6 +2254,7 @@ async def _llm_answer(
             question=question,
             chunks=chunks,
             claims=claims,
+            history=_clean_ask_history(history),
             model=model,
             api_key=api_key,
         )
@@ -2253,6 +2268,7 @@ async def _llm_answer_tokens(
     question: str,
     chunks: list[Chunk],
     claims: list[dict[str, object]],
+    history: list[dict[str, str]] | None = None,
     model: str,
     api_key: str,
 ) -> AsyncIterator[str]:
@@ -2260,30 +2276,36 @@ async def _llm_answer_tokens(
         f"[chunk {index + 1}] {chunk.text}" for index, chunk in enumerate(chunks)
     )
     claim_context = "\n".join(
-        f"- {payload['statement']} (claim_id={payload['id']})"
-        for payload in claims
+        f"- {payload['statement']} (claim_id={payload['id']})" for payload in claims
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Answer questions using only the supplied Pinegraf chunks and graph claims. "
+                "Use the conversation history only to resolve follow-up references, pronouns, "
+                "and omitted subjects. Cite source URLs inline as markdown links when possible. "
+                "If the evidence is insufficient, say so plainly."
+            ),
+        }
+    ]
+    for turn in _clean_ask_history(history):
+        messages.append({"role": "user", "content": turn["question"]})
+        messages.append({"role": "assistant", "content": turn["answer"]})
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"Question:\n{question}\n\n"
+                f"Graph claims:\n{claim_context or 'none'}\n\n"
+                f"Retrieved chunks:\n{chunk_context or 'none'}"
+            ),
+        }
     )
     client = AsyncOpenAI(api_key=api_key)
     stream = await client.chat.completions.create(
         model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Answer questions using only the supplied Pinegraf chunks and graph claims. "
-                    "Cite claim ids or source snippets when making factual statements. "
-                    "If the evidence is insufficient, say so plainly."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Question:\n{question}\n\n"
-                    f"Graph claims:\n{claim_context or 'none'}\n\n"
-                    f"Retrieved chunks:\n{chunk_context or 'none'}"
-                ),
-            },
-        ],
+        messages=messages,
         temperature=0,
         stream=True,
     )
@@ -2293,6 +2315,22 @@ async def _llm_answer_tokens(
         token = chunk.choices[0].delta.content
         if token:
             yield token
+
+
+def _clean_ask_history(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for turn in (history or [])[-6:]:
+        question = str(turn.get("question") or "").strip()
+        answer = str(turn.get("answer") or "").strip()
+        if not question or not answer:
+            continue
+        cleaned.append(
+            {
+                "question": question[:4000],
+                "answer": answer[:12000],
+            }
+        )
+    return cleaned
 
 
 def _query_terms(question: str) -> list[str]:

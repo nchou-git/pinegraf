@@ -1,8 +1,6 @@
 "use strict";
 
-const ASK_SESSION_KEY = "pinegraf_ask_session";
 const RUN_PROGRESS_KEY = "pinegraf_run_progress";
-const ASK_EXAMPLES = ["Tuck alums in tech", "Who worked on Gyrobike?"];
 const ZERO_STATS = { documents: 0, claims: 0, entities: 0, sources: 0 };
 const ARCHIVE_SOURCE_CONFIRM = "Derived data is preserved and the source can be restored later.";
 const MAX_TOASTS = 3;
@@ -25,7 +23,8 @@ const state = {
   sourcesError: null,
   runProgress: readSessionJSON(RUN_PROGRESS_KEY, {}),
   runStreams: {},
-  askSession: JSON.parse(sessionStorage.getItem(ASK_SESSION_KEY) || "[]"),
+  askSession: [],
+  askStreaming: false,
   graphSearch: "",
   graphSearchResults: [],
   sidebarCollapsed: sessionStorage.getItem("pinegraf.sidebarCollapsed") === "true",
@@ -1539,31 +1538,37 @@ function highlightRawQuote(text, quote) {
 /* ───── Ask ───── */
 
 function renderAsk() {
-  const hasSession = state.askSession.length > 0;
+  const hasMessages = state.askSession.length > 0;
   setPageHeader({
     title: "Ask",
     subtitle: "",
-    actions: hasSession
-      ? `<button class="btn-ghost" id="ask-new-question" type="button"><i class="ti ti-plus" aria-hidden="true"></i> New question</button>`
-      : "",
+    actions: `<button class="btn-ghost" id="ask-new-question" type="button" ${hasMessages && !state.askStreaming ? "" : "disabled"}><i class="ti ti-plus" aria-hidden="true"></i> New conversation</button>`,
   });
   const app = document.getElementById("app");
   app.innerHTML = `
-    <div class="ask-page ${hasSession ? "has-session" : "is-empty"}">
-      ${
-        hasSession
-          ? `<section class="ask-thread" id="ask-thread">${state.askSession.map(renderAskPair).join("")}</section>`
-          : `<div class="ask-empty-shell">
-              <section class="ask-empty">
-                <h2>What do you want to know?</h2>
-                <div class="ask-examples">
-                  ${ASK_EXAMPLES.map((example) => `<button class="chip ask-example" type="button">${escapeHtml(example)}</button>`).join("")}
-                </div>
-              </section>
-              ${renderAskComposer(false)}
-            </div>`
-      }
-      ${hasSession ? renderAskComposer(true) : ""}
+    <div class="ask-page ${hasMessages ? "has-session" : "is-empty"}">
+      <section class="ask-thread" id="ask-thread" aria-live="polite">
+        ${
+          hasMessages
+            ? state.askSession.map(renderAskPair).join("")
+            : `<div class="ask-empty">
+                <svg
+                  class="ask-empty-mark"
+                  viewBox="0 0 40 40"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  <polygon
+                    points="20,4 12,14 16,14 9,22 14,22 6,32 34,32 26,22 31,22 24,14 28,14"
+                    fill="currentColor"
+                  />
+                  <rect x="18" y="32" width="4" height="4" fill="currentColor" />
+                </svg>
+                <p>Ask anything about the graph. I'll search the alumni network and ground my answer in the sources I find.</p>
+              </div>`
+        }
+      </section>
+      ${renderAskComposer()}
     </div>
     <aside class="side-drawer" id="ask-side-drawer" hidden></aside>
   `;
@@ -1571,20 +1576,19 @@ function renderAsk() {
   if (newQuestion) {
     newQuestion.onclick = () => {
       state.askSession = [];
-      sessionStorage.removeItem(ASK_SESSION_KEY);
+      state.askStreaming = false;
       renderAsk();
     };
   }
   setupAskComposer();
-  attachAskCitationHandlers();
   scrollAskThreadToBottom();
 }
 
-function renderAskComposer(isPinned) {
+function renderAskComposer() {
   return `
-    <form class="ask-composer ${isPinned ? "is-pinned" : ""}" id="ask-form">
-      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask about people, projects, or organizations"></textarea>
-      <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Ask question" disabled>
+    <form class="ask-composer" id="ask-form">
+      <textarea class="input ask-input" id="ask-input" rows="1" placeholder="Ask anything about the graph..." ${state.askStreaming ? "disabled" : ""}></textarea>
+      <button class="btn-primary btn-icon-only ask-submit" id="ask-submit" type="submit" aria-label="Send" disabled>
         <i class="ti ti-send" aria-hidden="true"></i>
       </button>
     </form>
@@ -1597,8 +1601,9 @@ function setupAskComposer() {
   const submit = byId("ask-submit");
   const form = byId("ask-form");
   const syncComposer = () => {
+    input.disabled = state.askStreaming;
     resizeAskInput(input);
-    submit.disabled = !input.value.trim();
+    submit.disabled = state.askStreaming || !input.value.trim();
   };
   form.onsubmit = (e) => {
     e.preventDefault();
@@ -1611,31 +1616,28 @@ function setupAskComposer() {
     }
   });
   input.addEventListener("input", syncComposer);
-  document.querySelectorAll(".ask-example").forEach((button) => {
-    button.onclick = () => {
-      input.value = button.textContent.trim();
-      syncComposer();
-      input.focus();
-    };
-  });
   syncComposer();
-  input.focus();
+  if (!state.askStreaming) input.focus();
 }
 
 function resizeAskInput(input) {
-  const lines = input.value
-    .split("\n")
-    .reduce((count, line) => count + Math.max(1, Math.ceil(line.length / 72)), 0);
-  input.rows = Math.min(4, Math.max(1, lines));
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 156)}px`;
 }
 
 async function ask() {
+  if (state.askStreaming) return;
   const input = byId("ask-input");
   const question = input.value.trim();
   if (!question) return;
+  const history = state.askSession
+    .filter((turn) => !turn.isStreaming && turn.question && turn.answer)
+    .slice(-6)
+    .map((turn) => ({ question: turn.question, answer: turn.answer }));
   input.value = "";
   resizeAskInput(input);
   byId("ask-submit").disabled = true;
+  state.askStreaming = true;
 
   const item = {
     id: createAskId(),
@@ -1645,14 +1647,12 @@ async function ask() {
     isStreaming: true,
   };
   state.askSession.push(item);
-  saveAskSession();
   renderAsk();
-  const answerText = byId(`ask-answer-${item.id}`);
   try {
     const response = await fetch("/api/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, history }),
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     const reader = response.body.getReader();
@@ -1675,30 +1675,29 @@ async function ask() {
         }
         if (payload.kind === "token") {
           item.answer += payload.text;
-          if (answerText) {
-            answerText.textContent = item.answer;
-          }
+          refreshAskAnswer(item.id);
         } else if (payload.kind === "citations") {
           item.citations = payload.citations || [];
-          refreshAskSources(item.id);
+          refreshAskAnswer(item.id);
         }
       });
     }
     if (!item.answer.trim()) {
       item.answer = "No answer could be generated.";
-      if (answerText) {
-        answerText.textContent = item.answer;
-      }
+      refreshAskAnswer(item.id);
     }
   } catch (e) {
-    item.answer = `Unable to get an answer: ${e.message}`;
-    if (answerText) {
-      answerText.textContent = item.answer;
-    }
+    item.answer = item.answer.trim()
+      ? `${item.answer}\n\n(generation interrupted)`
+      : `Unable to get an answer. (generation interrupted)`;
+    refreshAskAnswer(item.id);
   } finally {
     item.isStreaming = false;
-    saveAskSession();
-    refreshAskSources(item.id);
+    state.askStreaming = false;
+    refreshAskAnswer(item.id);
+    const newQuestion = byId("ask-new-question");
+    if (newQuestion) newQuestion.disabled = state.askSession.length === 0;
+    setupAskComposer();
   }
 }
 
@@ -1706,24 +1705,149 @@ function createAskId() {
   return `ask-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function saveAskSession() {
-  const payload = state.askSession.map(({ id, question, answer, citations }) => ({
-    id,
-    question,
-    answer,
-    citations: citations || [],
-  }));
-  sessionStorage.setItem(ASK_SESSION_KEY, JSON.stringify(payload));
-}
-
 function renderAskPair(item) {
   return `
-    <article class="ask-pair" data-ask-id="${escapeAttr(item.id)}">
-      <div class="ask-question-block">${escapeHtml(item.question)}</div>
-      <div class="ask-answer-block ${item.isStreaming ? "is-streaming" : ""}" id="ask-answer-${escapeAttr(item.id)}">${escapeHtml(item.answer || "")}</div>
-      <div class="ask-sources" id="ask-sources-${escapeAttr(item.id)}">${renderAskSources(item)}</div>
+    <article class="ask-turn" data-ask-id="${escapeAttr(item.id)}">
+      <div class="ask-message ask-user">
+        <div class="ask-question-block">${escapeHtml(item.question)}</div>
+      </div>
+      <div class="ask-message ask-assistant">
+        <div class="ask-answer-block ${item.isStreaming ? "is-streaming" : ""}" id="ask-answer-${escapeAttr(item.id)}">${renderAskAnswer(item)}</div>
+      </div>
     </article>
   `;
+}
+
+function renderAskAnswer(item) {
+  const body = renderMarkdown(item.answer || "");
+  const cursor = item.isStreaming ? `<span class="ask-cursor" aria-hidden="true"></span>` : "";
+  const citations = item.isStreaming ? "" : renderAskCitationBadges(item);
+  return `${body || ""}${cursor}${citations}`;
+}
+
+function renderAskCitationBadges(item) {
+  const citations = item.citations || [];
+  const seen = new Set();
+  const links = citations
+    .map((citation, index) => {
+      const url = askCitationUrl(citation);
+      if (!url || seen.has(url)) return "";
+      seen.add(url);
+      const label = askCitationLabel(citation, index);
+      return `<a class="ask-citation-chip" href="${escapeAttr(url)}" title="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    })
+    .filter(Boolean);
+  if (!links.length) return "";
+  return `<div class="ask-citation-row" aria-label="Sources">${links.join("")}</div>`;
+}
+
+function askCitationUrl(citation) {
+  return citation?.document_url || citation?.live_url || citation?.url || citation?.evidence?.[0]?.document_url || citation?.evidence?.[0]?.live_url || citation?.evidence?.[0]?.url || "";
+}
+
+function askCitationLabel(citation, index) {
+  const url = askCitationUrl(citation);
+  const source = citation?.source_name || citation?.source_identifier || citation?.title || "";
+  return source ? compactSourceLabel(source) : compactSourceLabel(url) || `Source ${index + 1}`;
+}
+
+function compactSourceLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    const host = new URL(text).hostname.replace(/^www\./, "");
+    return host
+      .split(".")
+      .slice(0, -1)
+      .join(".")
+      .replace(/[-_]/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase()) || host;
+  } catch (_) {
+    return text.length > 34 ? `${text.slice(0, 31)}...` : text;
+  }
+}
+
+function refreshAskAnswer(itemId) {
+  const item = state.askSession.find((candidate) => candidate.id === itemId);
+  const root = byId(`ask-answer-${itemId}`);
+  if (!item || !root) return;
+  root.classList.toggle("is-streaming", Boolean(item.isStreaming));
+  root.innerHTML = renderAskAnswer(item);
+  scrollAskThreadToBottom();
+}
+
+function renderMarkdown(value) {
+  const text = String(value || "").replace(/\r\n/g, "\n");
+  if (!text.trim()) return "";
+  const parts = text.split(/```/);
+  return parts
+    .map((part, index) => {
+      if (index % 2 === 1) {
+        const lines = part.replace(/^\w+\n/, "");
+        return `<pre><code>${escapeHtml(lines.trim())}</code></pre>`;
+      }
+      return renderMarkdownBlocks(part);
+    })
+    .join("");
+}
+
+function renderMarkdownBlocks(text) {
+  const lines = text.split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let listItems = [];
+  let ordered = false;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(`<p>${renderMarkdownInline(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!listItems.length) return;
+    const tag = ordered ? "ol" : "ul";
+    blocks.push(`<${tag}>${listItems.map((item) => `<li>${renderMarkdownInline(item)}</li>`).join("")}</${tag}>`);
+    listItems = [];
+  };
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+    const unorderedMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (unorderedMatch || orderedMatch) {
+      flushParagraph();
+      const nextOrdered = Boolean(orderedMatch);
+      if (listItems.length && ordered !== nextOrdered) flushList();
+      ordered = nextOrdered;
+      listItems.push((unorderedMatch || orderedMatch)[1]);
+      return;
+    }
+    flushList();
+    paragraph.push(trimmed);
+  });
+  flushParagraph();
+  flushList();
+  return blocks.join("");
+}
+
+function renderMarkdownInline(value) {
+  const codeSpans = [];
+  let html = escapeHtml(value).replace(/`([^`]+)`/g, (_match, code) => {
+    const index = codeSpans.push(`<code>${code}</code>`) - 1;
+    return `@@CODE${index}@@`;
+  });
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label, url) => {
+    const cleanUrl = url.replace(/&amp;/g, "&");
+    return `<a class="ask-citation-chip is-inline" href="${escapeAttr(cleanUrl)}" title="${escapeAttr(cleanUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || compactSourceLabel(cleanUrl))}</a>`;
+  });
+  html = html
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/@@CODE(\d+)@@/g, (_match, index) => codeSpans[Number(index)] || "");
+  return html;
 }
 
 function renderAskSources(item) {
