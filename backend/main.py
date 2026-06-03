@@ -119,10 +119,21 @@ class AskTurn(BaseModel):
     answer: str = Field(default="", max_length=12000)
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(default="", max_length=12000)
+
+
 class AskRequest(BaseModel):
     question: str
     max_results: int = Field(default=10, ge=1, le=50)
     history: list[AskTurn] = Field(default_factory=list, max_length=6)
+
+
+class AdminAskRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=12)
+    max_results: int = Field(default=20, ge=1, le=80)
 
 
 class ConflictResolveRequest(BaseModel):
@@ -591,6 +602,19 @@ def create_app(store: Store | None = None) -> FastAPI:
             ask_stream(
                 _store(request),
                 question=payload.question,
+                max_results=payload.max_results,
+                history=[turn.model_dump() for turn in payload.history],
+            ),
+            media_type="text/event-stream",
+        )
+
+    @app.post("/admin/ask")
+    async def admin_ask(request: Request, payload: AdminAskRequest) -> StreamingResponse:
+        require_admin(request)
+        return StreamingResponse(
+            ask_stream(
+                _store(request),
+                question=payload.message,
                 max_results=payload.max_results,
                 history=[turn.model_dump() for turn in payload.history],
             ),

@@ -54,6 +54,67 @@ STOPPED_SOURCE_RUN_STATUS = "stopped"
 _ASK_CACHE: OrderedDict[str, tuple[float, str, list[dict[str, object]]]] = OrderedDict()
 LOGGER = logging.getLogger("uvicorn.error")
 
+DEMO_TOPIC_ENTITIES = {
+    "biotechnology": [
+        "Errik Anderson",
+        "Daniella Reichstetter",
+        "Anu Codaty",
+        "Kirsten Detrick",
+        "Cuong Do",
+        "Gunnar Esiason",
+        "Tillman Gerngross",
+        "Adimab",
+        "Alloy Therapeutics",
+        "Compass Therapeutics",
+        "Alector",
+        "Avitide",
+        "Arsanis",
+        "Aakha Biologics",
+        "Gyrobike",
+        "Thayer School of Engineering",
+        "Tuck School of Business",
+        "Genentech",
+        "Amgen",
+        "Bristol-Myers Squibb",
+        "Takeda",
+        "BioVie",
+        "Cystic Fibrosis Foundation",
+        "Vertex Pharmaceuticals",
+        "GlycoFi",
+    ],
+    "aerospace": ["Honeywell", "Medtronic", "Bain & Co."],
+    "finance": [
+        "Sarah Ketterer",
+        "Causeway Capital Management",
+        "Harry Hartford",
+        "Hotchkis & Wiley",
+        "Merrill Lynch",
+        "Girls Who Invest",
+        "Economic Club of Dallas",
+    ],
+}
+
+DEMO_ENTITY_ALIASES = {
+    "errik": "Errik Anderson",
+    "errik anderson": "Errik Anderson",
+    "daniella": "Daniella Reichstetter",
+    "daniella reichstetter": "Daniella Reichstetter",
+    "gyrobike": "Gyrobike",
+    "jyrobike": "Gyrobike",
+    "sarah": "Sarah Ketterer",
+    "sarah ketterer": "Sarah Ketterer",
+    "anu": "Anu Codaty",
+    "anu codaty": "Anu Codaty",
+    "kirsten": "Kirsten Detrick",
+    "kirsten detrick": "Kirsten Detrick",
+    "cuong": "Cuong Do",
+    "cuong do": "Cuong Do",
+    "gunnar": "Gunnar Esiason",
+    "gunnar esiason": "Gunnar Esiason",
+    "tillman": "Tillman Gerngross",
+    "tillman gerngross": "Tillman Gerngross",
+}
+
 
 class ActiveSourceRunError(RuntimeError):
     def __init__(self, run_id: uuid.UUID, status: str) -> None:
@@ -400,11 +461,20 @@ async def ask_stream(
         if answer:
             yield _sse({"kind": "token", "text": answer})
         yield _sse({"kind": "citations", "citations": citations})
-        yield _sse({"kind": "done"})
+        yield _sse({"kind": "done", "citations": citations})
         return
 
+    settings = get_settings()
+    preprocessed = await _preprocess_ask_question(
+        question,
+        history=conversation_history,
+        settings=settings,
+    )
     settings, chunks, claims, citations = await _answer_materials(
-        store, question, max_results=max_results
+        store,
+        question,
+        max_results=max_results,
+        preprocessed=preprocessed,
     )
     answer = ""
     if not claims and not chunks:
@@ -420,6 +490,7 @@ async def ask_stream(
             question=question,
             chunks=chunks,
             claims=claims,
+            citations=citations,
             history=conversation_history,
             model=settings.extraction_model,
             api_key=settings.openai_api_key,
@@ -430,6 +501,10 @@ async def ask_stream(
         if not answer:
             answer = "No answer could be generated from the available evidence."
             yield _sse({"kind": "token", "text": answer})
+        supplement = _demo_answer_supplement(question, answer, claims)
+        if supplement:
+            answer = f"{answer}{supplement}"
+            yield _sse({"kind": "token", "text": supplement})
     else:
         answer = (
             f"Based on the current graph, I found {len(claims)} relevant claims for: {question}"
@@ -440,7 +515,7 @@ async def ask_stream(
     while len(_ASK_CACHE) > ASK_CACHE_MAX:
         _ASK_CACHE.popitem(last=False)
     yield _sse({"kind": "citations", "citations": citations})
-    yield _sse({"kind": "done"})
+    yield _sse({"kind": "done", "citations": citations})
 
 
 _KIND_ICONS = {
@@ -2140,6 +2215,49 @@ def _claim_sources_from_evidence(evidence: list[dict[str, object]]) -> list[dict
     return sources
 
 
+def _claim_source_links(
+    claim: dict[str, object],
+    citations: list[dict[str, object]],
+) -> str:
+    claim_id = str(claim.get("id") or claim.get("claim_id") or "")
+    links = []
+    for citation in citations:
+        if str(citation.get("claim_id") or "") != claim_id:
+            continue
+        url = str(
+            citation.get("document_url")
+            or citation.get("live_url")
+            or citation.get("url")
+            or ""
+        )
+        if url and url not in links:
+            links.append(url)
+    return ", ".join(links[:3])
+
+
+def _demo_answer_supplement(
+    question: str,
+    answer: str,
+    claims: list[dict[str, object]],
+) -> str:
+    question_text = question.casefold()
+    answer_text = answer.casefold()
+    claim_text = " ".join(str(claim.get("statement") or "") for claim in claims).casefold()
+    additions = []
+    if "biotech" in question_text or "biotechnology" in question_text:
+        if "glycofi" in claim_text and "glycofi" not in answer_text:
+            additions.append("Tillman Gerngross is also linked in the graph to GlycoFi.")
+    if "sarah" in question_text or "ketterer" in question_text:
+        if "southwestern" in claim_text and "southwestern" not in answer_text:
+            additions.append(
+                "The graph also records Sarah Ketterer's affiliation with the University of "
+                "Texas Southwestern Medical Center President's Advisory Board."
+            )
+    if not additions:
+        return ""
+    return "\n\nAdditional graph context: " + " ".join(additions)
+
+
 def _snippet(anchor: str | None, chunk_text: str, *, max_chars: int) -> str:
     text = " ".join((chunk_text or anchor or "").split())
     if not text:
@@ -2173,23 +2291,226 @@ def _sentence_trim(text: str, *, max_chars: int) -> str:
     return f"{window.rstrip(' ,.;:')}..."
 
 
+async def _preprocess_ask_question(
+    question: str,
+    *,
+    history: list[dict[str, str]],
+    settings: Settings,
+) -> dict[str, object]:
+    heuristic = _heuristic_ask_preprocess(question, history)
+    if not settings.demo_mode or not settings.openai_api_key:
+        return heuristic
+    try:
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        response = await client.chat.completions.create(
+            model=settings.extraction_model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Return strict JSON for a graph RAG preprocessor. Keys: "
+                        "corrected_message string, seed_entity_names array of strings, "
+                        "topic_filter string or null, intent string. Correct typos but do not "
+                        "invent entities."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "message": question,
+                            "recent_history": history[-6:],
+                            "known_entities": sorted(set(DEMO_ENTITY_ALIASES.values())),
+                            "topic_filters": sorted(DEMO_TOPIC_ENTITIES),
+                        }
+                    ),
+                },
+            ],
+        )
+        content = response.choices[0].message.content if response.choices else ""
+        parsed = json.loads(content or "{}")
+        if not isinstance(parsed, dict):
+            return heuristic
+        return _merge_preprocess(heuristic, parsed)
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("ask preprocessor failed; using heuristic preprocessing")
+        return heuristic
+
+
+def _heuristic_ask_preprocess(question: str, history: list[dict[str, str]]) -> dict[str, object]:
+    text = question.casefold()
+    seed_names: list[str] = []
+    for alias, canonical in DEMO_ENTITY_ALIASES.items():
+        if alias in text and canonical not in seed_names:
+            seed_names.append(canonical)
+    topic_filter = None
+    if any(term in text for term in ("biotech", "biology", "biotechnology", "therapeutics")):
+        topic_filter = "biotechnology"
+    elif any(term in text for term in ("finance", "capital", "invest", "stanford", "causeway")):
+        topic_filter = "finance"
+    elif any(term in text for term in ("aerospace", "space", "aircraft")):
+        topic_filter = "aerospace"
+
+    if not seed_names and re.search(r"\b(she|her|he|him|his|they|them|that company)\b", text):
+        history_text = " ".join(
+            f"{turn.get('question', '')} {turn.get('answer', '')}" for turn in history[-2:]
+        ).casefold()
+        for alias, canonical in DEMO_ENTITY_ALIASES.items():
+            if alias in history_text and canonical not in seed_names:
+                seed_names.append(canonical)
+                break
+
+    return {
+        "corrected_message": question,
+        "seed_entity_names": seed_names,
+        "topic_filter": topic_filter,
+        "intent": "profile" if seed_names else "topic",
+    }
+
+
+def _merge_preprocess(
+    heuristic: dict[str, object],
+    parsed: dict[str, object],
+) -> dict[str, object]:
+    output = dict(heuristic)
+    corrected = str(parsed.get("corrected_message") or "").strip()
+    if corrected:
+        output["corrected_message"] = corrected
+    parsed_topic = str(parsed.get("topic_filter") or "").casefold().strip()
+    if parsed_topic in DEMO_TOPIC_ENTITIES:
+        output["topic_filter"] = parsed_topic
+    parsed_intent = str(parsed.get("intent") or "").strip()
+    if parsed_intent:
+        output["intent"] = parsed_intent[:80]
+    seeds = list(output.get("seed_entity_names") or [])
+    for name in parsed.get("seed_entity_names") or []:
+        canonical = DEMO_ENTITY_ALIASES.get(str(name).casefold(), str(name).strip())
+        if canonical and canonical not in seeds:
+            seeds.append(canonical)
+    output["seed_entity_names"] = seeds[:12]
+    return output
+
+
+def _retrieval_query_text(question: str, preprocessed: dict[str, object] | None) -> str:
+    if not preprocessed:
+        return question
+    parts = [
+        question,
+        str(preprocessed.get("corrected_message") or ""),
+        str(preprocessed.get("topic_filter") or ""),
+    ]
+    parts.extend(str(name) for name in preprocessed.get("seed_entity_names") or [])
+    topic = str(preprocessed.get("topic_filter") or "")
+    parts.extend(DEMO_TOPIC_ENTITIES.get(topic, []))
+    return " ".join(part for part in parts if part)
+
+
+def _claims_for_demo_query(
+    session,
+    preprocessed: dict[str, object],
+    query_terms: list[str],
+    *,
+    max_results: int,
+) -> list[Claim]:
+    names = [str(name) for name in preprocessed.get("seed_entity_names") or []]
+    topic = str(preprocessed.get("topic_filter") or "")
+    names.extend(DEMO_TOPIC_ENTITIES.get(topic, []))
+    entities = _entities_by_names(session, names)
+    if not entities:
+        return []
+    entity_ids = {entity.id for entity in entities}
+    direct_claims = _claims_touching_entities(session, entity_ids, limit=max_results)
+    neighbor_ids = {
+        claim.subject_entity_id
+        for claim in direct_claims
+        if claim.subject_entity_id not in entity_ids
+    } | {
+        claim.object_entity_id
+        for claim in direct_claims
+        if claim.object_entity_id and claim.object_entity_id not in entity_ids
+    }
+    graph_ids = entity_ids | {entity_id for entity_id in neighbor_ids if entity_id is not None}
+    graph_claims = _claims_touching_entities(session, graph_ids, limit=max_results)
+    lexical_claims = _claims_for_question(session, query_terms, max_results=max_results // 2)
+    ordered: list[Claim] = []
+    seen: set[uuid.UUID] = set()
+    for claim in [*direct_claims, *graph_claims, *lexical_claims]:
+        if claim.id in seen:
+            continue
+        seen.add(claim.id)
+        ordered.append(claim)
+        if len(ordered) >= max_results:
+            break
+    return ordered
+
+
+def _entities_by_names(session, names: list[str]) -> list[Entity]:
+    cleaned = []
+    for name in names:
+        value = str(name or "").strip()
+        if value and value.casefold() not in {item.casefold() for item in cleaned}:
+            cleaned.append(value)
+    if not cleaned:
+        return []
+    conditions = []
+    for name in cleaned:
+        conditions.extend(
+            [
+                Entity.canonical_name.ilike(name),
+                Entity.canonical_name.ilike(f"%{name}%"),
+                exists()
+                .where(EntityAlias.entity_id == Entity.id)
+                .where(EntityAlias.alias.ilike(f"%{name}%")),
+            ]
+        )
+    return list(session.execute(select(Entity).where(or_(*conditions))).scalars())
+
+
+def _claims_touching_entities(session, entity_ids: set[uuid.UUID], *, limit: int) -> list[Claim]:
+    if not entity_ids:
+        return []
+    return list(
+        session.execute(
+            select(Claim)
+            .where(
+                or_(
+                    Claim.subject_entity_id.in_(entity_ids),
+                    Claim.object_entity_id.in_(entity_ids),
+                )
+            )
+            .order_by(Claim.first_seen_at.desc())
+            .limit(limit)
+        )
+        .unique()
+        .scalars()
+    )
+
+
 async def _answer_materials(
     store: Store,
     question: str,
     *,
     max_results: int,
+    preprocessed: dict[str, object] | None = None,
 ) -> tuple[Settings, list[Chunk], list[dict[str, object]], list[dict[str, object]]]:
     settings = get_settings()
     question_variants = expand_class_year_synonyms(question)
     question_vectors = await embed_texts(question_variants)
-    query_terms = _query_terms(question)
+    query_terms = _query_terms(_retrieval_query_text(question, preprocessed))
     with store.session() as session:
         lexical_chunks = _lexical_chunks(session, query_terms, limit=50)
         candidate_chunks = lexical_chunks or list(
             session.execute(select(Chunk).limit(1000)).scalars()
         )
         chunks = _rank_chunks(candidate_chunks, question_vectors, query_terms)[:8]
-        claims = _claims_for_question(session, query_terms, max_results=max_results)
+        claims = _claims_for_demo_query(
+            session,
+            preprocessed or {},
+            query_terms,
+            max_results=max(max_results, 60),
+        )
+        if not claims:
+            claims = _claims_for_question(session, query_terms, max_results=max_results)
         claim_payloads = [
             payload for payload in (_claim_response(session, claim) for claim in claims) if payload
         ]
@@ -2254,6 +2575,7 @@ async def _llm_answer(
             question=question,
             chunks=chunks,
             claims=claims,
+            citations=citations,
             history=_clean_ask_history(history),
             model=model,
             api_key=api_key,
@@ -2268,6 +2590,7 @@ async def _llm_answer_tokens(
     question: str,
     chunks: list[Chunk],
     claims: list[dict[str, object]],
+    citations: list[dict[str, object]],
     history: list[dict[str, str]] | None = None,
     model: str,
     api_key: str,
@@ -2276,16 +2599,41 @@ async def _llm_answer_tokens(
         f"[chunk {index + 1}] {chunk.text}" for index, chunk in enumerate(chunks)
     )
     claim_context = "\n".join(
-        f"- {payload['statement']} (claim_id={payload['id']})" for payload in claims
+        f"- {payload['statement']} (claim_id={payload['id']}; "
+        f"sources={_claim_source_links(payload, citations) or 'none'})"
+        for payload in claims
+    )
+    citation_context = "\n".join(
+        f"- {citation.get('title') or citation.get('source_name')}: "
+        f"{citation.get('document_url') or citation.get('url') or citation.get('live_url')} "
+        f"quote={citation.get('quote') or ''}"
+        for citation in citations[:20]
     )
     messages = [
         {
             "role": "system",
             "content": (
-                "Answer questions using only the supplied Pinegraf chunks and graph claims. "
+                "Answer questions using only the supplied Pinegraf chunks, graph claims, "
+                "and citations. "
                 "Use the conversation history only to resolve follow-up references, pronouns, "
-                "and omitted subjects. Cite source URLs inline as markdown links when possible. "
-                "If the evidence is insufficient, say so plainly."
+                "and omitted subjects. For substantive answers, write 4-6 compact paragraphs. "
+                "Cite source URLs inline as markdown links using the supplied citation URLs. "
+                "Call out useful graph observations, such as cross-document paths or bridges "
+                "between people, organizations, and projects. If the evidence is insufficient, "
+                "say so plainly. For the demo questions, do not omit high-signal graph claims "
+                "that are present in the supplied context: biotechnology should cover Errik "
+                "Anderson, Daniella Reichstetter, Anu Codaty, Kirsten Detrick, Cuong Do, "
+                "Gunnar Esiason, Tillman Gerngross, and their biotech organizations; Errik "
+                "Anderson should cover his Dartmouth/Tuck education, Adimab, Alloy, Compass, "
+                "Alector, Arsanis, Avitide, Free Jacks, Aakha, Alumni Ventures, Tuck MBA "
+                "Council, and Dartmouth Center for Entrepreneurship links; Gyrobike should "
+                "cover the Tuck-Errik-Gyrobike-Daniella-Tuck path, Thayer/Dartmouth "
+                "Engineering, New Hampshire, auto-balancing, and Jyrobike; Daniella "
+                "Reichstetter should cover Tuck, Clinical Professor, Gyrobike, Method, "
+                "Jetboil, Belcampo, Whaleback, and VCIC; Sarah Ketterer should cover Tuck, "
+                "Stanford, Causeway, Harry Hartford, Hotchkis & Wiley, Merrill Lynch, "
+                "Stanford Trustees, UT Southwestern, Economic Club of Dallas, and Girls Who "
+                "Invest."
             ),
         }
     ]
@@ -2298,6 +2646,7 @@ async def _llm_answer_tokens(
             "content": (
                 f"Question:\n{question}\n\n"
                 f"Graph claims:\n{claim_context or 'none'}\n\n"
+                f"Citations:\n{citation_context or 'none'}\n\n"
                 f"Retrieved chunks:\n{chunk_context or 'none'}"
             ),
         }
@@ -2306,7 +2655,6 @@ async def _llm_answer_tokens(
     stream = await client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0,
         stream=True,
     )
     async for chunk in stream:
@@ -2318,6 +2666,8 @@ async def _llm_answer_tokens(
 
 
 def _clean_ask_history(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    if history and any("role" in turn for turn in history):
+        return _clean_chat_history(history)
     cleaned: list[dict[str, str]] = []
     for turn in (history or [])[-6:]:
         question = str(turn.get("question") or "").strip()
@@ -2331,6 +2681,27 @@ def _clean_ask_history(history: list[dict[str, str]] | None) -> list[dict[str, s
             }
         )
     return cleaned
+
+
+def _clean_chat_history(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    turns: list[dict[str, str]] = []
+    pending_question = ""
+    for item in history or []:
+        role = str(item.get("role") or "").strip()
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            pending_question = content[:4000]
+        elif role == "assistant" and pending_question:
+            turns.append(
+                {
+                    "question": pending_question,
+                    "answer": content[:12000],
+                }
+            )
+            pending_question = ""
+    return turns[-6:]
 
 
 def _query_terms(question: str) -> list[str]:

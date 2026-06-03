@@ -1540,13 +1540,15 @@ function highlightRawQuote(text, quote) {
 function renderAsk() {
   const hasMessages = state.askSession.length > 0;
   setPageHeader({
-    title: "Ask",
+    title: "Ask Pinegraf",
     subtitle: "",
-    actions: `<button class="btn-ghost" id="ask-new-question" type="button" ${hasMessages && !state.askStreaming ? "" : "disabled"}><i class="ti ti-plus" aria-hidden="true"></i> New conversation</button>`,
   });
   const app = document.getElementById("app");
   app.innerHTML = `
     <div class="ask-page ${hasMessages ? "has-session" : "is-empty"}">
+      <div class="ask-toolbar">
+        <button class="btn-ghost ask-new-conversation" id="ask-new-question" type="button" ${hasMessages && !state.askStreaming ? "" : "disabled"}>New conversation</button>
+      </div>
       <section class="ask-thread" id="ask-thread" aria-live="polite">
         ${
           hasMessages
@@ -1570,7 +1572,6 @@ function renderAsk() {
       </section>
       ${renderAskComposer()}
     </div>
-    <aside class="side-drawer" id="ask-side-drawer" hidden></aside>
   `;
   const newQuestion = byId("ask-new-question");
   if (newQuestion) {
@@ -1633,7 +1634,10 @@ async function ask() {
   const history = state.askSession
     .filter((turn) => !turn.isStreaming && turn.question && turn.answer)
     .slice(-6)
-    .map((turn) => ({ question: turn.question, answer: turn.answer }));
+    .flatMap((turn) => [
+      { role: "user", content: turn.question },
+      { role: "assistant", content: turn.answer },
+    ]);
   input.value = "";
   resizeAskInput(input);
   byId("ask-submit").disabled = true;
@@ -1649,10 +1653,10 @@ async function ask() {
   state.askSession.push(item);
   renderAsk();
   try {
-    const response = await fetch("/api/ask", {
+    const response = await fetch("/admin/ask", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question, history }),
+      body: JSON.stringify({ message: question, history }),
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     const reader = response.body.getReader();
@@ -1678,6 +1682,9 @@ async function ask() {
           refreshAskAnswer(item.id);
         } else if (payload.kind === "citations") {
           item.citations = payload.citations || [];
+          refreshAskAnswer(item.id);
+        } else if (payload.kind === "done") {
+          item.citations = payload.citations || item.citations || [];
           refreshAskAnswer(item.id);
         }
       });
@@ -1850,98 +1857,11 @@ function renderMarkdownInline(value) {
   return html;
 }
 
-function renderAskSources(item) {
-  const citations = item.citations || [];
-  const count = citations.length;
-  return `
-    <details class="ask-source-details">
-      <summary class="ask-source-pill"><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>Sources (${count} ${count === 1 ? "source" : "sources"})</summary>
-      <div class="ask-source-list">
-        ${
-          count
-            ? citations
-                .map(
-                  (c, i) => `
-                    <article class="ask-citation-card" role="button" tabindex="0" data-ask-id="${escapeAttr(item.id)}" data-citation-index="${i}">
-                      <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
-                      <strong>${escapeHtml(c.source_name || c.title || c.source_title || `Source ${i + 1}`)}</strong>
-                      ${c.claim ? `<div class="muted small">${escapeHtml(claimDisplayLine(c.claim))}</div>` : ""}
-                      ${claimAttribution(c)}
-                      <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
-                    </article>`,
-                )
-                .join("")
-            : `<div class="ask-citations-empty">Answered from corpus-level patterns, no specific citations.</div>`
-        }
-      </div>
-    </details>
-  `;
-}
-
-function refreshAskSources(itemId) {
-  const item = state.askSession.find((candidate) => candidate.id === itemId);
-  const root = byId(`ask-sources-${itemId}`);
-  if (!item || !root) return;
-  root.innerHTML = renderAskSources(item);
-  attachAskCitationHandlers();
-}
-
-function attachAskCitationHandlers() {
-  document.querySelectorAll(".ask-citation-card").forEach((card) => {
-    const open = (event) => {
-      if (event?.target?.closest?.(".claim-attribution, a")) return;
-      const item = state.askSession.find((candidate) => candidate.id === card.dataset.askId);
-      const citation = item?.citations?.[Number(card.dataset.citationIndex)] || {};
-      openCitationDrawer(citation);
-    };
-    card.onclick = open;
-    card.onkeydown = (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      open(event);
-    };
-  });
-}
-
 function scrollAskThreadToBottom() {
   const thread = byId("ask-thread");
   if (thread) {
     thread.scrollTop = thread.scrollHeight;
   }
-}
-
-function openCitationDrawer(citation) {
-  const drawer = byId("ask-side-drawer");
-  drawer.hidden = false;
-  drawer.innerHTML = `
-    <div class="side-drawer-header">
-      <div>
-        <div class="side-drawer-title">${escapeHtml(citation.source_name || citation.title || citation.source_title || "Source")}</div>
-        <div class="side-drawer-subtitle">${escapeHtml(citation.source_id || citation.claim_id || "Citation")}</div>
-      </div>
-      <button class="btn-icon-only modal-close" type="button" onclick="closeSideDrawer()" aria-label="Close">×</button>
-    </div>
-    <div class="side-drawer-body">
-      <div class="field-label">Snippet</div>
-      <blockquote>${escapeHtml(citation.quote || "No snippet returned for this citation.")}</blockquote>
-      <div class="field-label">Source reference</div>
-      ${claimAttribution(citation) || `<div class="side-drawer-meta">${escapeHtml(citation.source_id || "No source id returned.")}</div>`}
-      ${
-        citation.document_id
-          ? `<button class="btn-secondary" type="button" data-document-id="${escapeAttr(citation.document_id)}"><i class="ti ti-file-text" aria-hidden="true"></i> Open document</button>`
-          : `<div class="muted small">The current API response does not include a document id for this citation.</div>`
-      }
-    </div>
-  `;
-  const documentButton = drawer.querySelector("[data-document-id]");
-  if (documentButton) {
-    documentButton.onclick = () => openDocumentModal(documentButton.dataset.documentId);
-  }
-}
-
-function closeSideDrawer() {
-  const drawer = byId("ask-side-drawer");
-  if (drawer) drawer.hidden = true;
 }
 
 /* ───── Graph ───── */
@@ -4587,4 +4507,3 @@ function timeAgo(iso) {
 window.closeModal = closeModal;
 window.closeModalOnBackdrop = closeModalOnBackdrop;
 window.resetDirectoryFilters = resetDirectoryFilters;
-window.closeSideDrawer = closeSideDrawer;

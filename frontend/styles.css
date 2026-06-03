@@ -361,6 +361,18 @@
   line-height: var(--lh-normal);
 }
 
+.ask-toolbar {
+  width: min(calc(var(--space-16) * 11 + var(--space-4)), 100%);
+  margin: 0 auto calc(var(--space-2) * -1);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ask-new-conversation {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+}
+
 .ask-thread {
   flex: 1 1 auto;
   min-height: 0;
@@ -537,102 +549,6 @@
   color: var(--green);
 }
 
-.ask-sources {
-  max-width: calc(var(--space-16) * 11 + var(--space-4));
-}
-
-.ask-source-details {
-  display: inline-block;
-}
-
-.ask-source-details[open] {
-  display: block;
-}
-
-.ask-source-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: var(--button-h-small);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background-color: var(--surface);
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  cursor: pointer;
-  list-style: none;
-  transition:
-    background-color var(--motion),
-    border-color var(--motion),
-    color var(--motion);
-}
-
-.ask-source-details summary::-webkit-details-marker {
-  display: none;
-}
-
-.ask-source-pill:hover,
-.ask-source-pill:focus-visible {
-  border-color: var(--green);
-  color: var(--green);
-}
-
-.ask-source-pill:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--green-tint);
-}
-
-.ask-source-list {
-  margin-top: var(--space-3);
-}
-
-.ask-citation-card {
-  width: 100%;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: var(--space-2) var(--space-3);
-  align-items: center;
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background-color: var(--bg);
-  cursor: pointer;
-  text-align: left;
-  transition:
-    background-color var(--motion),
-    border-color var(--motion);
-}
-
-.ask-citation-card + .ask-citation-card {
-  margin-top: var(--space-2);
-}
-
-.ask-citation-card:hover {
-  background-color: var(--surface);
-  border-color: var(--line);
-}
-
-.ask-citation-card:focus-visible {
-  outline: none;
-  border-color: var(--green);
-  box-shadow: 0 0 0 2px var(--green-tint);
-}
-
-.ask-citation-card strong {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--text);
-}
-
-.ask-citation-card > span:last-child {
-  grid-column: 1 / -1;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-snug);
-}
-
 .claim-value {
   display: inline-block;
   margin-right: var(--space-2);
@@ -720,69 +636,6 @@
   border-left: 2px solid var(--line-strong);
   color: var(--text-muted);
   line-height: var(--lh-snug);
-}
-
-.ask-citations-empty {
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-  background-color: var(--surface);
-}
-
-.side-drawer {
-  position: fixed;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: min(calc(var(--space-16) * 6 + var(--space-8) + var(--space-1)), 100vw);
-  background-color: var(--bg);
-  border-left: 1px solid var(--line);
-  box-shadow: var(--shadow-lg);
-  z-index: var(--z-modal);
-}
-
-.side-drawer[hidden] {
-  display: none;
-}
-
-.side-drawer-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border-bottom: 1px solid var(--line);
-}
-
-.side-drawer-title {
-  font-size: var(--fs-lg);
-  font-weight: 500;
-  color: var(--text);
-}
-
-.side-drawer-subtitle,
-.side-drawer-meta {
-  color: var(--text-faint);
-  font-size: var(--fs-sm);
-}
-
-.side-drawer-body {
-  padding: var(--space-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.side-drawer blockquote {
-  margin: 0;
-  padding: var(--space-3);
-  background-color: var(--surface);
-  border-left: 2px solid var(--green);
-  color: var(--text);
-  line-height: var(--lh-normal);
-  border-radius: var(--radius-sm);
 }
 
 /* ─── Graph ────────────────────────────────────────────────────────── */
