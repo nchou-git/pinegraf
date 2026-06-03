@@ -12,9 +12,6 @@ const state = {
   directoryFilters: { q: "", sources: [], class_years: [], orgs: [], sort: "name_asc" },
   directoryRows: [],
   directoryOptionRows: [],
-  claimsPage: 1,
-  claimsFilters: { q: "", predicate: "", source_id: "", status: "current" },
-  claimPredicates: [],
   rawDataPage: 1,
   rawDataFilters: { q: "", predicate: "" },
   rawDataExpanded: {},
@@ -32,18 +29,14 @@ const state = {
 
 let modalRestoreFocus = null;
 let modalKeydownHandler = null;
-let logsViewStream = null;
 
 const TAB_DEFS = [
   { id: "directory", label: "Directory", icon: "ti-list-search" },
   { id: "ask", label: "Ask", icon: "ti-message-question" },
-  { id: "claims", label: "Claims", icon: "ti-file-search" },
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
 ];
 const RAW_DATA_TAB = { id: "raw", label: "Raw data", icon: "ti-database-search" };
-const CONFLICTS_TAB = { id: "conflicts", label: "Conflicts", icon: "ti-alert-triangle" };
-const LOGS_TAB = { id: "logs", label: "Logs", icon: "ti-terminal-2" };
 
 const SOURCE_KINDS = [
   {
@@ -306,9 +299,9 @@ function navTabs() {
   const tabs = [];
   TAB_DEFS.forEach((tab) => {
     tabs.push(tab);
-    if (tab.id === "claims") tabs.push(RAW_DATA_TAB);
+    if (tab.id === "ask") tabs.push(RAW_DATA_TAB);
   });
-  return [...tabs, CONFLICTS_TAB, LOGS_TAB];
+  return tabs;
 }
 
 function isAdmin() {
@@ -393,34 +386,15 @@ function renderRoute() {
   const rawRoute = location.hash.replace(/^#/, "") || "directory";
   const [route, queryString = ""] = rawRoute.split("?");
   const [tab, ...rest] = route.split("/");
-  document.body.classList.toggle("route-logs", tab === "logs" && Boolean(state.me?.is_admin));
-  if (tab !== "logs") stopLogsViewStream();
+  if (["conflicts", "logs", "claims"].includes(tab)) {
+    history.replaceState(null, "", "#directory");
+    renderShell();
+    return renderDirectory();
+  }
   if (tab === "admin") {
     history.replaceState(null, "", "#sources");
     renderShell();
     return renderSources([]);
-  }
-  if (tab === "logs") {
-    if (!state.me?.is_admin) {
-      history.replaceState(null, "", "#directory");
-      renderShell();
-      return renderDirectory();
-    }
-    closeMobileSidebar();
-    renderShell();
-    return renderLogs();
-  }
-  if (tab === "conflicts") {
-    if (!state.me?.is_admin) {
-      history.replaceState(null, "", "#directory");
-      renderShell();
-      return renderDirectory();
-    }
-    const section = rest[0] === "identity" ? "identity" : "facts";
-    if (!rest[0]) history.replaceState(null, "", "#conflicts/facts");
-    closeMobileSidebar();
-    renderShell();
-    return renderConflictsPage(section);
   }
   if (tab === "raw") {
     if (!state.me?.is_admin) {
@@ -435,7 +409,7 @@ function renderRoute() {
   closeMobileSidebar();
   renderShell();
   if (tab === "ask") return renderAsk();
-  if (tab === "claims") return renderClaims(rest, new URLSearchParams(queryString));
+  void queryString;
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
   return renderDirectory();
@@ -1075,115 +1049,13 @@ function renderPagination(page, totalPages) {
 
 /* ───── Claims ───── */
 
-async function renderClaims(parts = [], query = new URLSearchParams()) {
-  const claimId = parts[0];
-  if (claimId) return renderClaimDetail(claimId);
-  if (query.get("source")) {
-    state.claimsFilters.source_id = query.get("source");
-  }
-  setPageHeader({
-    title: "Claims",
-    subtitle: "Browse extracted claims across all sources.",
-  });
-  const app = byId("app");
-  app.innerHTML = `
-    <div class="directory-page claims-page">
-      <section class="directory-filter-bar claims-filter-bar">
-        <label class="directory-search input-with-icon">
-          <i class="ti ti-search icon" aria-hidden="true"></i>
-          <input class="input" id="claims-q" placeholder="Search subject or object" value="${escapeAttr(state.claimsFilters.q)}" />
-        </label>
-        <select class="input claims-filter-select" id="claims-predicate">
-          <option value="">All predicates</option>
-        </select>
-        <select class="input claims-filter-select" id="claims-status">
-          <option value="current">Current</option>
-          <option value="superseded">Superseded</option>
-          <option value="all">All</option>
-        </select>
-        <select class="input claims-filter-select" id="claims-source">
-          <option value="">All sources</option>
-        </select>
-      </section>
-      <section class="directory-results" id="claims-results">
-        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
-      </section>
-      <div class="pagination directory-pagination" id="claims-pagination"></div>
-    </div>
-  `;
-  await Promise.all([loadClaimsSources(), loadClaimPredicates()]);
-  setupClaimsFilters();
-  await loadClaims();
-}
-
-async function loadClaimsSources() {
-  if (state.sourcesCache) return;
-  const data = await getJSON("/api/sources");
-  state.sourcesCache = data.sources || [];
-}
-
-async function loadClaimPredicates() {
-  const data = await getJSON("/api/claims/predicates");
-  state.claimPredicates = data.predicates || [];
-}
-
-function setupClaimsFilters() {
-  const predicate = byId("claims-predicate");
-  predicate.innerHTML = `<option value="">All predicates</option>${(state.claimPredicates || [])
-    .map((item) => `<option value="${escapeAttr(item)}">${escapeHtml(item)}</option>`)
-    .join("")}`;
-  predicate.value = state.claimsFilters.predicate || "";
-  const source = byId("claims-source");
-  source.innerHTML = `<option value="">All sources</option>${(state.sourcesCache || [])
-    .filter((item) => item.status !== "archived")
-    .map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.display_name || item.identifier)}</option>`)
-    .join("")}`;
-  source.value = state.claimsFilters.source_id || "";
-  byId("claims-status").value = state.claimsFilters.status || "current";
-  const reload = () => {
-    state.claimsFilters.q = byId("claims-q").value.trim();
-    state.claimsFilters.predicate = byId("claims-predicate").value;
-    state.claimsFilters.status = byId("claims-status").value;
-    state.claimsFilters.source_id = byId("claims-source").value;
-    state.claimsPage = 1;
-    loadClaims();
-  };
-  byId("claims-q").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") reload();
-  });
-  predicate.onchange = reload;
-  source.onchange = reload;
-  byId("claims-status").onchange = reload;
-}
-
-async function loadClaims(extraParams = {}) {
-  const params = new URLSearchParams({
-    q: state.claimsFilters.q || "",
-    predicate: state.claimsFilters.predicate || "",
-    source_id: state.claimsFilters.source_id || "",
-    status: state.claimsFilters.status || "current",
-    page: String(state.claimsPage),
-    page_size: "50",
-    ...extraParams,
-  });
-  const data = await getJSON(`/api/claims?${params.toString()}`);
-  const results = byId("claims-results");
-  results.innerHTML = claimsList(data.claims || {});
-  attachClaimsRows(results);
-  renderClaimsPagination(data.page || 1, Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 50))));
-  setPageHeader({
-    title: "Claims",
-    subtitle: `${formatNumber(data.total || 0)} claims`,
-  });
-}
-
 function claimsList(claims, options = {}) {
   const rows = Array.isArray(claims) ? claims : [];
   if (!rows.length) {
     return `<div class="empty-state"><i class="ti ti-file-search" aria-hidden="true"></i><div>No claims matched.</div></div>`;
   }
   return `
-    <table class="directory-table claims-table">
+    <table class="directory-table entity-claims-table">
       <thead>
         <tr>
           <th>Subject</th>
@@ -1206,7 +1078,7 @@ function claimsListRow(claim, options = {}) {
     ? claim.subject?.id === options.entityId ? "as subject" : "as object"
     : "";
   return `
-    <tr class="directory-table-row claim-row" data-claim-id="${escapeAttr(claim.id || claim.claim_id)}">
+    <tr class="directory-table-row entity-claim-table-row">
       <td>${escapeHtml(claim.subject?.name || "Unknown")}</td>
       <td><span class="claim-predicate">${escapeHtml(claim.predicate || "")}</span></td>
       <td>${escapeHtml(claim.object?.name || claim.object_value || "")}</td>
@@ -1214,75 +1086,6 @@ function claimsListRow(claim, options = {}) {
       <td>${claim.valid_from ? escapeHtml(formatDate(claim.valid_from)) : ""}</td>
       ${options.role ? `<td><span class="source-badge">${escapeHtml(role)}</span></td>` : ""}
     </tr>
-  `;
-}
-
-function attachClaimsRows(root) {
-  root.querySelectorAll("[data-claim-id]").forEach((row) => {
-    row.onclick = () => {
-      location.hash = `#claims/${row.dataset.claimId}`;
-    };
-  });
-}
-
-function renderClaimsPagination(page, totalPages) {
-  const pag = byId("claims-pagination");
-  if (!pag || totalPages <= 1) {
-    if (pag) pag.innerHTML = "";
-    return;
-  }
-  pag.innerHTML = `
-    <button class="btn-secondary" ${page <= 1 ? "disabled" : ""}>Previous</button>
-    <button class="btn-secondary accent" ${page >= totalPages ? "disabled" : ""}>Next</button>
-  `;
-  const [prev, next] = pag.querySelectorAll("button");
-  prev.onclick = () => {
-    state.claimsPage = Math.max(1, page - 1);
-    loadClaims();
-  };
-  next.onclick = () => {
-    state.claimsPage = page + 1;
-    loadClaims();
-  };
-}
-
-async function renderClaimDetail(claimId) {
-  const data = await getJSON(`/api/claims/${claimId}`);
-  setPageHeader({
-    title: "Claim",
-    subtitle: data.statement || "",
-    eyebrow: `<a href="#claims">Claims</a> / Claim detail`,
-  });
-  byId("app").innerHTML = `
-    <section class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title">${escapeHtml(data.statement || "")}</div>
-          <div class="muted small">${escapeHtml(data.predicate || "")}</div>
-        </div>
-      </div>
-      <div class="claim-detail-grid">
-        ${claimEntityCard("Subject", data.subject_entity || data.subject)}
-        ${claimEntityCard("Object", data.object_entity || data.object)}
-      </div>
-      <div class="panel-header">
-        <div class="panel-title">Evidence</div>
-        <div class="muted small">${formatNumber(data.evidence_count || 0)} rows</div>
-      </div>
-      <div class="claim-attribution-panel">
-        ${(data.evidence || []).map(claimEvidenceRow).join("") || `<div class="muted small">No evidence rows.</div>`}
-      </div>
-    </section>
-  `;
-}
-
-function claimEntityCard(label, entity) {
-  return `
-    <div class="claim-entity-card">
-      <div class="field-label">${escapeHtml(label)}</div>
-      <strong>${escapeHtml(entity?.display_name || entity?.canonical_name || entity?.name || "Unknown")}</strong>
-      ${entity?.id ? `<a href="#graph/${escapeAttr(entity.id)}">Open entity</a>` : ""}
-    </div>
   `;
 }
 
@@ -2111,7 +1914,6 @@ async function loadEntityClaims(entityId) {
       return true;
     });
     root.innerHTML = claimsList(claims, { entityId, role: true });
-    attachClaimsRows(root);
   } catch (error) {
     root.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load claims: ${escapeHtml(error.message)}</div></div>`;
   }
@@ -3644,7 +3446,6 @@ function renderSourceConfig(detail) {
         <div class="source-config-status">
           ${sourceConfigStatusMarkup(detail)}
         </div>
-        <a class="btn-ghost" href="#claims?source=${escapeAttr(detail.id)}"><i class="ti ti-file-search" aria-hidden="true"></i> View ${formatNumber(detail.coverage?.claims || 0)} claims from this source</a>
         <label class="field">
           <span class="field-label">Display name</span>
           <input class="input" id="cfg-name" value="${escapeAttr(detail.display_name || "")}" ${adminOnly ? "disabled" : ""} />
@@ -3884,71 +3685,6 @@ async function loadAdminConflicts(targetId = "conflicts-body", summaryId = "conf
   }
 }
 
-async function renderConflictsPage(section = "facts") {
-  const active = section === "identity" ? "identity" : "facts";
-  setPageHeader({
-    title: "Conflicts",
-    subtitle:
-      active === "identity"
-        ? "Two records may refer to the same entity. Merge or split."
-        : "Sources disagree about a fact. Pick the correct claim.",
-  });
-  byId("app").innerHTML = `
-    <section class="conflicts-page">
-      <nav class="conflicts-tabs" id="conflicts-tabs" aria-label="Conflict type">
-        ${conflictTabStrip(active)}
-      </nav>
-      <div class="sources-list" id="conflicts-panel-body">
-        <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
-      </div>
-    </section>
-  `;
-  await loadConflictsPanel(active);
-}
-
-async function loadConflictsPanel(active) {
-  const body = byId("conflicts-panel-body");
-  try {
-    const [facts, identity] = await Promise.all([
-      loadAdminPanelData("/admin/conflicts", {
-        targetId: "conflicts-panel-body",
-        title: "Sign in to view conflicts",
-      }),
-      loadAdminPanelData("/admin/identity-review", {
-        targetId: "conflicts-panel-body",
-        title: "Sign in to view conflicts",
-      }),
-    ]);
-    if (!facts || !identity) return;
-    byId("conflicts-tabs").innerHTML = conflictTabStrip(active, facts.total || 0, identity.total || 0);
-    setPageHeader({
-      title: "Conflicts",
-      subtitle:
-        active === "identity"
-          ? "Two records may refer to the same entity. Merge or split."
-          : "Sources disagree about a fact. Pick the correct claim.",
-    });
-    if (active === "identity") {
-      renderIdentityReviewList(body, identity, () => loadConflictsPanel("identity"));
-    } else {
-      renderFactConflictsList(body, facts, () => loadConflictsPanel("facts"));
-    }
-  } catch (error) {
-    if (body) body.innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(error.message)}</div>`;
-  }
-}
-
-function conflictTabStrip(active, factsTotal = 0, identityTotal = 0) {
-  return `
-    <a class="conflicts-tab ${active === "facts" ? "active" : ""}" href="#conflicts/facts">
-      Contradicting Facts (${formatNumber(factsTotal)})
-    </a>
-    <a class="conflicts-tab ${active === "identity" ? "active" : ""}" href="#conflicts/identity">
-      Ambiguous Identity (${formatNumber(identityTotal)})
-    </a>
-  `;
-}
-
 function renderFactConflictsList(target, data, reload) {
   if (!target) return;
   const rows = data.results || [];
@@ -4007,128 +3743,6 @@ function renderConflictClaim(label, claim, claimId) {
   `;
 }
 
-async function loadIdentityReview() {
-  const list = byId("identity-review-list");
-  try {
-    const data = await loadAdminPanelData("/admin/identity-review", {
-      targetId: "identity-review-list",
-      title: "Sign in to review identities",
-    });
-    if (!data) return;
-    renderIdentityReviewList(list, data, loadIdentityReview);
-  } catch (error) {
-    if (list) {
-      list.innerHTML = `<div class="muted small">Unable to load ambiguous identities: ${escapeHtml(error.message)}</div>`;
-    }
-  }
-}
-
-function renderIdentityReviewList(target, data, reload) {
-  if (!target) return;
-  const rows = data.results || [];
-  if (!rows.length) {
-    target.innerHTML = `
-      <div class="empty-state sources-empty compact">
-        <i class="ti ti-user-check" aria-hidden="true"></i>
-        <div>No ambiguous identities.</div>
-      </div>`;
-    return;
-  }
-  target.innerHTML = rows.map(identityReviewRow).join("");
-  target.querySelectorAll("[data-review-decision]").forEach((button) => {
-    button.onclick = async () => {
-      const id = button.dataset.reviewId;
-      const decision = button.dataset.reviewDecision;
-      const entityId = button.dataset.entityId;
-      try {
-        if (decision === "alias-add") {
-          const input = document.querySelector(`input[data-alias-input-id="${id}"]`);
-          const aliasValue = (input && input.value.trim()) || "";
-          if (!aliasValue) {
-            toast("Alias text required", { level: "error" });
-            return;
-          }
-          await postJSON(`/admin/entities/${entityId}/alias`, {
-            alias: aliasValue,
-            reviewer: state.me?.username || "admin",
-          });
-          toast("Alias added", { level: "success" });
-        } else if (decision === "verify") {
-          await postJSON(`/admin/entities/${entityId}/verify`, {
-            reviewer: state.me?.username || "admin",
-          });
-          toast("Entity verified", { level: "success" });
-        } else {
-          await postJSON(`/admin/identity-review/${id}`, {
-            decision,
-            reviewer: state.me?.username || "admin",
-          });
-          const messages = {
-            merge: "Entities merged",
-            split: "Marked as separate entities",
-            confirm: "Identity review updated",
-            defer: "Deferred for later",
-          };
-          toast(messages[decision] || "Identity review updated", { level: "success" });
-        }
-        await reload();
-      } catch (error) {
-        toast(normalizeErrorMessage(error), { level: "error" });
-      }
-    };
-  });
-}
-
-function identityReviewRow(row) {
-  const source = row.source_entity || {};
-  const candidate = row.candidate_entity || {};
-  const score = Number(row.name_similarity_score || 0);
-  const scoreLabel = score ? `${Math.round(score * 100)}% similar` : "similarity unknown";
-  const canMerge = Boolean(row.mention && source.id && candidate.id);
-  return `
-    <article class="conflict-row">
-      <div class="stmt"><strong>${escapeHtml(source.display_name || source.canonical_name || "Unknown entity")}</strong> <span class="muted">vs</span> <strong>${escapeHtml(candidate.display_name || candidate.canonical_name || "Candidate missing")}</strong></div>
-      <div class="muted small">${escapeHtml(scoreLabel)} · ${escapeHtml(row.mention?.text || "No mention text")}</div>
-      <div class="versus">
-        ${identityReviewEntityBlock("Mention entity", source, row.source_qualifiers)}
-        <span>vs</span>
-        ${identityReviewEntityBlock("Candidate", candidate, row.candidate_qualifiers)}
-      </div>
-      ${row.llm_reasoning ? `<div class="muted small">${escapeHtml(row.llm_reasoning)}</div>` : ""}
-      <div class="conflict-actions">
-        ${canMerge ? `<button class="btn-source" data-review-id="${escapeAttr(row.id)}" data-review-decision="merge">Merge</button>` : ""}
-        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="split">Different entity</button>
-        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="defer">Defer</button>
-        ${candidate.id ? `<button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="verify" data-entity-id="${escapeAttr(candidate.id)}">Verify candidate</button>` : ""}
-      </div>
-      ${candidate.id ? `<div class="conflict-actions">
-        <input class="input" type="text" placeholder="Add alias to candidate..." data-alias-input-id="${escapeAttr(row.id)}" />
-        <button class="btn-ghost" data-review-id="${escapeAttr(row.id)}" data-review-decision="alias-add" data-entity-id="${escapeAttr(candidate.id)}">Add alias</button>
-      </div>` : ""}
-    </article>
-  `;
-}
-
-function identityReviewEntityBlock(label, entity, qualifiers = {}) {
-  const aliasText = (entity.aliases || []).slice(0, 4).join(", ");
-  return `
-    <div class="conflict-claim">
-      <span class="muted small">${escapeHtml(label)}: ${escapeHtml(String(entity.id || "").slice(0, 8))}</span>
-      <strong>${escapeHtml(entity.display_name || entity.canonical_name || "Unknown entity")}</strong>
-      <div class="muted small">${escapeHtml(entity.type || "")}${aliasText ? ` · aliases: ${escapeHtml(aliasText)}` : ""}</div>
-      ${identityReviewQualifierText(qualifiers)}
-    </div>
-  `;
-}
-
-function identityReviewQualifierText(qualifiers = {}) {
-  const parts = Object.entries(qualifiers)
-    .filter(([, values]) => Array.isArray(values) && values.length)
-    .slice(0, 5)
-    .map(([key, values]) => `${key}: ${values.slice(0, 4).join(", ")}`);
-  return parts.length ? `<div class="muted small">${escapeHtml(parts.join(" · "))}</div>` : "";
-}
-
 async function loadAdminPanelData(url, { targetId, title }) {
   try {
     return await getJSON(url, { redirectOnAuth: false });
@@ -4162,8 +3776,7 @@ async function adminLogout(event) {
   renderShell();
   if (tab === "admin") {
     location.hash = "#sources";
-  } else if (tab === "logs" || tab === "conflicts" || tab === "raw") {
-    stopLogsViewStream();
+  } else if (tab === "raw") {
     location.hash = "#directory";
   } else if (tab === "sources") {
     await renderRoute();
@@ -4178,46 +3791,6 @@ function loginUrl() {
 
 function handleAdminUnauthorized() {
   location.href = loginUrl();
-}
-
-/* ───── Logs ───── */
-
-function renderLogs() {
-  setPageHeader({
-    title: "Logs",
-    subtitle: "Live backend stream",
-  });
-  byId("app").innerHTML = `
-    <section class="logs-view" aria-label="Application logs">
-      <div class="logs-terminal" id="logs-terminal"></div>
-    </section>
-  `;
-  startLogsViewStream();
-}
-
-function startLogsViewStream() {
-  stopLogsViewStream();
-  appendLog({
-    timestamp: new Date().toISOString(),
-    level: "INFO",
-    message: "Connecting to backend log stream.",
-  });
-  logsViewStream = new EventSource("/api/logs/stream");
-  logsViewStream.onmessage = (event) => appendLog(JSON.parse(event.data));
-  logsViewStream.onerror = () => {
-    appendLog({
-      timestamp: new Date().toISOString(),
-      level: "ERROR",
-      message: "Log stream disconnected.",
-    });
-    stopLogsViewStream();
-  };
-}
-
-function stopLogsViewStream() {
-  if (!logsViewStream) return;
-  logsViewStream.close();
-  logsViewStream = null;
 }
 
 /* ───── Modal ───── */
@@ -4332,18 +3905,6 @@ function modalFocusableElements(modal) {
       'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
     ),
   ).filter((element) => !element.hidden);
-}
-
-function appendLog(line) {
-  const root = byId("logs-terminal");
-  if (!root) return;
-  const entry = document.createElement("div");
-  entry.className = `log-line ${String(line.level || "").toLowerCase()}`;
-  const timestamp = new Date(line.timestamp || Date.now()).toLocaleTimeString();
-  entry.innerHTML = `<span class="log-time">[${escapeHtml(timestamp)}]</span> <span class="log-level">${escapeHtml(line.level || "INFO")}</span> ${escapeHtml(line.message || "")}`;
-  root.appendChild(entry);
-  while (root.children.length > 1000) root.firstElementChild?.remove();
-  root.scrollTop = root.scrollHeight;
 }
 
 function ensureToastContainer() {

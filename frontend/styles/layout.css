@@ -357,26 +357,6 @@ a:hover {
   padding: 0 var(--content-gutter) var(--space-8);
 }
 
-.route-logs .main-pane {
-  display: flex;
-  height: 100dvh;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.route-logs .page-header-strip {
-  display: none;
-}
-
-.route-logs .content-container {
-  display: flex;
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-  overflow: hidden;
-  padding-bottom: var(--content-gutter);
-}
-
 .mobile-sidebar-backdrop {
   display: none;
 }
