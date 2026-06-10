@@ -8,9 +8,6 @@ const MAX_TOASTS = 3;
 const state = {
   me: null,
   stats: null,
-  claimsPage: 1,
-  claimsFilters: { q: "", predicate: "", source_id: "", status: "current" },
-  claimPredicates: [],
   sourcesCache: null,
   sourcesError: null,
   runProgress: readSessionJSON(RUN_PROGRESS_KEY, {}),
@@ -26,15 +23,17 @@ let modalRestoreFocus = null;
 let modalKeydownHandler = null;
 let logsViewStream = null;
 
+const CONFLICTS_TAB = { id: "conflicts", label: "Conflicts", icon: "ti-alert-triangle" };
+const ARCHIVE_TAB = { id: "archive", label: "Archive", icon: "ti-archive" };
 const TAB_DEFS = [
   { id: "ask", label: "Ask", icon: "ti-message-question" },
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
+  CONFLICTS_TAB,
+  ARCHIVE_TAB,
   { id: "system", label: "System", icon: "ti-activity" },
   { id: "faq", label: "FAQ", icon: "ti-help-circle" },
 ];
-const CONFLICTS_TAB = { id: "conflicts", label: "Conflicts", icon: "ti-alert-triangle" };
-const LOGS_TAB = { id: "logs", label: "Logs", icon: "ti-terminal-2" };
 
 const SOURCE_KINDS = [
   {
@@ -410,8 +409,10 @@ function renderRoute() {
   closeMobileSidebar();
   renderShell();
   if (tab === "ask") return renderAsk();
+  if (tab === "claims" && rest[0]) return renderClaimDetail(rest[0]);
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
+  if (tab === "archive") return renderSourcesArchive();
   if (tab === "system") return renderSystem();
   if (tab === "faq") return renderFAQ();
   history.replaceState(null, "", "#ask");
@@ -447,10 +448,6 @@ function claimAttribution(claimOrEvidence) {
   `;
 }
 
-function claimDisplayLine(claim) {
-  return `${claim.subject?.name || "Unknown"} ${claim.predicate || ""} ${claim.object?.name || claim.object_value || ""}`;
-}
-
 function claimEvidenceList(claimOrEvidence) {
   if (Array.isArray(claimOrEvidence)) return claimOrEvidence;
   if (Array.isArray(claimOrEvidence?.evidence)) return claimOrEvidence.evidence;
@@ -483,110 +480,6 @@ function rowBio(row) {
     parts.push(`${row.connection_count} connection${row.connection_count === 1 ? "" : "s"}`);
   }
   return parts.join(" · ");
-}
-
-/* ───── Claims ───── */
-
-async function renderClaims(parts = [], query = new URLSearchParams()) {
-  const claimId = parts[0];
-  if (claimId) return renderClaimDetail(claimId);
-  if (query.get("source")) {
-    state.claimsFilters.source_id = query.get("source");
-  }
-  setPageHeader({
-    title: "Claims",
-    subtitle: "Browse extracted claims across all sources.",
-  });
-  const app = byId("app");
-  app.innerHTML = `
-    <div class="directory-page claims-page">
-      <section class="directory-filter-bar claims-filter-bar">
-        <label class="directory-search input-with-icon">
-          <i class="ti ti-search icon" aria-hidden="true"></i>
-          <input class="input" id="claims-q" placeholder="Search subject or object" value="${escapeAttr(state.claimsFilters.q)}" />
-        </label>
-        <select class="input claims-filter-select" id="claims-predicate">
-          <option value="">All predicates</option>
-        </select>
-        <select class="input claims-filter-select" id="claims-status">
-          <option value="current">Current</option>
-          <option value="superseded">Superseded</option>
-          <option value="all">All</option>
-        </select>
-        <select class="input claims-filter-select" id="claims-source">
-          <option value="">All sources</option>
-        </select>
-      </section>
-      <section class="directory-results" id="claims-results">
-        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
-      </section>
-      <div class="pagination directory-pagination" id="claims-pagination"></div>
-    </div>
-  `;
-  await Promise.all([loadClaimsSources(), loadClaimPredicates()]);
-  setupClaimsFilters();
-  await loadClaims();
-}
-
-async function loadClaimsSources() {
-  if (state.sourcesCache) return;
-  const data = await getJSON("/api/sources");
-  state.sourcesCache = data.sources || [];
-}
-
-async function loadClaimPredicates() {
-  const data = await getJSON("/api/claims/predicates");
-  state.claimPredicates = data.predicates || [];
-}
-
-function setupClaimsFilters() {
-  const predicate = byId("claims-predicate");
-  predicate.innerHTML = `<option value="">All predicates</option>${(state.claimPredicates || [])
-    .map((item) => `<option value="${escapeAttr(item)}">${escapeHtml(item)}</option>`)
-    .join("")}`;
-  predicate.value = state.claimsFilters.predicate || "";
-  const source = byId("claims-source");
-  source.innerHTML = `<option value="">All sources</option>${(state.sourcesCache || [])
-    .filter((item) => item.status !== "archived")
-    .map((item) => `<option value="${escapeAttr(item.id)}">${escapeHtml(item.display_name || item.identifier)}</option>`)
-    .join("")}`;
-  source.value = state.claimsFilters.source_id || "";
-  byId("claims-status").value = state.claimsFilters.status || "current";
-  const reload = () => {
-    state.claimsFilters.q = byId("claims-q").value.trim();
-    state.claimsFilters.predicate = byId("claims-predicate").value;
-    state.claimsFilters.status = byId("claims-status").value;
-    state.claimsFilters.source_id = byId("claims-source").value;
-    state.claimsPage = 1;
-    loadClaims();
-  };
-  byId("claims-q").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") reload();
-  });
-  predicate.onchange = reload;
-  source.onchange = reload;
-  byId("claims-status").onchange = reload;
-}
-
-async function loadClaims(extraParams = {}) {
-  const params = new URLSearchParams({
-    q: state.claimsFilters.q || "",
-    predicate: state.claimsFilters.predicate || "",
-    source_id: state.claimsFilters.source_id || "",
-    status: state.claimsFilters.status || "current",
-    page: String(state.claimsPage),
-    page_size: "50",
-    ...extraParams,
-  });
-  const data = await getJSON(`/api/claims?${params.toString()}`);
-  const results = byId("claims-results");
-  results.innerHTML = claimsList(data.claims || {});
-  attachClaimsRows(results);
-  renderClaimsPagination(data.page || 1, Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 50))));
-  setPageHeader({
-    title: "Claims",
-    subtitle: `${formatNumber(data.total || 0)} claims`,
-  });
 }
 
 function claimsList(claims, options = {}) {
@@ -637,33 +530,12 @@ function attachClaimsRows(root) {
   });
 }
 
-function renderClaimsPagination(page, totalPages) {
-  const pag = byId("claims-pagination");
-  if (!pag || totalPages <= 1) {
-    if (pag) pag.innerHTML = "";
-    return;
-  }
-  pag.innerHTML = `
-    <button class="btn-secondary" ${page <= 1 ? "disabled" : ""}>Previous</button>
-    <button class="btn-secondary accent" ${page >= totalPages ? "disabled" : ""}>Next</button>
-  `;
-  const [prev, next] = pag.querySelectorAll("button");
-  prev.onclick = () => {
-    state.claimsPage = Math.max(1, page - 1);
-    loadClaims();
-  };
-  next.onclick = () => {
-    state.claimsPage = page + 1;
-    loadClaims();
-  };
-}
-
 async function renderClaimDetail(claimId) {
   const data = await getJSON(`/api/claims/${claimId}`);
   setPageHeader({
     title: "Claim",
     subtitle: data.statement || "",
-    eyebrow: `<a href="#claims">Claims</a> / Claim detail`,
+    eyebrow: `<a href="#graph">Graph</a> / Claim detail`,
   });
   byId("app").innerHTML = `
     <section class="panel">
@@ -733,7 +605,6 @@ function renderAsk() {
       </section>
       ${renderAskComposer()}
     </div>
-    <aside class="side-drawer" id="ask-side-drawer" hidden></aside>
   `;
   const newQuestion = byId("ask-new-question");
   if (newQuestion) {
@@ -1013,98 +884,11 @@ function renderMarkdownInline(value) {
   return html;
 }
 
-function renderAskSources(item) {
-  const citations = item.citations || [];
-  const count = citations.length;
-  return `
-    <details class="ask-source-details">
-      <summary class="ask-source-pill"><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i>Sources (${count} ${count === 1 ? "source" : "sources"})</summary>
-      <div class="ask-source-list">
-        ${
-          count
-            ? citations
-                .map(
-                  (c, i) => `
-                    <article class="ask-citation-card" role="button" tabindex="0" data-ask-id="${escapeAttr(item.id)}" data-citation-index="${i}">
-                      <span class="source-badge">${escapeHtml(c.source_id || c.claim_id || "source")}</span>
-                      <strong>${escapeHtml(c.source_name || c.title || c.source_title || `Source ${i + 1}`)}</strong>
-                      ${c.claim ? `<div class="muted small">${escapeHtml(claimDisplayLine(c.claim))}</div>` : ""}
-                      ${claimAttribution(c)}
-                      <span>${escapeHtml(c.quote || "No snippet returned for this citation.")}</span>
-                    </article>`,
-                )
-                .join("")
-            : `<div class="ask-citations-empty">Answered from corpus-level patterns, no specific citations.</div>`
-        }
-      </div>
-    </details>
-  `;
-}
-
-function refreshAskSources(itemId) {
-  const item = state.askSession.find((candidate) => candidate.id === itemId);
-  const root = byId(`ask-sources-${itemId}`);
-  if (!item || !root) return;
-  root.innerHTML = renderAskSources(item);
-  attachAskCitationHandlers();
-}
-
-function attachAskCitationHandlers() {
-  document.querySelectorAll(".ask-citation-card").forEach((card) => {
-    const open = (event) => {
-      if (event?.target?.closest?.(".claim-attribution, a")) return;
-      const item = state.askSession.find((candidate) => candidate.id === card.dataset.askId);
-      const citation = item?.citations?.[Number(card.dataset.citationIndex)] || {};
-      openCitationDrawer(citation);
-    };
-    card.onclick = open;
-    card.onkeydown = (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      open(event);
-    };
-  });
-}
-
 function scrollAskThreadToBottom() {
   const thread = byId("ask-thread");
   if (thread) {
     thread.scrollTop = thread.scrollHeight;
   }
-}
-
-function openCitationDrawer(citation) {
-  const drawer = byId("ask-side-drawer");
-  drawer.hidden = false;
-  drawer.innerHTML = `
-    <div class="side-drawer-header">
-      <div>
-        <div class="side-drawer-title">${escapeHtml(citation.source_name || citation.title || citation.source_title || "Source")}</div>
-        <div class="side-drawer-subtitle">${escapeHtml(citation.source_id || citation.claim_id || "Citation")}</div>
-      </div>
-      <button class="btn-icon-only modal-close" type="button" onclick="closeSideDrawer()" aria-label="Close">×</button>
-    </div>
-    <div class="side-drawer-body">
-      <div class="field-label">Snippet</div>
-      <blockquote>${escapeHtml(citation.quote || "No snippet returned for this citation.")}</blockquote>
-      <div class="field-label">Source reference</div>
-      ${claimAttribution(citation) || `<div class="side-drawer-meta">${escapeHtml(citation.source_id || "No source id returned.")}</div>`}
-      ${
-        citation.document_id
-          ? `<button class="btn-secondary" type="button" data-document-id="${escapeAttr(citation.document_id)}"><i class="ti ti-file-text" aria-hidden="true"></i> Open document</button>`
-          : `<div class="muted small">The current API response does not include a document id for this citation.</div>`
-      }
-    </div>
-  `;
-  const documentButton = drawer.querySelector("[data-document-id]");
-  if (documentButton) {
-    documentButton.onclick = () => openDocumentModal(documentButton.dataset.documentId);
-  }
-}
-
-function closeSideDrawer() {
-  const drawer = byId("ask-side-drawer");
-  if (drawer) drawer.hidden = true;
 }
 
 /* ───── Graph ───── */
@@ -1760,13 +1544,6 @@ function pipelineArrow(x1, y1, x2, y2, muted) {
 /* ───── Sources ───── */
 
 async function renderSources(parts) {
-  if (parts[0] === "archive") {
-    if (!isAdmin()) {
-      location.hash = "#sources";
-      return;
-    }
-    return renderSourcesArchive();
-  }
   if (parts[0]) {
     return renderSourceDetail(parts[0], parts[1]);
   }
@@ -1780,7 +1557,6 @@ async function renderSources(parts) {
     byId("add-source").onclick = openAddSourceModal;
   }
   await Promise.all([loadSourcesStats(), loadSourcesList()]);
-  if (isAdmin()) await loadAdminConflicts();
 }
 
 function renderSourcesFrame(adminActions) {
@@ -1855,29 +1631,16 @@ async function loadSourcesList() {
     list.innerHTML = sourceSkeletonRow();
   }
   try {
-    const [data, archivedData] = await Promise.all([
-      getJSON("/api/sources"),
-      isAdmin()
-        ? loadAdminPanelData("/api/sources/archived", {
-            targetId: "sources-list",
-            title: "Sign in to view archived sources",
-          })
-        : Promise.resolve({ sources: [] }),
-    ]);
-    if (!archivedData) return;
+    const data = await getJSON("/api/sources");
     const sources = data.sources || [];
-    const archivedSources = archivedData.sources || [];
     state.sourcesCache = sources;
     state.sourcesError = null;
     const active = sources.filter((s) => s.status === "active");
-    const archivedCount = archivedSources.length;
     const pageSubtitle = byId("page-subtitle");
     if (pageSubtitle) {
-      pageSubtitle.textContent = isAdmin()
-        ? `${formatNumber(active.length)} active · ${formatNumber(archivedCount)} archived`
-        : `${formatNumber(active.length)} active`;
+      pageSubtitle.textContent = `${formatNumber(active.length)} active`;
     }
-    if (!sources.length && (!isAdmin() || !archivedSources.length)) {
+    if (!sources.length) {
       list.innerHTML = sourceEmptyState();
       const emptyAddSource = byId("empty-add-source");
       if (emptyAddSource) emptyAddSource.onclick = openAddSourceModal;
@@ -1889,33 +1652,8 @@ async function loadSourcesList() {
           ? sources.map((source) => sourceRow(source)).join("")
           : `<div class="empty-state sources-empty compact"><i class="ti ti-database-off" aria-hidden="true"></i><div>No active sources.</div></div>`
       }
-      ${
-        isAdmin()
-          ? `<details class="archived-sources" open>
-              <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span id="conflict-summary-text">Conflicts (0 unresolved)</span></summary>
-              <div class="archived-sources-list" id="conflicts-body">
-                <div class="muted small">Loading...</div>
-              </div>
-            </details>`
-          : ""
-      }
-      ${
-        isAdmin()
-          ? `<details class="archived-sources">
-              <summary><i class="ti ti-chevron-right details-chevron" aria-hidden="true"></i><span>Archived (${formatNumber(archivedCount)})</span></summary>
-              <div class="archived-sources-list" data-source-list="archived">
-                ${
-                  archivedSources.length
-                    ? archivedSources.map((source) => sourceRow(source, { archived: true })).join("")
-                    : `<div class="empty-state sources-empty compact"><i class="ti ti-archive-off" aria-hidden="true"></i><div>No archived sources.</div></div>`
-                }
-              </div>
-            </details>`
-          : ""
-      }
     `;
     setupSourceRows(list, sources, { archived: false });
-    if (isAdmin()) setupSourceRows(list, archivedSources, { archived: true });
     ensureActiveRunStreams(sources);
   } catch (e) {
     state.sourcesCache = null;
@@ -2766,11 +2504,6 @@ function renderSourceDetailHead(source) {
   `;
 }
 
-function currentSourceDetailTab() {
-  const [, , tab] = (location.hash.replace(/^#/, "") || "").split("/");
-  return tab || "documents";
-}
-
 async function renderSourceDocuments(sourceId) {
   const wrap = byId("source-tab-content");
   wrap.innerHTML = `<div class="empty-state"><i class="ti ti-loader"></i><div>Loading documents…</div></div>`;
@@ -3294,40 +3027,6 @@ async function submitAddSource() {
   }
 }
 
-/* ───── Source conflicts ───── */
-
-async function loadAdminConflicts(targetId = "conflicts-body", summaryId = "conflict-summary-text") {
-  try {
-    const data = await loadAdminPanelData("/admin/conflicts", {
-      targetId,
-      title: "Sign in to view conflicts",
-    });
-    if (!data) {
-      const target = byId(targetId);
-      if (target) {
-        target.innerHTML = `
-        <div class="empty-state sources-empty compact">
-          <i class="ti ti-alert-triangle-off" aria-hidden="true"></i>
-          <div>No conflicts. Sources agree.</div>
-        </div>`;
-      }
-      const summary = byId(summaryId);
-      if (summary) {
-        summary.textContent = "Conflicts (0 unresolved)";
-      }
-      return;
-    }
-    const summary = byId(summaryId);
-    if (summary) {
-      summary.textContent = `Conflicts (${formatNumber(data.total || 0)} unresolved)`;
-    }
-    renderFactConflictsList(byId(targetId), data, () => loadAdminConflicts(targetId, summaryId));
-  } catch (e) {
-    const target = byId(targetId);
-    if (target) target.innerHTML = `<div class="muted small">Unable to load conflicts: ${escapeHtml(e.message)}</div>`;
-  }
-}
-
 async function renderConflictsPage(section = "facts") {
   const active = section === "identity" ? "identity" : "facts";
   setPageHeader({
@@ -3606,9 +3305,9 @@ async function adminLogout(event) {
   renderShell();
   if (tab === "admin") {
     location.hash = "#sources";
-  } else if (tab === "logs" || tab === "conflicts" || tab === "raw") {
+  } else if (tab === "logs" || tab === "conflicts") {
     stopLogsViewStream();
-    location.hash = "#directory";
+    location.hash = "#ask";
   } else if (tab === "sources") {
     await renderRoute();
   }
@@ -3950,4 +3649,3 @@ function timeAgo(iso) {
 
 window.closeModal = closeModal;
 window.closeModalOnBackdrop = closeModalOnBackdrop;
-window.closeSideDrawer = closeSideDrawer;

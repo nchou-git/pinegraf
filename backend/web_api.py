@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from openai import AsyncOpenAI
-from sqlalchemy import and_, delete, exists, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from backend.class_year import expand_class_year_synonyms
@@ -213,84 +213,6 @@ def list_audit_log(store: Store, *, limit: int = 200) -> dict[str, object]:
             for row in rows
         ]
     }
-
-
-def list_directory(
-    store: Store,
-    *,
-    q: str = "",
-    org: str = "",
-    class_year: str = "",
-    source: str = "",
-    page: int = 1,
-    page_size: int = 25,
-) -> dict[str, object]:
-    page = max(page, 1)
-    page_size = min(max(page_size, 1), 100)
-    org_filters = _csv_filter(org)
-    class_year_filters = _csv_filter(class_year)
-    source_filters = _csv_filter(source)
-    with store.session() as session:
-        rows = list(
-            session.execute(
-                select(EntitySummary, Entity)
-                .join(Entity, Entity.id == EntitySummary.entity_id)
-                .order_by(Entity.canonical_name.asc())
-            ).all()
-        )
-        filtered = []
-        for summary, entity in rows:
-            primary = summary.primary_attributes or {}
-            haystack = " ".join(
-                [
-                    entity.canonical_name,
-                    entity.kind,
-                    json.dumps(primary, default=str),
-                ]
-            ).casefold()
-            if q and q.casefold() not in haystack:
-                continue
-            if org_filters and not any(value in haystack for value in org_filters):
-                continue
-            if class_year_filters and not any(value in haystack for value in class_year_filters):
-                continue
-            source_mix = _source_mix(session, entity.id)
-            source_keys = {identifier.casefold() for identifier in source_mix}
-            if source_filters and not any(value in source_keys for value in source_filters):
-                continue
-            filtered.append((summary, entity, source_mix))
-        total = len(filtered)
-        page_rows = filtered[(page - 1) * page_size : page * page_size]
-        return {
-            "page": page,
-            "page_size": page_size,
-            "total": total,
-            "results": [
-                {
-                    "entity_id": str(entity.id),
-                    "canonical_name": entity.canonical_name,
-                    "kind": entity.kind,
-                    "primary_attributes": summary.primary_attributes or {},
-                    "primary_attribute_claims": _primary_attribute_claims(
-                        session, entity.id, summary.primary_attributes or {}
-                    ),
-                    "connection_count": summary.connection_count,
-                    "source_count": summary.source_count,
-                    "source_mix": source_mix,
-                    "conflict_count": _entity_conflict_count(session, entity.id),
-                    "last_updated": summary.last_updated.isoformat(),
-                }
-                for summary, entity, source_mix in page_rows
-            ],
-        }
-
-
-def _csv_filter(value: str) -> list[str]:
-    return [
-        part.casefold()
-        for part in (item.strip() for item in value.split(","))
-        if part and part.casefold() != "all"
-    ]
 
 
 def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | None:
@@ -1718,17 +1640,6 @@ def _entity_review_qualifiers(session, entity_id: uuid.UUID) -> dict[str, list[s
     return qualifiers
 
 
-def _source_mix(session, entity_id: uuid.UUID) -> dict[str, int]:
-    rows = session.execute(
-        select(Source.identifier, func.count())
-        .join(ClaimEvidence, ClaimEvidence.source_id == Source.id)
-        .join(Claim, Claim.id == ClaimEvidence.claim_id)
-        .where(or_(Claim.subject_entity_id == entity_id, Claim.object_entity_id == entity_id))
-        .group_by(Source.identifier)
-    ).all()
-    return {identifier: count for identifier, count in rows}
-
-
 def _entity_conflict_count(session, entity_id: uuid.UUID) -> int:
     claim_ids = select(Claim.id).where(
         or_(Claim.subject_entity_id == entity_id, Claim.object_entity_id == entity_id)
@@ -1764,24 +1675,6 @@ def _attribute_claims(session, entity_id: uuid.UUID) -> dict[str, list[dict[str,
             }
         )
     return grouped
-
-
-def _primary_attribute_claims(
-    session,
-    entity_id: uuid.UUID,
-    primary_attributes: dict[str, object],
-) -> dict[str, dict[str, object]]:
-    if not primary_attributes:
-        return {}
-    grouped = _attribute_claims(session, entity_id)
-    output: dict[str, dict[str, object]] = {}
-    for key, value in primary_attributes.items():
-        if value in (None, ""):
-            continue
-        claims = grouped.get(key) or []
-        if claims:
-            output[key] = claims[0]
-    return output
 
 
 def _connection_claims(
@@ -2164,31 +2057,6 @@ async def _answer_materials(
             if len(citations) >= max_results:
                 break
     return settings, documents, claim_payloads, citations
-
-
-async def _llm_answer(
-    *,
-    question: str,
-    documents: list[Document],
-    claims: list[dict[str, object]],
-    citations: list[dict[str, object]],
-    history: list[dict[str, str]] | None = None,
-    model: str,
-    api_key: str,
-) -> tuple[str, list[dict[str, object]]]:
-    parts = [
-        token
-        async for token in _llm_answer_tokens(
-            question=question,
-            documents=documents,
-            claims=claims,
-            history=_clean_ask_history(history),
-            model=model,
-            api_key=api_key,
-        )
-    ]
-    content = "".join(parts)
-    return content.strip() or "No answer could be generated from the available evidence.", citations
 
 
 async def _llm_answer_tokens(
