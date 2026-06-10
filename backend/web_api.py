@@ -18,7 +18,6 @@ from backend.class_year import expand_class_year_synonyms
 from backend.config import Settings, get_settings
 from backend.db.models import (
     AuditLog,
-    Chunk,
     Claim,
     ClaimConflict,
     ClaimEvidence,
@@ -31,6 +30,7 @@ from backend.db.models import (
     EntityMention,
     EntityNeighborhood,
     EntitySummary,
+    ExtractorRun,
     Fetch,
     HumanSignal,
     Source,
@@ -110,6 +110,86 @@ def _paused_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
 def stats(store: Store) -> dict[str, int]:
     with store.session() as session:
         return global_stats(session)
+
+
+def system_overview(store: Store, *, limit: int = 50) -> dict[str, object]:
+    limit = min(max(limit, 1), 100)
+    with store.session() as session:
+        counts = global_stats(session)
+        raw_rows = list(
+            session.execute(
+                select(ClaimRaw, Document, Fetch, Source)
+                .join(Document, Document.id == ClaimRaw.document_id)
+                .join(Fetch, Fetch.id == Document.first_seen_fetch_id)
+                .join(SourceRun, SourceRun.id == Fetch.source_run_id)
+                .join(Source, Source.id == SourceRun.source_id)
+                .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
+                .limit(limit)
+            ).all()
+        )
+        extractor_runs = list(
+            session.execute(
+                select(ExtractorRun).order_by(ExtractorRun.started_at.desc()).limit(10)
+            ).scalars()
+        )
+        source_runs = list(
+            session.execute(select(SourceRun).order_by(SourceRun.started_at.desc()).limit(10)).scalars()
+        )
+        return {
+            "health": {"ok": True},
+            "counts": counts,
+            "claims_raw": [
+                {
+                    "id": str(raw.id),
+                    "claim_raw_id": str(raw.id),
+                    "document_id": str(document.id),
+                    "source_id": str(source.id),
+                    "source_name": source.display_name or source.identifier,
+                    "source_identifier": source.identifier,
+                    "document_title": document.title,
+                    "document_url": document.canonical_url or fetch.url,
+                    "url": fetch.url,
+                    "fetched_at": fetch.fetched_at.isoformat(),
+                    "extracted_at": raw.extracted_at.isoformat(),
+                    "subject_text": raw.subject_text,
+                    "subject_type": raw.subject_type,
+                    "predicate": raw.predicate,
+                    "object_text": raw.object_text,
+                    "object_type": raw.object_type,
+                    "qualifiers": raw.qualifiers,
+                    "raw_quote": raw.raw_quote,
+                    "confidence_internal": raw.confidence_internal,
+                }
+                for raw, document, fetch, source in raw_rows
+            ],
+            "extractor_runs": [
+                {
+                    "id": str(run.id),
+                    "model": run.model,
+                    "prompt_version": run.prompt_version,
+                    "status": run.status,
+                    "documents_processed": run.chunks_processed or 0,
+                    "claims_emitted": run.claims_emitted or 0,
+                    "cost_usd": float(run.cost_usd or 0),
+                    "started_at": run.started_at.isoformat(),
+                    "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                }
+                for run in extractor_runs
+            ],
+            "source_runs": [
+                {
+                    "id": str(run.id),
+                    "source_id": str(run.source_id),
+                    "kind": run.kind,
+                    "status": run.status,
+                    "stats": run.stats,
+                    "started_at": run.started_at.isoformat(),
+                    "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                    "error_message": run.error_message,
+                }
+                for run in source_runs
+            ],
+        }
 
 
 def list_audit_log(store: Store, *, limit: int = 200) -> dict[str, object]:
@@ -273,6 +353,35 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
         }
 
 
+def search_entities(store: Store, *, q: str = "", limit: int = 8) -> dict[str, object]:
+    q = q.strip()
+    limit = min(max(limit, 1), 25)
+    with store.session() as session:
+        query = select(Entity).order_by(Entity.canonical_name.asc()).limit(limit)
+        if q:
+            query = query.where(Entity.canonical_name.ilike(f"%{q}%"))
+        rows = list(session.execute(query).scalars())
+        summaries = {
+            summary.entity_id: summary
+            for summary in session.execute(
+                select(EntitySummary).where(EntitySummary.entity_id.in_([row.id for row in rows]))
+            ).scalars()
+        } if rows else {}
+        return {
+            "results": [
+                {
+                    "entity_id": str(entity.id),
+                    "canonical_name": entity.canonical_name,
+                    "kind": entity.kind,
+                    "primary_attributes": summaries.get(entity.id).primary_attributes
+                    if summaries.get(entity.id)
+                    else {},
+                }
+                for entity in rows
+            ]
+        }
+
+
 def list_claims(
     store: Store,
     *,
@@ -403,11 +512,11 @@ async def ask_stream(
         yield _sse({"kind": "done"})
         return
 
-    settings, chunks, claims, citations = await _answer_materials(
+    settings, documents, claims, citations = await _answer_materials(
         store, question, max_results=max_results
     )
     answer = ""
-    if not claims and not chunks:
+    if not claims and not documents:
         answer = (
             "The current graph doesn't contain information about that topic. "
             "The demo graph indexes a curated subset of Tuck's alumni network; try exploring "
@@ -418,7 +527,7 @@ async def ask_stream(
         parts: list[str] = []
         async for token in _llm_answer_tokens(
             question=question,
-            chunks=chunks,
+            documents=documents,
             claims=claims,
             history=conversation_history,
             model=settings.extraction_model,
@@ -733,14 +842,10 @@ def list_source_documents(
             if document.id in seen:
                 continue
             seen.add(document.id)
-            chunks_count = session.execute(
-                select(func.count()).select_from(Chunk).where(Chunk.document_id == document.id)
-            ).scalar_one()
             claims_extracted = session.execute(
                 select(func.count())
                 .select_from(ClaimRaw)
-                .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-                .where(Chunk.document_id == document.id)
+                .where(ClaimRaw.document_id == document.id)
             ).scalar_one()
             results.append(
                 {
@@ -751,7 +856,7 @@ def list_source_documents(
                     "fetched_at": fetch.fetched_at.isoformat(),
                     "size_bytes": fetch.bytes_size or 0,
                     "word_count": document.word_count or 0,
-                    "chunks": chunks_count,
+                    "chunks": 0,
                     "claims_extracted": claims_extracted,
                 }
             )
@@ -776,16 +881,10 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
                 .join(SourceRun, SourceRun.source_id == Source.id)
                 .where(SourceRun.id == fetch.source_run_id)
             ).scalar_one_or_none()
-        chunks = list(
-            session.execute(
-                select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ordinal.asc())
-            ).scalars()
-        )
         claims_raw = list(
             session.execute(
                 select(ClaimRaw)
-                .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-                .where(Chunk.document_id == document.id)
+                .where(ClaimRaw.document_id == document.id)
             ).scalars()
         )
         return {
@@ -796,14 +895,7 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
             "cleaned_text": document.cleaned_text,
             "word_count": document.word_count,
             "language": document.language,
-            "chunks": [
-                {
-                    "ordinal": chunk.ordinal,
-                    "text": chunk.text,
-                    "token_count": chunk.token_count,
-                }
-                for chunk in chunks
-            ],
+            "chunks": [],
             "claims_raw": [
                 {
                     "id": str(raw.id),
@@ -832,157 +924,6 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
                 for raw in claims_raw
             ],
         }
-
-
-def raw_document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] | None:
-    with store.session() as session:
-        document = session.get(Document, document_id)
-        if document is None:
-            return None
-        chunks = list(
-            session.execute(
-                select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ordinal.asc())
-            ).scalars()
-        )
-        return {
-            "id": str(document.id),
-            "document_id": str(document.id),
-            "canonical_url": document.canonical_url,
-            "title": document.title,
-            "language": document.language,
-            "word_count": document.word_count,
-            "valid_from": document.valid_from.isoformat() if document.valid_from else None,
-            "cleaned_text": document.cleaned_text,
-            "chunk_count": len(chunks),
-            "chunks": [
-                {
-                    "chunk_id": str(chunk.id),
-                    "ordinal": chunk.ordinal,
-                    "char_count": len(chunk.text or ""),
-                }
-                for chunk in chunks
-            ],
-        }
-
-
-def raw_chunk_detail(store: Store, chunk_id: uuid.UUID) -> dict[str, object] | None:
-    with store.session() as session:
-        row = session.execute(
-            select(Chunk, Document)
-            .join(Document, Document.id == Chunk.document_id)
-            .where(Chunk.id == chunk_id)
-        ).one_or_none()
-        if row is None:
-            return None
-        chunk, document = row
-        raw_rows = list(
-            session.execute(
-                select(ClaimRaw)
-                .where(ClaimRaw.chunk_id == chunk.id)
-                .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
-            ).scalars()
-        )
-        return {
-            "id": str(chunk.id),
-            "chunk_id": str(chunk.id),
-            "text": chunk.text,
-            "ordinal": chunk.ordinal,
-            "document_id": str(document.id),
-            "document": {
-                "id": str(document.id),
-                "canonical_url": document.canonical_url,
-                "title": document.title,
-            },
-            "claim_raw": [
-                {
-                    "id": str(raw.id),
-                    "subject_text": raw.subject_text,
-                    "predicate": raw.predicate,
-                    "object_text": raw.object_text,
-                    "raw_quote": raw.raw_quote,
-                }
-                for raw in raw_rows
-            ],
-        }
-
-
-def list_raw_claims(
-    store: Store,
-    *,
-    q: str = "",
-    predicate: str = "",
-    page: int = 1,
-    page_size: int = 50,
-) -> dict[str, object]:
-    page = max(1, page)
-    page_size = min(max(page_size, 1), 200)
-    q = q.strip()
-    predicate = predicate.strip()
-    filters = []
-    if q:
-        pattern = f"%{q}%"
-        filters.append(
-            or_(ClaimRaw.subject_text.ilike(pattern), ClaimRaw.object_text.ilike(pattern))
-        )
-    if predicate:
-        filters.append(ClaimRaw.predicate == predicate)
-
-    promoted = exists(
-        select(1).select_from(ClaimEvidence).where(ClaimEvidence.claim_raw_id == ClaimRaw.id)
-    )
-    with store.session() as session:
-        count_query = (
-            select(func.count())
-            .select_from(ClaimRaw)
-            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-            .join(Document, Document.id == Chunk.document_id)
-        )
-        rows_query = (
-            select(ClaimRaw, Chunk, Document, promoted.label("promoted_to_claim"))
-            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-            .join(Document, Document.id == Chunk.document_id)
-            .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-        if filters:
-            count_query = count_query.where(*filters)
-            rows_query = rows_query.where(*filters)
-        total = session.execute(count_query).scalar_one()
-        rows = list(session.execute(rows_query).all())
-
-    results = []
-    for raw, chunk, document, promoted_to_claim in rows:
-        promoted_bool = bool(promoted_to_claim)
-        results.append(
-            {
-                "id": str(raw.id),
-                "claim_raw_id": str(raw.id),
-                "chunk_id": str(chunk.id),
-                "document_id": str(document.id),
-                "canonical_url": document.canonical_url,
-                "document": {
-                    "id": str(document.id),
-                    "canonical_url": document.canonical_url,
-                    "title": document.title,
-                },
-                "subject_text": raw.subject_text,
-                "predicate": raw.predicate,
-                "object_text": raw.object_text,
-                "raw_quote": raw.raw_quote,
-                "promoted_to_claim": promoted_bool,
-                "promotion_status": "promoted" if promoted_bool else "filtered_out",
-                "extracted_at": raw.extracted_at.isoformat(),
-            }
-        )
-    return {
-        "claim_raw": results,
-        "results": results,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "filters_applied": {"q": q, "predicate": predicate},
-    }
 
 
 def update_source(
@@ -1063,8 +1004,7 @@ def delete_source(
         )
         orphan_document_ids = _orphan_document_ids_for_fetches(session, fetch_ids)
         _repoint_shared_documents(session, fetch_ids, orphan_document_ids)
-        orphan_chunk_ids = _chunk_ids_for_documents(session, orphan_document_ids)
-        orphan_claim_raw_ids = _claim_raw_ids_for_chunks(session, orphan_chunk_ids)
+        orphan_claim_raw_ids = _claim_raw_ids_for_documents(session, orphan_document_ids)
 
         if orphan_claim_raw_ids:
             _delete_rows(
@@ -1086,8 +1026,6 @@ def delete_source(
         _delete_claims_without_evidence(session)
         _delete_entities_without_refs(session, require_no_aliases=False)
 
-        if orphan_chunk_ids:
-            _delete_rows(session, delete(Chunk).where(Chunk.id.in_(orphan_chunk_ids)))
         if orphan_document_ids:
             _delete_rows(
                 session,
@@ -1142,14 +1080,6 @@ def _orphan_document_ids_for_fetches(session, fetch_ids: list[uuid.UUID]) -> lis
     return orphan_document_ids
 
 
-def _chunk_ids_for_documents(session, document_ids: list[uuid.UUID]) -> list[uuid.UUID]:
-    if not document_ids:
-        return []
-    return list(
-        session.execute(select(Chunk.id).where(Chunk.document_id.in_(document_ids))).scalars()
-    )
-
-
 def _repoint_shared_documents(
     session,
     fetch_ids: list[uuid.UUID],
@@ -1178,11 +1108,11 @@ def _repoint_shared_documents(
                 document.first_seen_fetch_id = replacement_fetch_id
 
 
-def _claim_raw_ids_for_chunks(session, chunk_ids: list[uuid.UUID]) -> list[uuid.UUID]:
-    if not chunk_ids:
+def _claim_raw_ids_for_documents(session, document_ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    if not document_ids:
         return []
     return list(
-        session.execute(select(ClaimRaw.id).where(ClaimRaw.chunk_id.in_(chunk_ids))).scalars()
+        session.execute(select(ClaimRaw.id).where(ClaimRaw.document_id.in_(document_ids))).scalars()
     )
 
 
@@ -1562,7 +1492,6 @@ def _identity_review_payload(
     source_entity = session.get(Entity, mention.entity_id) if mention else None
     if source_entity is None and candidate is not None and candidate.needs_human_disambiguation:
         source_entity = candidate
-    chunk = session.get(Chunk, row.context_chunk_id) if row.context_chunk_id else None
     return {
         "id": str(row.id),
         "created_at": row.created_at.isoformat(),
@@ -1574,7 +1503,7 @@ def _identity_review_payload(
         "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
         "mention_text": row.mention_text or (mention.mention_text if mention else None),
         "context_chunk_id": str(row.context_chunk_id) if row.context_chunk_id else None,
-        "context_chunk_text": chunk.text if chunk is not None else None,
+        "context_chunk_text": None,
         "mention": (
             {
                 "id": str(mention.id),
@@ -1601,8 +1530,7 @@ def _identity_review_top_claims(session, entity_id: uuid.UUID) -> list[dict[str,
         .outerjoin(Entity, Entity.id == Claim.object_entity_id)
         .outerjoin(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
         .outerjoin(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-        .outerjoin(Chunk, Chunk.id == ClaimRaw.chunk_id)
-        .outerjoin(Document, Document.id == Chunk.document_id)
+        .outerjoin(Document, Document.id == ClaimRaw.document_id)
         .outerjoin(Source, Source.id == ClaimEvidence.source_id)
         .where(or_(Claim.subject_entity_id == entity_id, Claim.object_entity_id == entity_id))
         .order_by(Claim.last_corroborated_at.desc())
@@ -1979,11 +1907,10 @@ def _claim_sources_for_claims(
 ) -> dict[uuid.UUID, list[dict[str, object]]]:
     rows = list(
         session.execute(
-            select(ClaimEvidence.claim_id, Source, ClaimRaw, Chunk, Document, Fetch)
+            select(ClaimEvidence.claim_id, Source, ClaimRaw, Document, Fetch)
             .join(Source, Source.id == ClaimEvidence.source_id)
             .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-            .join(Document, Document.id == Chunk.document_id)
+            .join(Document, Document.id == ClaimRaw.document_id)
             .join(Fetch, Fetch.id == Document.first_seen_fetch_id)
             .where(ClaimEvidence.claim_id.in_(claim_ids))
             .order_by(ClaimEvidence.claim_id.asc(), ClaimEvidence.added_at.desc())
@@ -1992,7 +1919,7 @@ def _claim_sources_for_claims(
     output: dict[uuid.UUID, list[dict[str, object]]] = {claim_id: [] for claim_id in claim_ids}
     seen_documents: dict[uuid.UUID, set[str]] = {claim_id: set() for claim_id in claim_ids}
     max_chars = get_settings().snippet_max_chars
-    for claim_id, source, raw, chunk, document, fetch in rows:
+    for claim_id, source, raw, document, fetch in rows:
         if len(output.setdefault(claim_id, [])) >= 3:
             continue
         document_url = document.canonical_url or fetch.url
@@ -2001,7 +1928,8 @@ def _claim_sources_for_claims(
         if key in seen_documents.setdefault(claim_id, set()):
             continue
         seen_documents[claim_id].add(key)
-        snippet = _snippet(raw.raw_quote or chunk.text, chunk.text, max_chars=max_chars)
+        source_text = document.cleaned_text or ""
+        snippet = _snippet(raw.raw_quote or source_text, source_text, max_chars=max_chars)
         output[claim_id].append(
             {
                 "id": str(source.id),
@@ -2070,11 +1998,10 @@ def _claim_statement(subject: str, predicate: str, object_value: object) -> str:
 def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
     rows = list(
         session.execute(
-            select(ClaimEvidence, Source, ClaimRaw, Chunk, Document, Fetch)
+            select(ClaimEvidence, Source, ClaimRaw, Document, Fetch)
             .join(Source, Source.id == ClaimEvidence.source_id)
             .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-            .join(Document, Document.id == Chunk.document_id)
+            .join(Document, Document.id == ClaimRaw.document_id)
             .join(DocumentFetch, DocumentFetch.document_id == Document.id)
             .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
             .join(SourceRun, SourceRun.id == Fetch.source_run_id)
@@ -2085,15 +2012,16 @@ def _claim_evidence(session, claim_id: uuid.UUID) -> list[dict[str, object]]:
     )
     output = []
     seen: set[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = set()
-    for evidence, source, raw, chunk, document, fetch in rows:
+    for evidence, source, raw, document, fetch in rows:
         key = (source.id, raw.id, document.id)
         if key in seen:
             continue
         seen.add(key)
         document_url = document.canonical_url or fetch.url
+        source_text = document.cleaned_text or ""
         snippet = _snippet(
-            raw.raw_quote or chunk.text,
-            chunk.text,
+            raw.raw_quote or source_text,
+            source_text,
             max_chars=get_settings().snippet_max_chars,
         )
         output.append(
@@ -2178,17 +2106,17 @@ async def _answer_materials(
     question: str,
     *,
     max_results: int,
-) -> tuple[Settings, list[Chunk], list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[Settings, list[Document], list[dict[str, object]], list[dict[str, object]]]:
     settings = get_settings()
     question_variants = expand_class_year_synonyms(question)
     question_vectors = await embed_texts(question_variants)
     query_terms = _query_terms(question)
     with store.session() as session:
-        lexical_chunks = _lexical_chunks(session, query_terms, limit=50)
-        candidate_chunks = lexical_chunks or list(
-            session.execute(select(Chunk).limit(1000)).scalars()
+        lexical_documents = _lexical_documents(session, query_terms, limit=50)
+        candidate_documents = lexical_documents or list(
+            session.execute(select(Document).limit(1000)).scalars()
         )
-        chunks = _rank_chunks(candidate_chunks, question_vectors, query_terms)[:8]
+        documents = _rank_documents(candidate_documents, question_vectors, query_terms)[:8]
         claims = _claims_for_question(session, query_terms, max_results=max_results)
         claim_payloads = [
             payload for payload in (_claim_response(session, claim) for claim in claims) if payload
@@ -2224,8 +2152,8 @@ async def _answer_materials(
                     break
             if len(citations) >= max_results:
                 break
-        for chunk in chunks:
-            citation = _chunk_citation(session, chunk, query_terms)
+        for document in documents:
+            citation = _document_citation(session, document, query_terms)
             if citation is None:
                 continue
             source_url = str(citation.get("document_url") or citation.get("document_id"))
@@ -2235,13 +2163,13 @@ async def _answer_materials(
             citations.append(citation)
             if len(citations) >= max_results:
                 break
-    return settings, chunks, claim_payloads, citations
+    return settings, documents, claim_payloads, citations
 
 
 async def _llm_answer(
     *,
     question: str,
-    chunks: list[Chunk],
+    documents: list[Document],
     claims: list[dict[str, object]],
     citations: list[dict[str, object]],
     history: list[dict[str, str]] | None = None,
@@ -2252,7 +2180,7 @@ async def _llm_answer(
         token
         async for token in _llm_answer_tokens(
             question=question,
-            chunks=chunks,
+            documents=documents,
             claims=claims,
             history=_clean_ask_history(history),
             model=model,
@@ -2266,14 +2194,15 @@ async def _llm_answer(
 async def _llm_answer_tokens(
     *,
     question: str,
-    chunks: list[Chunk],
+    documents: list[Document],
     claims: list[dict[str, object]],
     history: list[dict[str, str]] | None = None,
     model: str,
     api_key: str,
 ) -> AsyncIterator[str]:
-    chunk_context = "\n\n".join(
-        f"[chunk {index + 1}] {chunk.text}" for index, chunk in enumerate(chunks)
+    document_context = "\n\n".join(
+        f"[document {index + 1}] {document.cleaned_text}"
+        for index, document in enumerate(documents)
     )
     claim_context = "\n".join(
         f"- {payload['statement']} (claim_id={payload['id']})" for payload in claims
@@ -2298,7 +2227,7 @@ async def _llm_answer_tokens(
             "content": (
                 f"Question:\n{question}\n\n"
                 f"Graph claims:\n{claim_context or 'none'}\n\n"
-                f"Retrieved chunks:\n{chunk_context or 'none'}"
+                f"Retrieved chunks:\n{document_context or 'none'}"
             ),
         }
     )
@@ -2358,13 +2287,16 @@ def _query_terms(question: str) -> list[str]:
     return terms
 
 
-def _lexical_chunks(session, query_terms: list[str], *, limit: int) -> list[Chunk]:
+def _lexical_documents(session, query_terms: list[str], *, limit: int) -> list[Document]:
     if not query_terms:
         return []
-    conditions = [Chunk.text.ilike(f"%{term}%") for term in query_terms]
+    conditions = [Document.cleaned_text.ilike(f"%{term}%") for term in query_terms]
     return list(
         session.execute(
-            select(Chunk).where(or_(*conditions)).order_by(Chunk.created_at.desc()).limit(limit)
+            select(Document)
+            .where(or_(*conditions))
+            .order_by(Document.created_at.desc())
+            .limit(limit)
         ).scalars()
     )
 
@@ -2384,7 +2316,7 @@ def _claims_for_question(session, query_terms: list[str], *, max_results: int) -
                 obj.c.canonical_name.ilike(pattern),
                 Claim.object_value.ilike(pattern),
                 ClaimRaw.raw_quote.ilike(pattern),
-                Chunk.text.ilike(pattern),
+                Document.cleaned_text.ilike(pattern),
             ]
         )
     return list(
@@ -2394,7 +2326,7 @@ def _claims_for_question(session, query_terms: list[str], *, max_results: int) -
             .outerjoin(obj, obj.c.id == Claim.object_entity_id)
             .outerjoin(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
             .outerjoin(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-            .outerjoin(Chunk, Chunk.id == ClaimRaw.chunk_id)
+            .outerjoin(Document, Document.id == ClaimRaw.document_id)
             .where(or_(*conditions))
             .order_by(Claim.first_seen_at.desc())
             .limit(max_results)
@@ -2404,27 +2336,28 @@ def _claims_for_question(session, query_terms: list[str], *, max_results: int) -
     )
 
 
-def _chunk_citation(
+def _document_citation(
     session,
-    chunk: Chunk,
+    document: Document,
     query_terms: list[str],
 ) -> dict[str, object] | None:
     row = session.execute(
-        select(Document, Source, Fetch)
+        select(Source, Fetch)
+        .select_from(Document)
         .join(DocumentFetch, DocumentFetch.document_id == Document.id)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
         .join(SourceRun, SourceRun.id == Fetch.source_run_id)
         .join(Source, Source.id == SourceRun.source_id)
-        .where(Document.id == chunk.document_id)
+        .where(Document.id == document.id)
         .order_by(Fetch.fetched_at.desc())
         .limit(1)
     ).first()
     if row is None:
         return None
-    document, source, fetch = row
+    source, fetch = row
     document_url = document.canonical_url or fetch.url
-    anchor = next((term for term in query_terms if term in chunk.text.casefold()), None)
-    snippet = _snippet(anchor, chunk.text, max_chars=get_settings().snippet_max_chars)
+    anchor = next((term for term in query_terms if term in document.cleaned_text.casefold()), None)
+    snippet = _snippet(anchor, document.cleaned_text, max_chars=get_settings().snippet_max_chars)
     return {
         "claim_id": None,
         "claim": None,
@@ -2446,35 +2379,35 @@ def _chunk_citation(
                 "url": fetch.url,
                 "live_url": document_url,
                 "fetched_at": fetch.fetched_at.isoformat(),
-                "raw_quote": chunk.text,
+                "raw_quote": document.cleaned_text,
                 "snippet": snippet,
             }
         ],
     }
 
 
-def _rank_chunks(
-    chunks: list[Chunk],
+def _rank_documents(
+    documents: list[Document],
     question_vectors: list[list[float]],
     query_terms: list[str] | None = None,
-) -> list[Chunk]:
-    if not chunks:
+) -> list[Document]:
+    if not documents:
         return []
     query_terms = query_terms or []
 
-    def score(chunk: Chunk) -> tuple[int, float]:
-        text = str(getattr(chunk, "text", "") or "").casefold()
+    def score(document: Document) -> tuple[int, float]:
+        text = str(getattr(document, "cleaned_text", "") or "").casefold()
         lexical = sum(1 for term in query_terms if term in text)
         vector_score = 0.0
         if question_vectors and any(any(vector) for vector in question_vectors):
             vector_score = max(
-                cosine(question_vector, vector_values(chunk.embedding))
+                cosine(question_vector, vector_values(document.embedding))
                 for question_vector in question_vectors
             )
         return lexical, vector_score
 
     return sorted(
-        chunks,
+        documents,
         key=score,
         reverse=True,
     )

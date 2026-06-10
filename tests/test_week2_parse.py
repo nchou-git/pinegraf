@@ -6,7 +6,6 @@ from sqlalchemy import func, select
 from backend.db.models import Claim, ClaimEvidence, ClaimRaw, Entity, EntityMention, ExtractorRun
 from backend.extraction.extractor import extract_claims
 from backend.normalization import normalizer
-from backend.normalization.chunker import Chunk
 from backend.parse.orchestrator import run_full_parse
 
 
@@ -50,12 +49,11 @@ async def test_full_parse_normalizes_extracts_raw_claims_and_completes(store, mo
     text = "Sam Brooks partnered with Mia Chen to license the invention."
     monkeypatch.setattr(normalizer, "clean_html", lambda raw: (text, "Story"))
     monkeypatch.setattr(normalizer, "detect_language", lambda value: "en")
-    monkeypatch.setattr(normalizer, "chunk_text", lambda value: [Chunk(text=value, token_count=12)])
 
-    async def fake_embed(chunks: list[str]) -> list[list[float]]:
-        return [[0.0] * 1536 for _ in chunks]
+    async def fake_embed(text: str) -> list[float]:
+        return [0.0] * 1536
 
-    monkeypatch.setattr(normalizer, "embed_chunks", fake_embed)
+    monkeypatch.setattr(normalizer, "embed_text", fake_embed)
 
     parse_run = store.create_source_run(
         source_id=source.id,
@@ -83,6 +81,7 @@ async def test_full_parse_normalizes_extracts_raw_claims_and_completes(store, mo
 
     assert touched == set()
     assert raw_claim.subject_text == "Sam Brooks"
+    assert raw_claim.document_id is not None
     assert raw_claim.object_text == "Mia Chen"
     assert raw_claim.object_type == "person"
     assert extractor_run.status == "complete"

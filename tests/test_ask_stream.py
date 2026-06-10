@@ -62,7 +62,7 @@ async def test_ask_stream_uses_openai_stream_and_caches_final_answer(
         body_bytes=b"<html>Errik Anderson founded Example.</html>",
         http_status=200,
     )
-    store.create_document_with_chunks(
+    store.create_document(
         content_hash=content_digest(b"Errik Anderson founded Example."),
         cleaned_text="Errik Anderson founded Example.",
         title="Ask",
@@ -70,7 +70,7 @@ async def test_ask_stream_uses_openai_stream_and_caches_final_answer(
         language="en",
         word_count=4,
         first_seen_fetch_id=fetch.id,
-        chunks=[("Errik Anderson founded Example.", 4, None)],
+        embedding=[0.0] * 1536,
     )
 
     history = [{"question": "Who is Sarah?", "answer": "Sarah is an alumna."}]

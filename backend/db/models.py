@@ -211,6 +211,7 @@ class Document(Base):
         ForeignKey("documents.id", ondelete="SET NULL"),
     )
     word_count: Mapped[int | None] = mapped_column(Integer)
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector)
     first_seen_fetch_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("fetches.id"),
@@ -289,16 +290,21 @@ class ClaimRaw(Base):
             name="ck_claims_raw_object_type",
         ),
         Index("ix_claims_raw_chunk_id", "chunk_id"),
+        Index("ix_claims_raw_document_id", "document_id"),
         Index("ix_claims_raw_extractor_run_id", "extractor_run_id"),
         Index("ix_claims_raw_predicate", "predicate"),
         Index("ix_claims_raw_subject_text", "subject_text"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    chunk_id: Mapped[uuid.UUID] = mapped_column(
+    chunk_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("chunks.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
     )
     extractor_run_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),

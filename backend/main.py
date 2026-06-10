@@ -72,17 +72,15 @@ from backend.web_api import (
     list_audit_log,
     list_claims,
     list_conflicts,
-    list_directory,
     list_identity_review,
-    list_raw_claims,
     list_source_documents,
     list_sources,
-    raw_chunk_detail,
-    raw_document_detail,
     resolve_conflict,
     review_identity_candidate,
+    search_entities,
     source_detail,
     stats,
+    system_overview,
     update_source,
     verify_entity,
 )
@@ -167,9 +165,9 @@ SLUG_PATTERN = re.compile(r"[^a-z0-9._-]+")
 FILE_UPLOAD_EXTENSIONS = {".xlsx", ".csv", ".json", ".tsv", ".txt", ".md", ".pdf", ".html"}
 ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
-EXPECTED_ALEMBIC_HEAD = "0022_entity_curation"
+EXPECTED_ALEMBIC_HEAD = "0026_doc_embeddings_claim_docs"
 LOGGER = logging.getLogger("uvicorn.error")
-OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/directory"}
+OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims"}
 
 
 def _slugify(value: str) -> str:
@@ -422,6 +420,10 @@ def create_app(store: Store | None = None) -> FastAPI:
     async def api_stats(request: Request) -> dict[str, int]:
         return stats(_store(request))
 
+    @app.get("/api/system")
+    async def api_system(request: Request, limit: int = 50) -> dict[str, object]:
+        return system_overview(_store(request), limit=limit)
+
     @app.get("/api/sources")
     async def api_sources(request: Request) -> dict[str, object]:
         return {
@@ -481,39 +483,6 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="document not found")
         return detail
 
-    @app.get("/admin/raw/documents/{document_id}")
-    async def admin_raw_document(request: Request, document_id: uuid.UUID) -> dict[str, object]:
-        require_admin(request)
-        detail = raw_document_detail(_store(request), document_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail="document not found")
-        return detail
-
-    @app.get("/admin/raw/chunks/{chunk_id}")
-    async def admin_raw_chunk(request: Request, chunk_id: uuid.UUID) -> dict[str, object]:
-        require_admin(request)
-        detail = raw_chunk_detail(_store(request), chunk_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail="chunk not found")
-        return detail
-
-    @app.get("/admin/raw/claim-raw")
-    async def admin_raw_claims(
-        request: Request,
-        q: str = "",
-        predicate: str = "",
-        page: int = 1,
-        page_size: int = 50,
-    ) -> dict[str, object]:
-        require_admin(request)
-        return list_raw_claims(
-            _store(request),
-            q=q,
-            predicate=predicate,
-            page=page,
-            page_size=page_size,
-        )
-
     @app.delete("/admin/documents/{document_id}")
     async def admin_delete_document(request: Request, document_id: uuid.UUID) -> dict[str, str]:
         require_admin(request)
@@ -521,32 +490,20 @@ def create_app(store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="document not found")
         return {"status": "deleted"}
 
-    @app.get("/api/directory")
-    async def api_directory(
-        request: Request,
-        q: str = "",
-        org: str = "",
-        class_year: str = "",
-        source: str = "",
-        page: int = 1,
-        page_size: int = 25,
-    ) -> dict[str, object]:
-        return list_directory(
-            _store(request),
-            q=q,
-            org=org,
-            class_year=class_year,
-            source=source,
-            page=page,
-            page_size=page_size,
-        )
-
     @app.get("/api/entity/{entity_id}")
     async def api_entity(request: Request, entity_id: uuid.UUID) -> dict[str, object]:
         detail = entity_detail(_store(request), entity_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="entity not found")
         return detail
+
+    @app.get("/api/entities/search")
+    async def api_entities_search(
+        request: Request,
+        q: str = "",
+        limit: int = 8,
+    ) -> dict[str, object]:
+        return search_entities(_store(request), q=q, limit=limit)
 
     @app.get("/api/claims")
     async def api_claims(

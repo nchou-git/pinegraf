@@ -8,7 +8,7 @@ from backend.db.models import Entity, EntitySummary, SourceRun
 from backend.web_api import list_sources
 
 
-def test_user_api_is_public_and_lists_directory(store) -> None:
+def test_user_api_is_public_and_searches_entities(store) -> None:
     with store.session() as session:
         entity = Entity(kind="person", canonical_name="Errik Anderson")
         session.add(entity)
@@ -30,10 +30,9 @@ def test_user_api_is_public_and_lists_directory(store) -> None:
         assert me_response.json()["workspace"]["slug"] == "tuck"
         assert me_response.json()["is_admin"] is False
 
-        directory_response = client.get("/api/directory?q=Errik")
-        assert directory_response.status_code == 200
-        payload = directory_response.json()
-        assert payload["total"] == 1
+        search_response = client.get("/api/entities/search?q=Errik")
+        assert search_response.status_code == 200
+        payload = search_response.json()
         assert payload["results"][0]["canonical_name"] == "Errik Anderson"
 
 

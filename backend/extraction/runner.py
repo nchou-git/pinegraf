@@ -8,7 +8,7 @@ from sqlalchemy import exists, select
 
 from backend.class_year import normalize_class_year
 from backend.config import get_settings
-from backend.db.models import AuditLog, Chunk, ClaimRaw, ExtractorRun
+from backend.db.models import AuditLog, ClaimRaw, Document, ExtractorRun
 from backend.db.store import Store, utc_now
 from backend.extraction.extractor import PROMPT_VERSION, ExtractedClaim, extract_claims
 
@@ -22,33 +22,34 @@ async def extract_pending(
 ) -> list[uuid.UUID]:
     with store.session() as session:
         query = (
-            select(Chunk.id, Chunk.text)
-            .where(~exists().where(ClaimRaw.chunk_id == Chunk.id))
-            .order_by(Chunk.created_at.asc())
+            select(Document.id, Document.cleaned_text)
+            .where(~exists().where(ClaimRaw.document_id == Document.id))
+            .order_by(Document.created_at.asc())
         )
         if document_ids is not None:
             if not document_ids:
                 return []
-            query = query.where(Chunk.document_id.in_(document_ids))
+            query = query.where(Document.id.in_(document_ids))
         if limit is not None:
             query = query.limit(limit)
-        chunks = list(session.execute(query).all())
+        documents = list(session.execute(query).all())
 
     run_ids: list[uuid.UUID] = []
-    if not chunks:
+    if not documents:
         return run_ids
 
     extractor_run = _create_run(store)
     claims_emitted = 0
-    chunks_processed = 0
+    documents_processed = 0
     total_cost = 0.0
     model_names: set[str] = set()
 
     try:
-        total = len(chunks)
-        for chunk_id, text in chunks:
+        total = len(documents)
+        for document_id, text in documents:
+            # TODO: handle documents that exceed the extraction model context window.
             result = await extract_claims(text)
-            chunks_processed += 1
+            documents_processed += 1
             total_cost += result.cost_usd
             model_names.add(result.model)
             with store.session() as session:
@@ -56,8 +57,8 @@ async def extract_pending(
                     session.add(
                         AuditLog(
                             action="extraction.rejected",
-                            target_table="chunks",
-                            target_id=str(chunk_id),
+                            target_table="documents",
+                            target_id=str(document_id),
                             actor="system",
                             payload={"rejected": result.rejected_claims},
                         )
@@ -66,7 +67,7 @@ async def extract_pending(
                     claim = normalize_extracted_claim(claim)
                     session.add(
                         ClaimRaw(
-                            chunk_id=chunk_id,
+                            document_id=document_id,
                             extractor_run_id=extractor_run.id,
                             subject_text=claim.subject_text,
                             subject_type=claim.subject_type,
@@ -83,12 +84,12 @@ async def extract_pending(
                     claims_emitted += 1
                 session.commit()
             if progress is not None:
-                await progress(chunks_processed, total)
+                await progress(documents_processed, total)
         _finish_run(
             store,
             extractor_run.id,
             status="complete",
-            chunks_processed=chunks_processed,
+            chunks_processed=documents_processed,
             claims_emitted=claims_emitted,
             cost_usd=total_cost,
             model=", ".join(sorted(model_names)) or extractor_run.model,
@@ -98,7 +99,7 @@ async def extract_pending(
             store,
             extractor_run.id,
             status="failed",
-            chunks_processed=chunks_processed,
+            chunks_processed=documents_processed,
             claims_emitted=claims_emitted,
             cost_usd=total_cost,
         )

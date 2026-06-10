@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.config import get_settings
-from backend.db.models import Chunk, Claim, ClaimRaw, Document, Fetch
+from backend.db.models import Claim, ClaimRaw, Document, Fetch
 from backend.parse.orchestrator import run_full_parse
 
 
@@ -95,8 +95,7 @@ async def test_parse_stores_document_temporal_fields_and_raw_claims(store, monke
         raw_claims = list(
             session.execute(
                 select(ClaimRaw, Document)
-                .join(Chunk, ClaimRaw.chunk_id == Chunk.id)
-                .join(Document, Chunk.document_id == Document.id)
+                .join(Document, ClaimRaw.document_id == Document.id)
                 .where(ClaimRaw.predicate == "employed_by")
                 .order_by(Document.valid_from.asc())
             ).all()

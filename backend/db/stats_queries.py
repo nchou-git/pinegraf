@@ -7,7 +7,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.db.models import (
-    Chunk,
     Claim,
     ClaimConflict,
     ClaimEvidence,
@@ -63,7 +62,7 @@ def documents_for_source(session: Session, source_id: uuid.UUID) -> int:
 
 
 def claims_for_source(session: Session, source_id: uuid.UUID) -> int:
-    # Claim provenance runs through evidence -> raw extraction -> chunk -> document
+    # Claim provenance runs through evidence -> raw extraction -> document
     # -> document_fetch -> fetch -> source_run. This counts claims actually supported
     # by documents linked to the source, not unrelated projected graph rows.
     return int(
@@ -72,8 +71,7 @@ def claims_for_source(session: Session, source_id: uuid.UUID) -> int:
             .select_from(Claim)
             .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
             .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-            .join(Document, Document.id == Chunk.document_id)
+            .join(Document, Document.id == ClaimRaw.document_id)
             .join(DocumentFetch, DocumentFetch.document_id == Document.id)
             .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
             .join(SourceRun, SourceRun.id == Fetch.source_run_id)
@@ -89,8 +87,7 @@ def entities_for_source(session: Session, source_id: uuid.UUID) -> int:
             .select_from(Entity)
             .join(EntityMention, EntityMention.entity_id == Entity.id)
             .join(ClaimRaw, ClaimRaw.id == EntityMention.claim_raw_id)
-            .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-            .join(Document, Document.id == Chunk.document_id)
+            .join(Document, Document.id == ClaimRaw.document_id)
             .join(DocumentFetch, DocumentFetch.document_id == Document.id)
             .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
             .join(SourceRun, SourceRun.id == Fetch.source_run_id)
@@ -190,8 +187,7 @@ def source_coverage_many(
         .select_from(Claim)
         .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
         .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-        .join(Document, Document.id == Chunk.document_id)
+        .join(Document, Document.id == ClaimRaw.document_id)
         .join(DocumentFetch, DocumentFetch.document_id == Document.id)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
         .join(SourceRun, SourceRun.id == Fetch.source_run_id)
@@ -205,8 +201,7 @@ def source_coverage_many(
         .select_from(Entity)
         .join(EntityMention, EntityMention.entity_id == Entity.id)
         .join(ClaimRaw, ClaimRaw.id == EntityMention.claim_raw_id)
-        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-        .join(Document, Document.id == Chunk.document_id)
+        .join(Document, Document.id == ClaimRaw.document_id)
         .join(DocumentFetch, DocumentFetch.document_id == Document.id)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
         .join(SourceRun, SourceRun.id == Fetch.source_run_id)
@@ -230,8 +225,7 @@ def source_coverage_many(
         .select_from(Claim)
         .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
         .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-        .join(Document, Document.id == Chunk.document_id)
+        .join(Document, Document.id == ClaimRaw.document_id)
         .join(DocumentFetch, DocumentFetch.document_id == Document.id)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
         .join(SourceRun, SourceRun.id == Fetch.source_run_id)
@@ -275,8 +269,7 @@ def conflicts_for_source(session: Session, source_id: uuid.UUID) -> int:
         .select_from(Claim)
         .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
         .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-        .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-        .join(Document, Document.id == Chunk.document_id)
+        .join(Document, Document.id == ClaimRaw.document_id)
         .join(DocumentFetch, DocumentFetch.document_id == Document.id)
         .join(Fetch, Fetch.id == DocumentFetch.fetch_id)
         .join(SourceRun, SourceRun.id == Fetch.source_run_id)

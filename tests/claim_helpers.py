@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
-
-from backend.db.models import Chunk, Claim, ClaimEvidence, ClaimRaw, Entity, ExtractorRun
+from backend.db.models import Claim, ClaimEvidence, ClaimRaw, Entity, ExtractorRun
 from backend.db.store import content_digest
 
 
@@ -31,7 +29,7 @@ def create_claim_graph(
         body_bytes=chunk_text.encode(),
         http_status=200,
     )
-    document = store.create_document_with_chunks(
+    document = store.create_document(
         content_hash=content_digest(f"{source_identifier}|{url}|{chunk_text}".encode()),
         cleaned_text=chunk_text,
         title="Profile",
@@ -39,19 +37,15 @@ def create_claim_graph(
         language="en",
         word_count=len(chunk_text.split()),
         first_seen_fetch_id=fetch.id,
-        chunks=[(chunk_text, len(chunk_text.split()), None)],
     )
     with store.session() as session:
-        chunk_id = session.execute(
-            select(Chunk.id).where(Chunk.document_id == document.id)
-        ).scalar_one()
         subject = Entity(kind="person", canonical_name=subject_name)
         obj = Entity(kind="org", canonical_name=object_name)
         extractor_run = ExtractorRun(model="test", prompt_version="test", status="complete")
         session.add_all([subject, obj, extractor_run])
         session.flush()
         raw = ClaimRaw(
-            chunk_id=chunk_id,
+            document_id=document.id,
             extractor_run_id=extractor_run.id,
             subject_text=subject_name,
             predicate=predicate,

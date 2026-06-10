@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from claim_helpers import create_claim_graph
 from fastapi.testclient import TestClient
+import pytest
 
 from backend import main as main_module
 from backend.db.models import ClaimRaw
+
+pytestmark = pytest.mark.skip(reason="raw data view and admin raw endpoints were removed")
 
 
 def test_raw_data_endpoints_require_admin(store) -> None:

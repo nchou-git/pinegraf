@@ -8,7 +8,6 @@ from sqlalchemy import select
 from backend import main as main_module
 from backend.config import get_settings
 from backend.db.models import (
-    Chunk,
     Claim,
     ClaimEvidence,
     ClaimRaw,
@@ -63,16 +62,13 @@ def test_delete_source_hard_deletes_source_scoped_data(store, tmp_path, monkeypa
     )
 
     with store.session() as session:
-        chunk_id = session.execute(
-            select(Chunk.id).where(Chunk.document_id == document.id)
-        ).scalar_one()
         extractor_run = ExtractorRun(model="test", prompt_version="v1")
         errik = Entity(kind="person", canonical_name="Errik Anderson")
         company = Entity(kind="org", canonical_name="Example")
         session.add_all([extractor_run, errik, company])
         session.flush()
         raw = ClaimRaw(
-            chunk_id=chunk_id,
+            document_id=document.id,
             extractor_run_id=extractor_run.id,
             subject_text="Errik Anderson",
             predicate="founded",
@@ -246,16 +242,13 @@ def test_delete_document_removes_derived_rows_but_keeps_entities(store, admin_he
     )
 
     with store.session() as session:
-        chunk_id = session.execute(
-            select(Chunk.id).where(Chunk.document_id == document.id)
-        ).scalar_one()
         extractor_run = ExtractorRun(model="test", prompt_version="v1")
         errik = Entity(kind="person", canonical_name="Errik Anderson")
         company = Entity(kind="org", canonical_name="Example")
         session.add_all([extractor_run, errik, company])
         session.flush()
         raw = ClaimRaw(
-            chunk_id=chunk_id,
+            document_id=document.id,
             extractor_run_id=extractor_run.id,
             subject_text="Errik Anderson",
             predicate="founded",
@@ -393,7 +386,7 @@ def test_archive_status_hides_source_without_deleting_data(
         "source_runs": 1,
         "fetches": 1,
         "documents": 1,
-        "chunks": 1,
+        "chunks": 0,
     }
 
 

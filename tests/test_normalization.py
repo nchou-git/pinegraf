@@ -5,10 +5,9 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import func, select
 
-from backend.db.models import Document, DocumentFetch, Fetch
+from backend.db.models import Chunk, Document, DocumentFetch, Fetch
 from backend.db.store import utc_now
 from backend.normalization import normalizer
-from backend.normalization.chunker import Chunk
 from backend.normalization.cleaner import clean_html
 
 
@@ -34,12 +33,10 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
 
     monkeypatch.setattr(normalizer, "clean_html", lambda raw: ("Same body.", "One"))
     monkeypatch.setattr(normalizer, "detect_language", lambda text: "en")
-    monkeypatch.setattr(normalizer, "chunk_text", lambda text: [Chunk(text=text, token_count=3)])
+    async def fake_embed(text: str) -> list[float]:
+        return [0.0] * 1536
 
-    async def fake_embed(chunks: list[str]) -> list[list[float]]:
-        return [[0.0] * 1536 for _ in chunks]
-
-    monkeypatch.setattr(normalizer, "embed_chunks", fake_embed)
+    monkeypatch.setattr(normalizer, "embed_text", fake_embed)
 
     first_document_id = await normalizer.normalize_fetch(first.id, store=store)
     second_document_id = await normalizer.normalize_fetch(second.id, store=store)
@@ -107,7 +104,7 @@ def test_pending_fetch_ids_are_source_scoped_and_snapshot_filtered(store) -> Non
         url="https://other.example/unparsed",
         body_bytes=b"other",
     )
-    document = store.create_document_with_chunks(
+    document = store.create_document(
         content_hash=b"p" * 32,
         cleaned_text="parsed",
         title="Parsed",
@@ -115,7 +112,6 @@ def test_pending_fetch_ids_are_source_scoped_and_snapshot_filtered(store) -> Non
         language="en",
         word_count=1,
         first_seen_fetch_id=parsed.id,
-        chunks=[("parsed", 1, None)],
     )
     store.link_document_fetch(document.id, parsed.id)
 
@@ -132,7 +128,7 @@ def test_pending_fetch_ids_are_source_scoped_and_snapshot_filtered(store) -> Non
     assert pending == [previous_unparsed.id, current_unparsed.id]
 
 
-def test_create_document_with_chunks_returns_existing_document_on_hash_race(store) -> None:
+def test_create_document_returns_existing_document_on_hash_race(store) -> None:
     source = store.upsert_source(kind="domain", identifier="race.example")
     run = store.create_source_run(
         source_id=source.id,
@@ -152,7 +148,7 @@ def test_create_document_with_chunks_returns_existing_document_on_hash_race(stor
     )
     digest = b"1" * 32
 
-    created = store.create_document_with_chunks(
+    created = store.create_document(
         content_hash=digest,
         cleaned_text="Same",
         title="One",
@@ -160,9 +156,8 @@ def test_create_document_with_chunks_returns_existing_document_on_hash_race(stor
         language="en",
         word_count=1,
         first_seen_fetch_id=first.id,
-        chunks=[("Same", 1, None)],
     )
-    existing = store.create_document_with_chunks(
+    existing = store.create_document(
         content_hash=digest,
         cleaned_text="Same",
         title="Two",
@@ -170,10 +165,39 @@ def test_create_document_with_chunks_returns_existing_document_on_hash_race(stor
         language="en",
         word_count=1,
         first_seen_fetch_id=second.id,
-        chunks=[("Same", 1, None)],
     )
 
     assert existing.id == created.id
     with store.session() as session:
         document_count = session.execute(select(func.count()).select_from(Document)).scalar_one()
     assert document_count == 1
+
+
+def test_create_document_with_chunks_legacy_helper_does_not_write_chunks(store) -> None:
+    source = store.upsert_source(kind="domain", identifier="legacy.example")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={},
+        triggered_by="test",
+    )
+    fetch = store.add_fetch(
+        source_run_id=run.id,
+        url="https://legacy.example",
+        body_bytes=b"Legacy",
+    )
+
+    store.create_document_with_chunks(
+        content_hash=b"2" * 32,
+        cleaned_text="Legacy",
+        title="Legacy",
+        canonical_url="https://legacy.example",
+        language="en",
+        word_count=1,
+        first_seen_fetch_id=fetch.id,
+        chunks=[("Legacy", 1, [0.0] * 1536)],
+    )
+
+    with store.session() as session:
+        chunk_count = session.execute(select(func.count()).select_from(Chunk)).scalar_one()
+    assert chunk_count == 0

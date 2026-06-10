@@ -17,7 +17,6 @@ from backend.config import get_settings
 from backend.db.models import (
     AuditLog,
     Base,
-    Chunk,
     Claim,
     ClaimConflict,
     ClaimEvidence,
@@ -332,8 +331,7 @@ class Store:
                 session.execute(
                     select(ClaimEvidence.claim_id)
                     .join(ClaimRaw, ClaimRaw.id == ClaimEvidence.claim_raw_id)
-                    .join(Chunk, Chunk.id == ClaimRaw.chunk_id)
-                    .where(Chunk.document_id == document_id)
+                    .where(ClaimRaw.document_id == document_id)
                 ).scalars()
             )
             session.delete(document)
@@ -475,6 +473,33 @@ class Store:
         word_count: int,
         first_seen_fetch_id: uuid.UUID,
         chunks: Sequence[tuple[str, int, list[float] | None]],
+        embedding: list[float] | None = None,
+        valid_from: datetime | None = None,
+    ) -> Document:
+        del chunks
+        return self.create_document(
+            content_hash=content_hash,
+            cleaned_text=cleaned_text,
+            title=title,
+            canonical_url=canonical_url,
+            language=language,
+            word_count=word_count,
+            first_seen_fetch_id=first_seen_fetch_id,
+            embedding=embedding,
+            valid_from=valid_from,
+        )
+
+    def create_document(
+        self,
+        *,
+        content_hash: bytes,
+        cleaned_text: str,
+        title: str | None,
+        canonical_url: str | None,
+        language: str | None,
+        word_count: int,
+        first_seen_fetch_id: uuid.UUID,
+        embedding: list[float] | None = None,
         valid_from: datetime | None = None,
     ) -> Document:
         with self.session() as session:
@@ -486,21 +511,12 @@ class Store:
                 language=language,
                 word_count=word_count,
                 first_seen_fetch_id=first_seen_fetch_id,
+                embedding=embedding,
                 valid_from=valid_from,
             )
             try:
                 session.add(document)
                 session.flush()
-                for ordinal, (text, token_count, embedding) in enumerate(chunks):
-                    session.add(
-                        Chunk(
-                            document_id=document.id,
-                            ordinal=ordinal,
-                            text=text,
-                            token_count=token_count,
-                            embedding=embedding,
-                        )
-                    )
                 session.add(DocumentFetch(document_id=document.id, fetch_id=first_seen_fetch_id))
                 session.commit()
             except IntegrityError as exc:

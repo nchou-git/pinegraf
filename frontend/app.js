@@ -8,17 +8,9 @@ const MAX_TOASTS = 3;
 const state = {
   me: null,
   stats: null,
-  directoryPage: 1,
-  directoryFilters: { q: "", sources: [], class_years: [], orgs: [], sort: "name_asc" },
-  directoryRows: [],
-  directoryOptionRows: [],
   claimsPage: 1,
   claimsFilters: { q: "", predicate: "", source_id: "", status: "current" },
   claimPredicates: [],
-  rawDataPage: 1,
-  rawDataFilters: { q: "", predicate: "" },
-  rawDataExpanded: {},
-  rawDataChunks: {},
   sourcesCache: null,
   sourcesError: null,
   runProgress: readSessionJSON(RUN_PROGRESS_KEY, {}),
@@ -35,13 +27,12 @@ let modalKeydownHandler = null;
 let logsViewStream = null;
 
 const TAB_DEFS = [
-  { id: "directory", label: "Directory", icon: "ti-list-search" },
   { id: "ask", label: "Ask", icon: "ti-message-question" },
-  { id: "claims", label: "Claims", icon: "ti-file-search" },
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
+  { id: "system", label: "System", icon: "ti-activity" },
+  { id: "faq", label: "FAQ", icon: "ti-help-circle" },
 ];
-const RAW_DATA_TAB = { id: "raw", label: "Raw data", icon: "ti-database-search" };
 const CONFLICTS_TAB = { id: "conflicts", label: "Conflicts", icon: "ti-alert-triangle" };
 const LOGS_TAB = { id: "logs", label: "Logs", icon: "ti-terminal-2" };
 
@@ -226,7 +217,7 @@ function renderLoginGate() {
 }
 
 function renderInitialRouteSkeleton() {
-  const rawRoute = location.hash.replace(/^#/, "") || "directory";
+  const rawRoute = location.hash.replace(/^#/, "") || "ask";
   const [route] = rawRoute.split("?");
   const [tab, ...rest] = route.split("/");
   if (tab === "sources" && !rest.length) {
@@ -302,13 +293,7 @@ function renderShell() {
 }
 
 function navTabs() {
-  if (!isAdmin()) return TAB_DEFS;
-  const tabs = [];
-  TAB_DEFS.forEach((tab) => {
-    tabs.push(tab);
-    if (tab.id === "claims") tabs.push(RAW_DATA_TAB);
-  });
-  return [...tabs, CONFLICTS_TAB, LOGS_TAB];
+  return TAB_DEFS;
 }
 
 function isAdmin() {
@@ -385,12 +370,12 @@ function closeMobileSidebar() {
 }
 
 function currentTab() {
-  const route = (location.hash.replace(/^#/, "") || "directory").split("?")[0];
+  const route = (location.hash.replace(/^#/, "") || "ask").split("?")[0];
   return route.split("/")[0];
 }
 
 function renderRoute() {
-  const rawRoute = location.hash.replace(/^#/, "") || "directory";
+  const rawRoute = location.hash.replace(/^#/, "") || "ask";
   const [route, queryString = ""] = rawRoute.split("?");
   const [tab, ...rest] = route.split("/");
   document.body.classList.toggle("route-logs", tab === "logs" && Boolean(state.me?.is_admin));
@@ -402,9 +387,9 @@ function renderRoute() {
   }
   if (tab === "logs") {
     if (!state.me?.is_admin) {
-      history.replaceState(null, "", "#directory");
+      history.replaceState(null, "", "#ask");
       renderShell();
-      return renderDirectory();
+      return renderAsk();
     }
     closeMobileSidebar();
     renderShell();
@@ -412,9 +397,9 @@ function renderRoute() {
   }
   if (tab === "conflicts") {
     if (!state.me?.is_admin) {
-      history.replaceState(null, "", "#directory");
+      history.replaceState(null, "", "#ask");
       renderShell();
-      return renderDirectory();
+      return renderAsk();
     }
     const section = rest[0] === "identity" ? "identity" : "facts";
     if (!rest[0]) history.replaceState(null, "", "#conflicts/facts");
@@ -422,23 +407,15 @@ function renderRoute() {
     renderShell();
     return renderConflictsPage(section);
   }
-  if (tab === "raw") {
-    if (!state.me?.is_admin) {
-      history.replaceState(null, "", "#directory");
-      renderShell();
-      return renderDirectory();
-    }
-    closeMobileSidebar();
-    renderShell();
-    return renderRawData();
-  }
   closeMobileSidebar();
   renderShell();
   if (tab === "ask") return renderAsk();
-  if (tab === "claims") return renderClaims(rest, new URLSearchParams(queryString));
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
-  return renderDirectory();
+  if (tab === "system") return renderSystem();
+  if (tab === "faq") return renderFAQ();
+  history.replaceState(null, "", "#ask");
+  return renderAsk();
 }
 
 function setPageHeader({ title, subtitle = "", eyebrow = "", actions = "" }) {
@@ -450,550 +427,6 @@ function setPageHeader({ title, subtitle = "", eyebrow = "", actions = "" }) {
     </div>
     <div class="page-actions" id="page-actions">${actions}</div>
   `;
-}
-
-/* ───── Directory ───── */
-
-async function renderDirectory() {
-  setPageHeader({
-    title: "Directory",
-    subtitle: `${formatNumber(state.stats?.entities || 0)} people across ${formatNumber((state.sourcesCache || []).length)} sources`,
-    actions: directoryHeaderActions(),
-  });
-  const app = document.getElementById("app");
-  app.innerHTML = `
-    <div class="directory-page">
-      <section class="directory-filter-bar">
-        <label class="directory-search input-with-icon">
-          <i class="ti ti-search icon" aria-hidden="true"></i>
-          <input class="input" id="dir-q" placeholder="Search people" value="${escapeAttr(state.directoryFilters.q)}" />
-        </label>
-        <div class="directory-filter" id="source-filter-wrap">
-          <button class="btn-secondary filter-button" id="filter-source" type="button">
-            <strong id="filter-source-label">All sources</strong>
-            <i class="ti ti-chevron-down" aria-hidden="true"></i>
-          </button>
-        </div>
-        <div class="directory-filter" id="class-filter-wrap">
-          <button class="btn-secondary filter-button" id="filter-class" type="button">
-            <strong id="filter-class-label">All classes</strong>
-            <i class="ti ti-chevron-down" aria-hidden="true"></i>
-          </button>
-        </div>
-        <div class="directory-filter" id="org-filter-wrap">
-          <button class="btn-secondary filter-button" id="filter-org" type="button">
-            <strong id="filter-org-label">All organizations</strong>
-            <i class="ti ti-chevron-down" aria-hidden="true"></i>
-          </button>
-        </div>
-        <div class="directory-filter directory-sort" id="sort-filter-wrap">
-          <button class="btn-secondary filter-button" id="filter-sort" type="button">
-            <span>Sort</span>
-            <strong id="filter-sort-label">Name A-Z</strong>
-            <i class="ti ti-chevron-down" aria-hidden="true"></i>
-          </button>
-        </div>
-        <button class="btn-ghost reset-filters" id="reset-filters" type="button" hidden>Reset filters</button>
-      </section>
-      <section class="directory-results" id="results">
-        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading…</div></div>
-      </section>
-      <div class="pagination directory-pagination" id="pagination"></div>
-    </div>
-  `;
-  const onSearch = () => {
-    state.directoryFilters.q = byId("dir-q").value.trim();
-    state.directoryPage = 1;
-    loadDirectory();
-  };
-  byId("dir-q").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") onSearch();
-  });
-  byId("filter-source").onclick = (event) => openDirectoryFilter("source", event.currentTarget);
-  byId("filter-class").onclick = (event) => openDirectoryFilter("class_year", event.currentTarget);
-  byId("filter-org").onclick = (event) => openDirectoryFilter("org", event.currentTarget);
-  byId("filter-sort").onclick = (event) => openDirectorySort(event.currentTarget);
-  byId("reset-filters").onclick = resetDirectoryFilters;
-  await loadDirectorySources();
-  await loadDirectoryOptions();
-  await loadDirectory();
-}
-
-function directoryHeaderActions() {
-  return `
-    <button class="btn-icon-only" type="button" disabled title="Coming soon" aria-label="Add person coming soon">
-      <i class="ti ti-plus" aria-hidden="true"></i>
-    </button>
-  `;
-}
-
-async function loadDirectorySources() {
-  try {
-    const data = await getJSON("/api/sources");
-    state.sourcesCache = data.sources || [];
-    state.sourcesError = null;
-    updateDirectoryFilterLabels();
-  } catch (e) {
-    state.sourcesCache = null;
-    state.sourcesError = e;
-  }
-}
-
-async function loadDirectoryOptions() {
-  try {
-    const data = await getJSON("/api/directory?page_size=100");
-    state.directoryOptionRows = data.results || [];
-  } catch (_) {
-    state.directoryOptionRows = [];
-  }
-}
-
-async function loadDirectory() {
-  const params = new URLSearchParams({
-    q: state.directoryFilters.q || "",
-    org: state.directoryFilters.orgs.join(","),
-    class_year: state.directoryFilters.class_years.join(","),
-    source: state.directoryFilters.sources.join(","),
-    page: String(state.directoryPage),
-    page_size: "50",
-  });
-  const results = byId("results");
-  try {
-    const data = await getJSON(`/api/directory?${params.toString()}`);
-    const total = data.total || 0;
-    const sourceLoadFailed = state.sourcesCache === null && state.sourcesError;
-    const sourceTotal = sourceLoadFailed ? null : (state.sourcesCache || []).length;
-    const totalPages = Math.max(1, Math.ceil(total / (data.page_size || 50)));
-    state.directoryRows = sortDirectoryRows(data.results || []);
-    setPageHeader({
-      title: "Directory",
-      subtitle: sourceLoadFailed
-        ? `${formatNumber(total || state.stats?.entities || 0)} people · sources unavailable`
-        : `${formatNumber(total || state.stats?.entities || 0)} people across ${formatNumber(sourceTotal)} source${sourceTotal === 1 ? "" : "s"}`,
-      actions: directoryHeaderActions(),
-    });
-    updateDirectoryFilterLabels();
-    bindDirectoryHeaderFilters();
-    if (sourceLoadFailed) {
-      results.innerHTML = directorySourcesErrorState(state.sourcesError);
-      bindDirectorySourcesErrorActions();
-      byId("pagination").innerHTML = "";
-      return;
-    }
-    if (sourceTotal === 0) {
-      results.innerHTML = `
-        <div class="directory-empty-panel">
-          <i class="ti ti-database-off" aria-hidden="true"></i>
-          <h2>No sources yet</h2>
-          <p>Add your first source to start ingesting people, projects, and connections.</p>
-          <a class="btn-primary" href="#sources">Go to Sources <i class="ti ti-arrow-right" aria-hidden="true"></i></a>
-        </div>`;
-      byId("pagination").innerHTML = "";
-      return;
-    }
-    if (!data.results.length) {
-      const entitiesTotal = state.stats?.entities || 0;
-      if (!entitiesTotal) {
-        results.innerHTML = `
-          <div class="directory-empty-panel">
-            <i class="ti ti-route-off" aria-hidden="true"></i>
-            <h2>Parse hasn't run yet</h2>
-            <p>Go to Sources to crawl your first source.</p>
-            <a class="btn-primary" href="#sources">Open Sources <i class="ti ti-arrow-right" aria-hidden="true"></i></a>
-          </div>`;
-        byId("pagination").innerHTML = "";
-        return;
-      }
-      results.innerHTML = `
-        <div class="directory-inline-empty">
-          <span>No people matched those filters.</span>
-          <button class="btn-ghost reset-filters inline" type="button" onclick="resetDirectoryFilters()">Reset filters</button>
-        </div>
-        ${directoryTable([])}
-      `;
-      byId("pagination").innerHTML = "";
-      return;
-    }
-    results.innerHTML = directoryTable(state.directoryRows);
-    results.querySelectorAll(".directory-table-row").forEach((row) => {
-      row.onclick = (e) => {
-        if (e.target.closest(".source-badge,.conflict-pill")) return;
-        location.hash = `#graph/${row.dataset.entityId}`;
-      };
-    });
-    renderPagination(data.page, totalPages);
-  } catch (e) {
-    results.innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load directory: ${escapeHtml(e.message)}</div></div>`;
-  }
-}
-
-function directorySourcesErrorState(error) {
-  const message = normalizeErrorMessage(error);
-  const signIn = isAuthError(error)
-    ? `<a class="btn-secondary" href="${escapeAttr(loginUrl())}">Sign in</a>`
-    : "";
-  return `
-    <div class="directory-empty-panel">
-      <i class="ti ti-alert-circle" aria-hidden="true"></i>
-      <h2>Couldn't load sources.</h2>
-      <p>${escapeHtml(message)}</p>
-      <div class="empty-actions">
-        <button class="btn-primary" id="directory-sources-retry" type="button">Retry</button>
-        ${signIn}
-      </div>
-    </div>
-  `;
-}
-
-function bindDirectorySourcesErrorActions() {
-  const retry = byId("directory-sources-retry");
-  if (!retry) return;
-  retry.onclick = async () => {
-    retry.disabled = true;
-    await loadDirectorySources();
-    await loadDirectory();
-  };
-}
-
-function bindDirectoryHeaderFilters() {
-  byId("filter-source").onclick = (event) => openDirectoryFilter("source", event.currentTarget);
-  byId("filter-class").onclick = (event) => openDirectoryFilter("class_year", event.currentTarget);
-  byId("filter-org").onclick = (event) => openDirectoryFilter("org", event.currentTarget);
-  byId("filter-sort").onclick = (event) => openDirectorySort(event.currentTarget);
-  byId("reset-filters").onclick = resetDirectoryFilters;
-}
-
-function updateDirectoryFilterLabels() {
-  const sourceLabel = byId("filter-source-label");
-  const classLabel = byId("filter-class-label");
-  const orgLabel = byId("filter-org-label");
-  const sortLabel = byId("filter-sort-label");
-  const reset = byId("reset-filters");
-  if (sourceLabel) {
-    const count = state.directoryFilters.sources.length;
-    sourceLabel.textContent = count ? `${count} source${count === 1 ? "" : "s"}` : "All sources";
-  }
-  if (classLabel) {
-    const count = state.directoryFilters.class_years.length;
-    classLabel.textContent = count ? `${count} class${count === 1 ? "" : "es"}` : "All classes";
-  }
-  if (orgLabel) {
-    const count = state.directoryFilters.orgs.length;
-    orgLabel.textContent = count ? `${count} org${count === 1 ? "" : "s"}` : "All organizations";
-  }
-  if (sortLabel) sortLabel.textContent = directorySortLabel(state.directoryFilters.sort);
-  if (reset) reset.hidden = !hasDirectoryFilters();
-}
-
-function openDirectoryFilter(type, anchor) {
-  document.querySelectorAll(".filter-popover").forEach((popover) => popover.remove());
-  const wrap = anchor.closest(".directory-filter");
-  if (!wrap) return;
-  const options = directoryFilterOptions(type);
-  const popover = document.createElement("div");
-  popover.className = "filter-popover";
-  popover.innerHTML = `
-    <input class="input filter-popover-search" placeholder="${escapeAttr(directoryFilterSearchPlaceholder(type))}" />
-    <div class="filter-options">
-      ${options
-        .map(
-          (option) => `
-          <label class="filter-option">
-            <input class="input checkbox-input" type="checkbox" data-value="${escapeAttr(option.value)}" ${option.active ? "checked" : ""} />
-            <span class="filter-option-label">
-              ${option.icon ? `<i class="ti ${escapeAttr(option.icon)}" aria-hidden="true"></i>` : ""}
-              <span>${escapeHtml(option.label)}</span>
-            </span>
-            <span class="filter-count">${formatNumber(option.count || 0)}</span>
-          </label>`,
-        )
-        .join("")}
-    </div>
-    <div class="filter-popover-footer">
-      <button class="btn-ghost" type="button" data-filter-action="all">Select all</button>
-      <button class="btn-ghost" type="button" data-filter-action="clear">Clear</button>
-    </div>
-  `;
-  wrap.appendChild(popover);
-  const search = popover.querySelector(".filter-popover-search");
-  search.focus();
-  search.oninput = () => {
-    const q = search.value.trim().toLowerCase();
-    popover.querySelectorAll(".filter-option").forEach((button) => {
-      button.hidden = q && !button.textContent.toLowerCase().includes(q);
-    });
-  };
-  popover.querySelectorAll("input[type=checkbox]").forEach((input) => {
-    input.onchange = () => {
-      toggleDirectoryFilterValue(type, input.dataset.value || "", input.checked);
-    };
-  });
-  popover.querySelector("[data-filter-action=all]").onclick = () => {
-    popover.querySelectorAll("input[type=checkbox]").forEach((input) => {
-      input.checked = true;
-    });
-    setDirectoryFilterValues(
-      type,
-      options.map((option) => option.value),
-    );
-  };
-  popover.querySelector("[data-filter-action=clear]").onclick = () => {
-    popover.querySelectorAll("input[type=checkbox]").forEach((input) => {
-      input.checked = false;
-    });
-    setDirectoryFilterValues(type, []);
-  };
-  setTimeout(() => {
-    document.addEventListener(
-      "click",
-      function onAway(event) {
-        if (popover.contains(event.target) || event.target === anchor) return;
-        popover.remove();
-        document.removeEventListener("click", onAway);
-      },
-    );
-  }, 0);
-}
-
-function directoryFilterOptions(type) {
-  if (type === "source") {
-    const sources = state.sourcesCache || [];
-    const counts = sourceCountsForRows(state.directoryRows);
-    return sources.map((source) => ({
-        value: source.identifier,
-        label: source.display_name || source.identifier,
-        icon: source.icon_hint || "ti-database",
-        count: counts[source.identifier] || 0,
-        active: state.directoryFilters.sources.includes(source.identifier),
-      }));
-  }
-  const attr = type === "class_year" ? "class_year" : "current_employer";
-  const selected =
-    type === "class_year" ? state.directoryFilters.class_years : state.directoryFilters.orgs;
-  const counts = valueCountsForRows(state.directoryRows, attr);
-  const values = Array.from(
-    new Set(
-      (state.directoryOptionRows.length ? state.directoryOptionRows : state.directoryRows)
-        .map((row) => row.primary_attributes?.[attr])
-        .filter(Boolean)
-        .map(String),
-    ),
-  ).sort();
-  return values.map((value) => ({
-    value,
-    label: value,
-    count: counts[value] || 0,
-    active: selected.includes(value),
-  }));
-}
-
-function directoryFilterSearchPlaceholder(type) {
-  if (type === "source") return "Search sources";
-  if (type === "class_year") return "Search class years";
-  return "Search organizations";
-}
-
-function selectedDirectoryFilterArray(type) {
-  if (type === "source") return state.directoryFilters.sources;
-  if (type === "class_year") return state.directoryFilters.class_years;
-  return state.directoryFilters.orgs;
-}
-
-function toggleDirectoryFilterValue(type, value, checked) {
-  const values = selectedDirectoryFilterArray(type);
-  const next = checked
-    ? Array.from(new Set([...values, value]))
-    : values.filter((item) => item !== value);
-  setDirectoryFilterValues(type, next);
-}
-
-function setDirectoryFilterValues(type, values) {
-  if (type === "source") state.directoryFilters.sources = values;
-  if (type === "class_year") state.directoryFilters.class_years = values;
-  if (type === "org") state.directoryFilters.orgs = values;
-  state.directoryPage = 1;
-  updateDirectoryFilterLabels();
-  loadDirectory();
-}
-
-function openDirectorySort(anchor) {
-  document.querySelectorAll(".filter-popover").forEach((popover) => popover.remove());
-  const wrap = anchor.closest(".directory-filter");
-  const options = [
-    ["name_asc", "Name A-Z"],
-    ["name_desc", "Name Z-A"],
-    ["connected_desc", "Most connected"],
-    ["conflicts_desc", "Most conflicts"],
-  ];
-  const popover = document.createElement("div");
-  popover.className = "filter-popover sort-popover";
-  popover.innerHTML = options
-    .map(
-      ([value, label]) => `
-      <button type="button" class="btn-ghost filter-sort-option" data-sort="${value}">
-        <span>${label}</span>
-        ${state.directoryFilters.sort === value ? `<i class="ti ti-check" aria-hidden="true"></i>` : ""}
-      </button>`,
-    )
-    .join("");
-  wrap.appendChild(popover);
-  popover.querySelectorAll("[data-sort]").forEach((button) => {
-    button.onclick = () => {
-      state.directoryFilters.sort = button.dataset.sort;
-      updateDirectoryFilterLabels();
-      loadDirectory();
-      popover.remove();
-    };
-  });
-  setTimeout(() => {
-    document.addEventListener(
-      "click",
-      function onAway(event) {
-        if (popover.contains(event.target) || event.target === anchor) return;
-        popover.remove();
-        document.removeEventListener("click", onAway);
-      },
-    );
-  }, 0);
-}
-
-function directorySortLabel(value) {
-  return (
-    {
-      name_asc: "Name A-Z",
-      name_desc: "Name Z-A",
-      connected_desc: "Most connected",
-      conflicts_desc: "Most conflicts",
-    }[value] || "Name A-Z"
-  );
-}
-
-function sortDirectoryRows(rows) {
-  return [...rows].sort((left, right) => {
-    if (state.directoryFilters.sort === "name_desc") {
-      return String(right.canonical_name || "").localeCompare(String(left.canonical_name || ""));
-    }
-    if (state.directoryFilters.sort === "connected_desc") {
-      return (right.connection_count || 0) - (left.connection_count || 0);
-    }
-    if (state.directoryFilters.sort === "conflicts_desc") {
-      return (right.conflict_count || 0) - (left.conflict_count || 0);
-    }
-    return String(left.canonical_name || "").localeCompare(String(right.canonical_name || ""));
-  });
-}
-
-function hasDirectoryFilters() {
-  return Boolean(
-    state.directoryFilters.q ||
-      state.directoryFilters.sources.length ||
-      state.directoryFilters.class_years.length ||
-      state.directoryFilters.orgs.length ||
-      state.directoryFilters.sort !== "name_asc",
-  );
-}
-
-function resetDirectoryFilters() {
-  state.directoryFilters = { q: "", sources: [], class_years: [], orgs: [], sort: "name_asc" };
-  state.directoryPage = 1;
-  const input = byId("dir-q");
-  if (input) input.value = "";
-  updateDirectoryFilterLabels();
-  loadDirectory();
-}
-
-function sourceCountsForRows(rows) {
-  const counts = {};
-  (rows || []).forEach((row) => {
-    Object.keys(row.source_mix || {}).forEach((identifier) => {
-      counts[identifier] = (counts[identifier] || 0) + 1;
-    });
-  });
-  return counts;
-}
-
-function valueCountsForRows(rows, attr) {
-  const counts = {};
-  (rows || []).forEach((row) => {
-    const value = row.primary_attributes?.[attr];
-    if (!value) return;
-    const key = String(value);
-    counts[key] = (counts[key] || 0) + 1;
-  });
-  return counts;
-}
-
-function directoryTable(rows) {
-  return `
-    <table class="directory-table">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Title</th>
-          <th>Org</th>
-          <th>Class</th>
-          <th>Sources</th>
-          <th>Conflicts</th>
-        </tr>
-      </thead>
-      <tbody>${rows.map(directoryTableRow).join("")}</tbody>
-    </table>
-  `;
-}
-
-function directoryTableRow(row) {
-  const attrs = row.primary_attributes || {};
-  const attrClaims = row.primary_attribute_claims || {};
-  const initials = (row.canonical_name || "")
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((p) => p[0] || "")
-    .join("")
-    .toUpperCase();
-  const sourceMix = row.source_mix || {};
-  const sourceKeys = Object.keys(sourceMix);
-  const visibleSources = sourceKeys.slice(0, 3);
-  const overflow = sourceKeys.length - visibleSources.length;
-  const conflictCount = row.conflict_count || 0;
-  return `
-    <tr class="directory-table-row" data-entity-id="${escapeAttr(row.entity_id)}">
-      <td>
-        <div class="directory-name-cell">
-          <div class="avatar-circle">${escapeHtml(initials || "??")}</div>
-          <div>
-            <div class="directory-person-name">${escapeHtml(row.canonical_name || "Unknown")}</div>
-            <div class="directory-person-sub">${attrs.class_year ? `T'${escapeHtml(String(attrs.class_year).replace(/^T'?/, ""))}` : escapeHtml(capitalize(row.kind || "entity"))}</div>
-          </div>
-        </div>
-      </td>
-      <td>${claimValueWithAttribution(attrs.current_title, attrClaims.current_title)}</td>
-      <td>${claimValueWithAttribution(attrs.current_employer, attrClaims.current_employer)}</td>
-      <td>${claimValueWithAttribution(attrs.class_year, attrClaims.class_year)}</td>
-      <td>
-        <div class="directory-source-cell">
-          ${
-            visibleSources.length
-              ? visibleSources
-                  .map((key) => `<span class="source-badge">${escapeHtml(sourceLabel(key))}</span>`)
-                  .join("")
-              : `<span class="muted small">—</span>`
-          }
-          ${overflow > 0 ? `<span class="source-badge muted-badge">+${overflow}</span>` : ""}
-        </div>
-      </td>
-      <td>${conflictCount ? `<span class="conflict-pill">${conflictCount}</span>` : ""}</td>
-    </tr>
-  `;
-}
-
-function sourceLabel(identifier) {
-  const source = (state.sourcesCache || []).find((item) => item.identifier === identifier);
-  return source?.display_name || source?.identifier || identifier;
-}
-
-function claimValueWithAttribution(value, claim) {
-  if (!value) return "";
-  return `<span class="claim-value">${escapeHtml(value)}</span>${claimAttribution(claim)}`;
 }
 
 function claimAttribution(claimOrEvidence) {
@@ -1050,27 +483,6 @@ function rowBio(row) {
     parts.push(`${row.connection_count} connection${row.connection_count === 1 ? "" : "s"}`);
   }
   return parts.join(" · ");
-}
-
-function renderPagination(page, totalPages) {
-  const pag = byId("pagination");
-  if (totalPages <= 1) {
-    pag.innerHTML = "";
-    return;
-  }
-  pag.innerHTML = `
-    <button class="btn-secondary" ${page <= 1 ? "disabled" : ""}>Previous</button>
-    <button class="btn-secondary accent" ${page >= totalPages ? "disabled" : ""}>Next</button>
-  `;
-  const [prev, next] = pag.querySelectorAll("button");
-  prev.onclick = () => {
-    state.directoryPage = Math.max(1, page - 1);
-    loadDirectory();
-  };
-  next.onclick = () => {
-    state.directoryPage = page + 1;
-    loadDirectory();
-  };
 }
 
 /* ───── Claims ───── */
@@ -1284,255 +696,6 @@ function claimEntityCard(label, entity) {
       ${entity?.id ? `<a href="#graph/${escapeAttr(entity.id)}">Open entity</a>` : ""}
     </div>
   `;
-}
-
-/* ───── Raw Data ───── */
-
-async function renderRawData() {
-  setPageHeader({
-    title: "Raw data",
-    subtitle: "Inspect raw extraction rows, chunks, and cleaned documents.",
-  });
-  byId("app").innerHTML = `
-    <div class="directory-page raw-data-page">
-      <section class="directory-filter-bar raw-filter-bar">
-        <label class="directory-search input-with-icon">
-          <i class="ti ti-search icon" aria-hidden="true"></i>
-          <input class="input" id="raw-q" placeholder="Search subject or object" value="${escapeAttr(state.rawDataFilters.q)}" />
-        </label>
-        <input class="input raw-predicate-input" id="raw-predicate" placeholder="Predicate" value="${escapeAttr(state.rawDataFilters.predicate)}" />
-        <button class="btn-secondary" id="raw-search" type="button">Search</button>
-      </section>
-      <section class="directory-results" id="raw-results">
-        <div class="empty-state"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
-      </section>
-      <div class="pagination directory-pagination" id="raw-pagination"></div>
-    </div>
-  `;
-  const reload = () => {
-    state.rawDataFilters.q = byId("raw-q").value.trim();
-    state.rawDataFilters.predicate = byId("raw-predicate").value.trim();
-    state.rawDataPage = 1;
-    loadRawData();
-  };
-  byId("raw-search").onclick = reload;
-  byId("raw-q").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") reload();
-  });
-  byId("raw-predicate").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") reload();
-  });
-  await loadRawData();
-}
-
-async function loadRawData() {
-  const target = byId("raw-results");
-  const params = new URLSearchParams({
-    q: state.rawDataFilters.q || "",
-    predicate: state.rawDataFilters.predicate || "",
-    page: String(state.rawDataPage),
-    page_size: "50",
-  });
-  try {
-    const data = await loadAdminPanelData(`/admin/raw/claim-raw?${params.toString()}`, {
-      targetId: "raw-results",
-      title: "Sign in to inspect raw data",
-    });
-    if (!data) return;
-    const rows = data.claim_raw || data.results || [];
-    if (!rows.length) {
-      target.innerHTML = `<div class="empty-state"><i class="ti ti-database-search" aria-hidden="true"></i><div>No raw claims matched.</div></div>`;
-    } else {
-      target.innerHTML = rawDataTable(rows);
-      attachRawDataRows(target);
-    }
-    renderRawPagination(data.page || 1, Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 50))));
-    setPageHeader({
-      title: "Raw data",
-      subtitle: `${formatNumber(data.total || 0)} raw extraction rows`,
-    });
-  } catch (error) {
-    target.innerHTML = `<div class="muted small">Unable to load raw data: ${escapeHtml(error.message)}</div>`;
-  }
-}
-
-function rawDataTable(rows) {
-  return `
-    <table class="directory-table raw-data-table">
-      <thead>
-        <tr>
-          <th>Subject</th>
-          <th>Predicate</th>
-          <th>Object</th>
-          <th>Quote</th>
-          <th>Source URL</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows.map((row) => `${rawDataRow(row)}${rawExpandedRow(row)}`).join("")}
-      </tbody>
-    </table>
-  `;
-}
-
-function rawDataRow(row) {
-  const expanded = Boolean(state.rawDataExpanded[row.id]);
-  return `
-    <tr class="directory-table-row raw-data-row ${expanded ? "active" : ""}" data-raw-id="${escapeAttr(row.id)}" data-chunk-id="${escapeAttr(row.chunk_id)}">
-      <td>${escapeHtml(row.subject_text || "")}</td>
-      <td><span class="claim-predicate">${escapeHtml(row.predicate || "")}</span></td>
-      <td>${escapeHtml(row.object_text || "")}</td>
-      <td>${escapeHtml(row.raw_quote || "")}</td>
-      <td>${escapeHtml(row.canonical_url || row.document?.canonical_url || "")}</td>
-    </tr>
-  `;
-}
-
-function rawExpandedRow(row) {
-  if (!state.rawDataExpanded[row.id]) return "";
-  const chunk = state.rawDataChunks[row.chunk_id];
-  const quote = row.raw_quote || "";
-  const body = chunk
-    ? `
-        <div class="raw-expanded-meta">
-          <a href="${escapeAttr(chunk.document?.canonical_url || row.canonical_url || "")}" target="_blank" rel="noreferrer">${escapeHtml(chunk.document?.canonical_url || row.canonical_url || "Source URL")}</a>
-          <button class="btn-ghost raw-document-button" type="button" data-document-id="${escapeAttr(chunk.document_id || row.document_id)}">View full document</button>
-        </div>
-        <div class="raw-chunk-text">${highlightRawQuote(chunk.text || "", quote)}</div>
-        ${rawChunkClaims(chunk.claim_raw || [])}
-      `
-    : `<div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading chunk...</div></div>`;
-  return `
-    <tr class="raw-expanded-row" data-raw-expanded="${escapeAttr(row.id)}">
-      <td colspan="5">${body}</td>
-    </tr>
-  `;
-}
-
-function rawChunkClaims(rows) {
-  if (!rows.length) return "";
-  return `
-    <div class="raw-claim-list">
-      <div class="muted small">Raw claims from this chunk</div>
-      ${rows
-        .map(
-          (row) =>
-            `<div class="raw-claim-item"><strong>${escapeHtml(row.subject_text)}</strong> ${escapeHtml(row.predicate)} ${escapeHtml(row.object_text || "")}</div>`,
-        )
-        .join("")}
-    </div>
-  `;
-}
-
-function attachRawDataRows(root) {
-  root.querySelectorAll("[data-raw-id]").forEach((row) => {
-    row.onclick = async () => {
-      const rawId = row.dataset.rawId;
-      const chunkId = row.dataset.chunkId;
-      state.rawDataExpanded[rawId] = !state.rawDataExpanded[rawId];
-      const tableRows = Array.from(root.querySelectorAll("[data-raw-id]")).map((item) => ({
-        id: item.dataset.rawId,
-        chunk_id: item.dataset.chunkId,
-        subject_text: item.cells[0]?.textContent || "",
-        predicate: item.cells[1]?.textContent || "",
-        object_text: item.cells[2]?.textContent || "",
-        raw_quote: item.cells[3]?.textContent || "",
-        canonical_url: item.cells[4]?.textContent || "",
-      }));
-      root.innerHTML = rawDataTable(tableRows);
-      attachRawDataRows(root);
-      if (state.rawDataExpanded[rawId] && !state.rawDataChunks[chunkId]) {
-        try {
-          state.rawDataChunks[chunkId] = await getJSON(`/admin/raw/chunks/${chunkId}`, {
-            redirectOnAuth: false,
-          });
-          root.innerHTML = rawDataTable(tableRows);
-          attachRawDataRows(root);
-        } catch (error) {
-          toast(normalizeErrorMessage(error), { level: "error" });
-        }
-      }
-    };
-  });
-  root.querySelectorAll("[data-document-id]").forEach((button) => {
-    button.onclick = (event) => {
-      event.stopPropagation();
-      openRawDocumentModal(button.dataset.documentId);
-    };
-  });
-}
-
-function renderRawPagination(page, totalPages) {
-  const pag = byId("raw-pagination");
-  if (!pag || totalPages <= 1) {
-    if (pag) pag.innerHTML = "";
-    return;
-  }
-  pag.innerHTML = `
-    <button class="btn-secondary" ${page <= 1 ? "disabled" : ""}>Previous</button>
-    <button class="btn-secondary accent" ${page >= totalPages ? "disabled" : ""}>Next</button>
-  `;
-  const [prev, next] = pag.querySelectorAll("button");
-  prev.onclick = () => {
-    state.rawDataPage = Math.max(1, page - 1);
-    loadRawData();
-  };
-  next.onclick = () => {
-    state.rawDataPage = page + 1;
-    loadRawData();
-  };
-}
-
-async function openRawDocumentModal(documentId) {
-  if (!documentId) return;
-  openModal(`<div class="empty-state"><i class="ti ti-loader"></i><div>Loading...</div></div>`);
-  try {
-    const data = await getJSON(`/admin/raw/documents/${documentId}`, { redirectOnAuth: false });
-    openModal(`
-      <div class="modal-header">
-        <div>
-          <div class="modal-title">${escapeHtml(data.title || data.canonical_url || "Document")}</div>
-          <div class="modal-subtitle">${escapeHtml(data.canonical_url || "")}</div>
-        </div>
-        <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
-      </div>
-      <div class="doc-viewer raw-document-viewer">
-        <div class="muted small">${formatNumber(data.word_count || 0)} words · ${formatNumber(data.chunk_count || 0)} chunks</div>
-        <pre>${rawDocumentWithBoundaries(data)}</pre>
-      </div>
-    `);
-  } catch (error) {
-    openModal(`<div class="empty-state"><i class="ti ti-alert-circle"></i><div>Unable to load: ${escapeHtml(error.message)}</div></div>`);
-  }
-}
-
-function rawDocumentWithBoundaries(data) {
-  const text = data.cleaned_text || "";
-  const chunks = data.chunks || [];
-  if (!chunks.length) return escapeHtml(text);
-  let offset = 0;
-  const parts = [];
-  chunks.forEach((chunk) => {
-    const length = Number(chunk.char_count || 0);
-    const segment = text.slice(offset, offset + length);
-    parts.push(`\n\n--- chunk ${chunk.ordinal} · ${chunk.chunk_id} ---\n`);
-    parts.push(segment || "");
-    offset += length;
-  });
-  if (offset < text.length) {
-    parts.push("\n\n--- remaining text ---\n");
-    parts.push(text.slice(offset));
-  }
-  return escapeHtml(parts.join("").trim());
-}
-
-function highlightRawQuote(text, quote) {
-  if (!quote) return escapeHtml(text);
-  const lowerText = text.toLowerCase();
-  const lowerQuote = quote.toLowerCase();
-  const index = lowerText.indexOf(lowerQuote);
-  if (index < 0) return escapeHtml(text);
-  return `${escapeHtml(text.slice(0, index))}<mark>${escapeHtml(text.slice(index, index + quote.length))}</mark>${escapeHtml(text.slice(index + quote.length))}`;
 }
 
 /* ───── Ask ───── */
@@ -2026,7 +1189,7 @@ async function runGraphSearch() {
     return;
   }
   try {
-    const data = await getJSON(`/api/directory?q=${encodeURIComponent(q)}&page_size=8`);
+    const data = await getJSON(`/api/entities/search?q=${encodeURIComponent(q)}&limit=8`);
     state.graphSearchResults = data.results || [];
     if (!out) return;
     if (!state.graphSearchResults.length) {
@@ -2389,6 +1552,209 @@ function loadClaimForEdge(edge) {
     }
     <div class="muted small">Click the names in this graph to drill into each entity.</div>
   `;
+}
+
+/* ───── System ───── */
+
+async function renderSystem() {
+  setPageHeader({
+    title: "System",
+    subtitle: "Pipeline output, source citations, and health.",
+  });
+  byId("app").innerHTML = `
+    <div class="system-page">
+      <section class="panel" id="system-overview">
+        <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
+      </section>
+    </div>
+  `;
+  try {
+    const data = await getJSON("/api/system?limit=50");
+    byId("system-overview").innerHTML = systemOverview(data);
+  } catch (error) {
+    byId("system-overview").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load system data: ${escapeHtml(error.message)}</div></div>`;
+  }
+}
+
+function systemOverview(data) {
+  const counts = data.counts || {};
+  return `
+    <div class="stats-grid">${statCards(counts)}</div>
+    <section class="panel panel-flush">
+      <div class="panel-header">
+        <div class="panel-title">Extracted data</div>
+        <div class="muted small">${formatNumber((data.claims_raw || []).length)} recent raw claims</div>
+      </div>
+      ${systemClaimsTable(data.claims_raw || [])}
+    </section>
+    <section class="panel panel-flush">
+      <div class="panel-header"><div class="panel-title">Recent extraction</div></div>
+      ${systemExtractorRuns(data.extractor_runs || [])}
+    </section>
+    <section class="panel panel-flush">
+      <div class="panel-header">
+        <div class="panel-title">Source runs</div>
+        <div class="muted small">DB health: ${data.health?.ok ? "ok" : "unknown"}</div>
+      </div>
+      ${systemSourceRuns(data.source_runs || [])}
+    </section>
+  `;
+}
+
+function systemClaimsTable(rows) {
+  if (!rows.length) {
+    return `<div class="empty-state compact"><i class="ti ti-file-off" aria-hidden="true"></i><div>No extracted claims yet.</div></div>`;
+  }
+  return `
+    <table class="directory-table claims-table">
+      <thead>
+        <tr>
+          <th>Subject</th>
+          <th>Predicate</th>
+          <th>Object</th>
+          <th>Quote</th>
+          <th>Source citation</th>
+        </tr>
+      </thead>
+      <tbody>${rows.map(systemClaimRow).join("")}</tbody>
+    </table>
+  `;
+}
+
+function systemClaimRow(row) {
+  const citation = {
+    source_name: row.source_name,
+    source_identifier: row.source_identifier,
+    document_url: row.document_url,
+    live_url: row.document_url,
+    url: row.url,
+    fetched_at: row.fetched_at,
+    raw_quote: row.raw_quote,
+    snippet: row.raw_quote,
+  };
+  return `
+    <tr class="directory-table-row">
+      <td>${escapeHtml(row.subject_text || "")}</td>
+      <td><span class="claim-predicate">${escapeHtml(row.predicate || "")}</span></td>
+      <td>${escapeHtml(row.object_text || "")}</td>
+      <td>${escapeHtml(row.raw_quote || "")}</td>
+      <td>${claimAttribution([citation])}</td>
+    </tr>
+  `;
+}
+
+function systemExtractorRuns(rows) {
+  if (!rows.length) {
+    return `<div class="empty-state compact"><i class="ti ti-cpu-off" aria-hidden="true"></i><div>No extraction runs yet.</div></div>`;
+  }
+  return `
+    <table class="runs-table">
+      <thead><tr><th>Status</th><th>Model</th><th>Documents</th><th>Claims</th><th>Started</th><th>Finished</th></tr></thead>
+      <tbody>${rows.map((run) => `
+        <tr>
+          <td><span class="status-pill ${escapeAttr(run.status || "")}">${escapeHtml(run.status || "")}</span></td>
+          <td>${escapeHtml(run.model || "")}</td>
+          <td>${formatNumber(run.documents_processed || 0)}</td>
+          <td>${formatNumber(run.claims_emitted || 0)}</td>
+          <td>${escapeHtml(timeAgo(run.started_at))}</td>
+          <td>${run.finished_at ? escapeHtml(timeAgo(run.finished_at)) : ""}</td>
+        </tr>`).join("")}</tbody>
+    </table>
+  `;
+}
+
+function systemSourceRuns(rows) {
+  if (!rows.length) {
+    return `<div class="empty-state compact"><i class="ti ti-history-off" aria-hidden="true"></i><div>No source runs yet.</div></div>`;
+  }
+  return `
+    <table class="runs-table">
+      <thead><tr><th>Kind</th><th>Status</th><th>Started</th><th>Finished</th><th>Stats</th><th>Error</th></tr></thead>
+      <tbody>${rows.map((run) => `
+        <tr>
+          <td>${escapeHtml(sourceRunKindLabel(run.kind))}</td>
+          <td><span class="status-pill ${escapeAttr(run.status || "")}">${escapeHtml(sourceRunStatusLabel(run.status))}</span></td>
+          <td>${escapeHtml(timeAgo(run.started_at))}</td>
+          <td>${run.finished_at ? escapeHtml(timeAgo(run.finished_at)) : ""}</td>
+          <td class="muted small">${run.stats ? escapeHtml(JSON.stringify(run.stats)) : ""}</td>
+          <td class="muted small">${escapeHtml(run.error_message || "")}</td>
+        </tr>`).join("")}</tbody>
+    </table>
+  `;
+}
+
+/* ───── FAQ ───── */
+
+function renderFAQ() {
+  setPageHeader({ title: "FAQ", subtitle: "System terms and pipeline architecture." });
+  const terms = [
+    ["Source", "A website, file, or enrichment feed Pinegraf is allowed to ingest."],
+    ["Crawl", "The exhaustive discovery step that finds URLs for a source."],
+    ["Fetch", "The saved raw HTML or file bytes for one URL."],
+    ["Document", "The cleaned text record Pinegraf stores and embeds from a fetch."],
+    ["Cleaning", "Turning raw HTML into readable text with trafilatura."],
+    ["Hash", "A content fingerprint used for deduplication and change detection."],
+    ["Extraction", "One model call per document that turns text into typed claims."],
+    ["Claim", "A structured statement extracted from a document."],
+    ["claims_raw", "The database table holding model-extracted claim rows before resolution."],
+    ["Predicate", "The relationship type, such as employed_by or founded."],
+    ["Subject", "The claim's starting thing, usually a person or organization."],
+    ["Object", "The claim's target value, person, organization, project, place, event, or date."],
+    ["Qualifier", "Extra context on a claim, such as dates, roles, or locations."],
+    ["raw_quote", "The source text span supporting the extracted claim."],
+    ["Embedding", "A vector representation used to retrieve relevant whole documents."],
+    ["Source citation", "The source document URL tied to a row of pipeline data."],
+    ["Entity", "Forthcoming: a resolved real-world person, organization, project, place, or event."],
+    ["Resolution", "Forthcoming: linking raw claim text to stable entities."],
+    ["Graph", "Forthcoming: relationships projected from resolved entities and claims."],
+  ];
+  byId("app").innerHTML = `
+    <div class="faq-page">
+      <section class="panel">
+        <div class="panel-header"><div class="panel-title">Pipeline architecture</div></div>
+        ${pipelineDiagram()}
+      </section>
+      <section class="panel">
+        <div class="panel-header"><div class="panel-title">Terms</div></div>
+        <div class="faq-term-grid">
+          ${terms.map(([term, definition]) => `
+            <article class="faq-term">
+              <strong>${escapeHtml(term)}</strong>
+              <p>${escapeHtml(definition)}</p>
+            </article>`).join("")}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function pipelineDiagram() {
+  const stages = ["Crawl", "Fetch", "Clean", "Hash", "Extract", "Store claims"];
+  const forthcoming = ["Resolution", "Entities", "Graph"];
+  return `
+    <svg class="pipeline-diagram" viewBox="0 0 980 220" role="img" aria-label="Pipeline architecture diagram">
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="currentColor"></path></marker></defs>
+      ${stages.map((stage, index) => pipelineNode(stage, 30 + index * 150, 44, false)).join("")}
+      ${stages.slice(0, -1).map((_stage, index) => pipelineArrow(128 + index * 150, 84, 170 + index * 150, 84, false)).join("")}
+      <text x="30" y="150" class="pipeline-note">exhaustive</text>
+      <text x="180" y="150" class="pipeline-note">raw HTML</text>
+      <text x="330" y="150" class="pipeline-note">trafilatura</text>
+      <text x="480" y="150" class="pipeline-note">dedup / change-detect</text>
+      <text x="630" y="150" class="pipeline-note">one model call per document to typed claims</text>
+      <text x="780" y="150" class="pipeline-note">each claim has a source citation</text>
+      ${forthcoming.map((stage, index) => pipelineNode(stage, 350 + index * 150, 168, true)).join("")}
+      ${forthcoming.slice(0, -1).map((_stage, index) => pipelineArrow(448 + index * 150, 208, 490 + index * 150, 208, true)).join("")}
+      <text x="350" y="132" class="pipeline-forthcoming-label">Forthcoming</text>
+    </svg>
+  `;
+}
+
+function pipelineNode(label, x, y, muted) {
+  return `<g class="${muted ? "pipeline-muted" : ""}"><rect x="${x}" y="${y}" width="116" height="40" rx="6"></rect><text x="${x + 58}" y="${y + 25}" text-anchor="middle">${escapeHtml(label)}</text></g>`;
+}
+
+function pipelineArrow(x1, y1, x2, y2, muted) {
+  return `<line class="${muted ? "pipeline-muted" : ""}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#arrow)"></line>`;
 }
 
 /* ───── Sources ───── */
@@ -3423,7 +2789,6 @@ async function renderSourceDocuments(sourceId) {
             <th>Title</th>
             <th>Fetched</th>
             <th class="num">Words</th>
-            <th class="num">Chunks</th>
             <th class="num">Claims</th>
             <th></th>
           </tr>
@@ -3444,7 +2809,6 @@ async function renderSourceDocuments(sourceId) {
               </td>
               <td class="muted small">${escapeHtml(timeAgo(d.fetched_at))}</td>
               <td class="num">${d.word_count}</td>
-              <td class="num">${d.chunks}</td>
               <td class="num">${d.claims_extracted}</td>
               <td class="document-actions">
                 <button class="btn-ghost" data-doc="${escapeAttr(d.document_id)}"><i class="ti ti-eye"></i> View</button>
@@ -3522,7 +2886,7 @@ function confirmDeleteDocument(sourceId, documentId) {
   if (!isAdmin()) return;
   openConfirmModal({
     title: "Delete document",
-    body: "Delete this document? Its claims and chunks will also be removed.",
+    body: "Delete this document? Its extracted claims will also be removed.",
     danger: true,
     confirmLabel: "Delete document",
     onConfirm: async () => {
@@ -3550,7 +2914,7 @@ async function openDocumentModal(documentId) {
         <button class="btn-icon-only modal-close" onclick="closeModal()" aria-label="Close">×</button>
       </div>
       <div class="doc-viewer">
-        <div class="muted small">${data.word_count || 0} words · ${data.chunks?.length || 0} chunks · ${data.claims_raw?.length || 0} extracted claims</div>
+        <div class="muted small">${data.word_count || 0} words · ${data.claims_raw?.length || 0} extracted claims</div>
         <pre>${escapeHtml((data.cleaned_text || "").slice(0, 5000))}${(data.cleaned_text || "").length > 5000 ? "\n\n…(truncated)" : ""}</pre>
         ${claimsHtml ? `<div class="doc-claims"><div class="muted small doc-claims-title">Extracted claims</div><ul class="doc-claims-list">${claimsHtml}</ul></div>` : ""}
       </div>
@@ -3724,7 +3088,7 @@ function renderSourceConfig(detail) {
         <div class="source-config-status">
           ${sourceConfigStatusMarkup(detail)}
         </div>
-        <a class="btn-ghost" href="#claims?source=${escapeAttr(detail.id)}"><i class="ti ti-file-search" aria-hidden="true"></i> View ${formatNumber(detail.coverage?.claims || 0)} claims from this source</a>
+        <a class="btn-ghost" href="#system"><i class="ti ti-file-search" aria-hidden="true"></i> View extracted claims in System</a>
         <label class="field">
           <span class="field-label">Display name</span>
           <input class="input" id="cfg-name" value="${escapeAttr(detail.display_name || "")}" ${adminOnly ? "disabled" : ""} />
@@ -4586,5 +3950,4 @@ function timeAgo(iso) {
 
 window.closeModal = closeModal;
 window.closeModalOnBackdrop = closeModalOnBackdrop;
-window.resetDirectoryFilters = resetDirectoryFilters;
 window.closeSideDrawer = closeSideDrawer;

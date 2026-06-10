@@ -1849,3 +1849,62 @@ details[open] > summary .details-chevron {
     grid-template-columns: 1fr;
   }
 }
+
+.system-page,
+.faq-page {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.faq-term-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.faq-term {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: var(--space-3);
+  background: var(--surface);
+}
+
+.faq-term p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.pipeline-diagram {
+  width: 100%;
+  height: auto;
+  color: var(--green);
+  overflow: visible;
+}
+
+.pipeline-diagram rect {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.pipeline-diagram line {
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.pipeline-diagram text {
+  fill: var(--text);
+  font-size: 13px;
+}
+
+.pipeline-diagram .pipeline-note,
+.pipeline-diagram .pipeline-forthcoming-label {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+
+.pipeline-diagram .pipeline-muted {
+  color: var(--text-faint);
+  opacity: 0.75;
+}

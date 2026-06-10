@@ -20,7 +20,7 @@ async def test_ask_sources_are_deduped_by_document(store) -> None:
     )
     store.link_document_fetch(graph["document"].id, second_fetch.id)
 
-    _settings, _chunks, claims, citations = await _answer_materials(
+    _settings, _documents, claims, citations = await _answer_materials(
         store,
         "Where does Erik Snowberg work?",
         max_results=10,
@@ -33,7 +33,7 @@ async def test_ask_sources_are_deduped_by_document(store) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ask_uses_lexical_chunk_hits_and_cites_originating_url(store) -> None:
+async def test_ask_uses_lexical_document_hits_and_cites_originating_url(store) -> None:
     source = store.upsert_source(kind="domain", identifier="tuck.example")
     run = store.create_source_run(source_id=source.id, kind="sitemap", spec={}, triggered_by="test")
     body = b"Alex Doe was the founder and CEO of WidgetCo."
@@ -43,7 +43,7 @@ async def test_ask_uses_lexical_chunk_hits_and_cites_originating_url(store) -> N
         body_bytes=body,
         http_status=200,
     )
-    document = store.create_document_with_chunks(
+    document = store.create_document(
         content_hash=content_digest(body),
         cleaned_text=body.decode(),
         title="Faculty",
@@ -51,16 +51,15 @@ async def test_ask_uses_lexical_chunk_hits_and_cites_originating_url(store) -> N
         language="en",
         word_count=8,
         first_seen_fetch_id=fetch.id,
-        chunks=[(body.decode(), 8, None)],
     )
 
-    _settings, chunks, claims, citations = await _answer_materials(
+    _settings, documents, claims, citations = await _answer_materials(
         store,
         "Who worked on WidgetCo?",
         max_results=5,
     )
 
     assert not claims
-    assert chunks[0].document_id == document.id
+    assert documents[0].id == document.id
     assert citations[0]["document_url"] == "https://tuck.example/faculty"
     assert "WidgetCo" in citations[0]["quote"]
