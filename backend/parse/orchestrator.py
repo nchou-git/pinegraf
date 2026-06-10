@@ -3,13 +3,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from backend.corroboration.runner import corroborate_pending
 from backend.db.store import Store, utc_now
 from backend.extraction.runner import extract_pending
 from backend.normalization.runner import normalize_pending
 from backend.progress import progress_stats
-from backend.projections.runner import rebuild_projections
-from backend.resolution.runner import resolve_pending
 
 ACTIVE_RUN_STATUSES = {"queued", "running"}
 
@@ -31,10 +28,9 @@ async def run_full_parse(
     run_id = uuid.UUID(str(progress_run_id or source_id))
     fetch_uuid_list = [uuid.UUID(str(fetch_id)) for fetch_id in (fetch_ids or [])]
     snapshot = _parse_snapshot(snapshot_at) or utc_now()
-    touched: set[uuid.UUID] = set()
     run = store.get_source_run(run_id)
     if run is None or run.status not in ACTIVE_RUN_STATUSES:
-        return touched
+        return set()
     stats = dict(run.stats or {}) if run else {}
     frozen_fetch_ids = _parse_fetch_ids(
         store,
@@ -87,41 +83,16 @@ async def run_full_parse(
             store=store,
             document_ids=documents,
             progress=lambda done, total: _item_progress(
-                store, run_id, "extraction", "Extracting claims", done, total, 20.0, 55.0
+                store, run_id, "extraction", "Extracting claims", done, total, 20.0, 100.0
             ),
         )
         stats["extractor_runs"] = [str(value) for value in extractor_runs]
         _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "extraction", "Extracting claims", 55.0)
+        _write_progress(store, run_id, stats, "extraction", "Extracting claims", 100.0)
 
-        _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "resolution", "Resolving mentions", 55.0)
-        touched.update(
-            await resolve_pending(
-                store=store,
-                progress=lambda done, total: _item_progress(
-                    store, run_id, "resolution", "Resolving mentions", done, total, 55.0, 75.0
-                ),
-            )
-        )
-        stats["resolved_entities"] = len(touched)
-        _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "resolution", "Resolving mentions", 75.0)
-
-        _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "corroboration", "Promoting claims", 75.0)
-        touched_claims = await corroborate_pending(store=store, valid_from=snapshot)
-        stats["touched_claims"] = len(touched_claims)
-        _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "corroboration", "Promoting claims", 90.0)
-
-        _ensure_run_active(store, run_id)
-        _write_progress(store, run_id, stats, "projection", "Rebuilding projections", 90.0)
-        rebuilt = await rebuild_projections(touched or None, store=store)
-        stats["projected_entities"] = len(rebuilt)
-        _ensure_run_active(store, run_id)
         store.update_source_run(
             run_id,
+            status="complete",
             stats=progress_stats(
                 stats,
                 stage="complete",
@@ -130,10 +101,11 @@ async def run_full_parse(
                 percent=100.0,
                 data={"items_parsed": len(documents), "total_to_parse": total_to_parse},
             ),
+            finished=True,
         )
-        return rebuilt
+        return set()
     except _RunStopped:
-        return touched
+        return set()
     except Exception as exc:
         stats["parse_error"] = f"{type(exc).__name__}: {exc}"
         store.update_source_run(

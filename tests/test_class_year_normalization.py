@@ -3,10 +3,8 @@ from __future__ import annotations
 import pytest
 
 from backend.class_year import expand_class_year_synonyms, normalize_class_year
-from backend.db.models import Entity, EntitySummary
 from backend.extraction.extractor import ExtractedClaim
 from backend.extraction.runner import normalize_extracted_claim
-from backend.resolution.resolver import resolve_mention
 
 
 @pytest.mark.parametrize(
@@ -58,28 +56,3 @@ def test_expand_class_year_synonyms() -> None:
         "class of 2017 alumni",
         "2017 alumni",
     ]
-
-
-@pytest.mark.asyncio
-async def test_resolver_uses_class_year_as_positive_match_signal(store) -> None:
-    with store.session() as session:
-        wrong = Entity(kind="person", canonical_name="Alex Smith T'18")
-        right = Entity(kind="person", canonical_name="Alex Smith")
-        session.add_all([wrong, right])
-        session.flush()
-        session.add(
-            EntitySummary(
-                entity_id=right.id,
-                display_name="Alex Smith",
-                primary_attributes={"class_year": "2017"},
-                connection_count=0,
-                source_count=1,
-            )
-        )
-        session.commit()
-        right_id = right.id
-
-    resolution = await resolve_mention("Alex Smith Class of 2017", "person", store=store)
-
-    assert resolution is not None
-    assert resolution.entity_id == right_id

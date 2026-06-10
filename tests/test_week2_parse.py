@@ -3,19 +3,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import func, select
 
-from backend.db.models import (
-    Claim,
-    ClaimEvidence,
-    Entity,
-    EntityMention,
-    EntityNeighborhood,
-    EntitySummary,
-)
+from backend.db.models import Claim, ClaimEvidence, ClaimRaw, Entity, EntityMention, ExtractorRun
 from backend.extraction.extractor import extract_claims
 from backend.normalization import normalizer
 from backend.normalization.chunker import Chunk
 from backend.parse.orchestrator import run_full_parse
-from backend.resolution.resolver import resolve_mention
 
 
 @pytest.mark.asyncio
@@ -33,22 +25,7 @@ async def test_extraction_heuristic_returns_claim(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolution_exact_match_normalizes_tuck_suffix(store) -> None:
-    with store.session() as session:
-        entity = Entity(kind="person", canonical_name="Errik Anderson")
-        session.add(entity)
-        session.commit()
-        entity_id = entity.id
-
-    resolution = await resolve_mention("Errik Anderson T'07", "person", store=store)
-
-    assert resolution is not None
-    assert resolution.entity_id == entity_id
-    assert resolution.method == "exact_match"
-
-
-@pytest.mark.asyncio
-async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypatch) -> None:
+async def test_full_parse_normalizes_extracts_raw_claims_and_completes(store, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     source = store.upsert_source(
         kind="domain",
@@ -87,36 +64,38 @@ async def test_full_parse_promotes_claims_and_builds_projections(store, monkeypa
         triggered_by="test",
     )
 
-    rebuilt = await run_full_parse(source.id, store=store, progress_run_id=parse_run.id)
+    touched = await run_full_parse(source.id, store=store, progress_run_id=parse_run.id)
 
     with store.session() as session:
-        sam = session.execute(
-            select(Entity).where(Entity.canonical_name == "Sam Brooks")
+        raw_claim = session.execute(
+            select(ClaimRaw).where(ClaimRaw.predicate == "partnered_with")
         ).scalar_one()
-        mia = session.execute(
-            select(Entity).where(Entity.canonical_name == "Mia Chen")
-        ).scalar_one()
-        claim = session.execute(
-            select(Claim).where(Claim.predicate == "partnered_with")
-        ).scalar_one()
+        extractor_run = session.execute(select(ExtractorRun)).scalar_one()
+        entity_count = session.execute(select(func.count()).select_from(Entity)).scalar_one()
+        promoted_claim_count = session.execute(select(func.count()).select_from(Claim)).scalar_one()
         evidence_count = session.execute(
             select(func.count()).select_from(ClaimEvidence)
         ).scalar_one()
         mention_count = session.execute(
             select(func.count()).select_from(EntityMention)
         ).scalar_one()
-        summary = session.get(EntitySummary, sam.id)
-        neighborhood = session.get(
-            EntityNeighborhood,
-            {"entity_id": sam.id, "neighbor_id": mia.id},
-        )
+        finished_run = store.get_source_run(parse_run.id)
 
-    assert sam.id in rebuilt
-    assert claim.subject_entity_id == sam.id
-    assert claim.object_entity_id == mia.id
-    assert evidence_count == 1
-    assert mention_count == 2
-    assert summary is not None
-    assert summary.connection_count == 1
-    assert neighborhood is not None
-    assert neighborhood.predicates == ["partnered_with"]
+    assert touched == set()
+    assert raw_claim.subject_text == "Sam Brooks"
+    assert raw_claim.object_text == "Mia Chen"
+    assert raw_claim.object_type == "person"
+    assert extractor_run.status == "complete"
+    assert extractor_run.chunks_processed == 1
+    assert extractor_run.claims_emitted == 1
+    assert entity_count == 0
+    assert promoted_claim_count == 0
+    assert evidence_count == 0
+    assert mention_count == 0
+    assert finished_run.status == "complete"
+    assert finished_run.stats["status"] == "complete"
+    assert finished_run.stats["stage"] == "complete"
+    assert finished_run.stats["percent"] == 100.0
+    assert "resolved_entities" not in finished_run.stats
+    assert "touched_claims" not in finished_run.stats
+    assert "projected_entities" not in finished_run.stats

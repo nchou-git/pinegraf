@@ -44,7 +44,7 @@ from backend.db.stats_queries import (
 )
 from backend.db.store import Store, utc_now
 from backend.extraction.extractor import is_structurally_valid_name
-from backend.resolution.embedder import embed_texts
+from backend.normalization.embedder import embed_texts
 from backend.util.vector import cosine, vector_values
 
 ASK_CACHE_SECONDS = 3600

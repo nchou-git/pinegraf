@@ -6,12 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from backend.config import get_settings
-from backend.db.models import Claim, Document, Fetch
+from backend.db.models import Chunk, Claim, ClaimRaw, Document, Fetch
 from backend.parse.orchestrator import run_full_parse
 
 
 @pytest.mark.asyncio
-async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatch) -> None:
+async def test_parse_stores_document_temporal_fields_and_raw_claims(store, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     get_settings.cache_clear()
     source = store.upsert_source(kind="domain", identifier="temporal.example")
@@ -92,20 +92,23 @@ async def test_parse_stores_document_and_claim_temporal_fields(store, monkeypatc
                 .order_by(Document.valid_from.asc())
             ).scalars()
         )
-        claims = list(
+        raw_claims = list(
             session.execute(
-                select(Claim)
-                .where(Claim.predicate == "employed_by")
-                .order_by(Claim.valid_from.asc())
-            ).scalars()
+                select(ClaimRaw, Document)
+                .join(Chunk, ClaimRaw.chunk_id == Chunk.id)
+                .join(Document, Chunk.document_id == Document.id)
+                .where(ClaimRaw.predicate == "employed_by")
+                .order_by(Document.valid_from.asc())
+            ).all()
         )
+        promoted_claim_count = len(list(session.execute(select(Claim)).scalars()))
 
     assert [document.valid_from for document in documents] == [first_snapshot, second_snapshot]
     assert [document.valid_to for document in documents] == [None, None]
     assert [document.superseded_by_document_id for document in documents] == [None, None]
     assert len({document.id for document in documents}) == 2
 
-    assert [claim.valid_from for claim in claims] == [first_snapshot, second_snapshot]
-    assert [claim.valid_to for claim in claims] == [None, None]
-    assert [claim.superseded_by_claim_id for claim in claims] == [None, None]
-    assert len({claim.id for claim in claims}) == 2
+    assert [document.valid_from for _, document in raw_claims] == [first_snapshot, second_snapshot]
+    assert [claim.object_text for claim, _ in raw_claims] == ["Acme Corp.", "Beta Corp."]
+    assert len({claim.id for claim, _ in raw_claims}) == 2
+    assert promoted_claim_count == 0
