@@ -24,8 +24,8 @@ let modalKeydownHandler = null;
 let logsViewStream = null;
 
 const TAB_DEFS = [
-  { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "ask", label: "Ask", icon: "ti-message-question" },
+  { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "claims", label: "Claims", icon: "ti-file-search" },
   { id: "sources", label: "Sources", icon: "ti-database" },
   { id: "raw-data", label: "Raw data", icon: "ti-table" },
