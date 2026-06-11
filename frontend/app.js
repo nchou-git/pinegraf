@@ -23,16 +23,13 @@ let modalRestoreFocus = null;
 let modalKeydownHandler = null;
 let logsViewStream = null;
 
-const CONFLICTS_TAB = { id: "conflicts", label: "Conflicts", icon: "ti-alert-triangle" };
-const ARCHIVE_TAB = { id: "archive", label: "Archive", icon: "ti-archive" };
 const TAB_DEFS = [
   { id: "ask", label: "Ask", icon: "ti-message-question" },
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
   { id: "sources", label: "Sources", icon: "ti-database" },
-  CONFLICTS_TAB,
-  ARCHIVE_TAB,
-  { id: "system", label: "System", icon: "ti-activity" },
+  { id: "claims", label: "Claims", icon: "ti-file-search" },
   { id: "faq", label: "FAQ", icon: "ti-help-circle" },
+  { id: "raw-data", label: "Raw data", icon: "ti-table" },
 ];
 
 const SOURCE_KINDS = [
@@ -410,10 +407,11 @@ function renderRoute() {
   renderShell();
   if (tab === "ask") return renderAsk();
   if (tab === "claims" && rest[0]) return renderClaimDetail(rest[0]);
+  if (tab === "claims") return renderClaims();
+  if (tab === "raw-data") return renderRawData();
   if (tab === "graph") return renderGraph(rest[0]);
   if (tab === "sources") return renderSources(rest);
   if (tab === "archive") return renderSourcesArchive();
-  if (tab === "system") return renderSystem();
   if (tab === "faq") return renderFAQ();
   history.replaceState(null, "", "#ask");
   return renderAsk();
@@ -488,7 +486,7 @@ function claimsList(claims, options = {}) {
     return `<div class="empty-state"><i class="ti ti-file-search" aria-hidden="true"></i><div>No claims matched.</div></div>`;
   }
   return `
-    <table class="directory-table claims-table">
+    <table class="data-table claims-table">
       <thead>
         <tr>
           <th>Subject</th>
@@ -511,7 +509,7 @@ function claimsListRow(claim, options = {}) {
     ? claim.subject?.id === options.entityId ? "as subject" : "as object"
     : "";
   return `
-    <tr class="directory-table-row claim-row" data-claim-id="${escapeAttr(claim.id || claim.claim_id)}">
+    <tr class="data-table-row claim-row" data-claim-id="${escapeAttr(claim.id || claim.claim_id)}">
       <td>${escapeHtml(claim.subject?.name || "Unknown")}</td>
       <td><span class="claim-predicate">${escapeHtml(claim.predicate || "")}</span></td>
       <td>${escapeHtml(claim.object?.name || claim.object_value || "")}</td>
@@ -1338,139 +1336,153 @@ function loadClaimForEdge(edge) {
   `;
 }
 
-/* ───── System ───── */
+/* ───── Claims ───── */
 
-async function renderSystem() {
+async function renderClaims() {
   setPageHeader({
-    title: "System",
-    subtitle: "Pipeline output, source citations, and health.",
+    title: "Claims",
+    subtitle: "Deduplicated extracted claims with source citations.",
   });
   byId("app").innerHTML = `
-    <div class="system-page">
-      <section class="panel" id="system-overview">
+    <section class="panel">
+      <div id="claims-table-root">
         <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
-      </section>
-    </div>
+      </div>
+    </section>
   `;
   try {
-    const data = await getJSON("/api/system?limit=50");
-    byId("system-overview").innerHTML = systemOverview(data);
+    const data = await getJSON("/api/claims/raw-data?page_size=5000");
+    byId("claims-table-root").innerHTML = cleanClaimsTable(dedupedDisplayClaims(data.claims_raw || []));
   } catch (error) {
-    byId("system-overview").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load system data: ${escapeHtml(error.message)}</div></div>`;
+    byId("claims-table-root").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load claims: ${escapeHtml(error.message)}</div></div>`;
   }
 }
 
-function systemOverview(data) {
-  const counts = data.counts || {};
-  return `
-    <div class="stats-grid">${statCards(counts)}</div>
-    <section class="panel panel-flush">
-      <div class="panel-header">
-        <div class="panel-title">Extracted data</div>
-        <div class="muted small">${formatNumber((data.claims_raw || []).length)} recent raw claims</div>
-      </div>
-      ${systemClaimsTable(data.claims_raw || [])}
-    </section>
-    <section class="panel panel-flush">
-      <div class="panel-header"><div class="panel-title">Recent extraction</div></div>
-      ${systemExtractorRuns(data.extractor_runs || [])}
-    </section>
-    <section class="panel panel-flush">
-      <div class="panel-header">
-        <div class="panel-title">Source runs</div>
-        <div class="muted small">DB health: ${data.health?.ok ? "ok" : "unknown"}</div>
-      </div>
-      ${systemSourceRuns(data.source_runs || [])}
-    </section>
-  `;
+function dedupedDisplayClaims(rows) {
+  const claims = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const sourceKey = row.source_url || row.document_url || row.source_id || "";
+    if (!sourceKey) continue;
+    const key = [
+      row.subject_text || "",
+      row.predicate || "",
+      row.object_text || "",
+      sourceKey,
+    ].map((value) => String(value).trim().toLowerCase()).join("\u0001");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    claims.push(row);
+  }
+  return claims;
 }
 
-function systemClaimsTable(rows) {
+function cleanClaimsTable(rows) {
   if (!rows.length) {
-    return `<div class="empty-state compact"><i class="ti ti-file-off" aria-hidden="true"></i><div>No extracted claims yet.</div></div>`;
+    return `<div class="empty-state compact"><i class="ti ti-file-off" aria-hidden="true"></i><div>No source-cited claims yet.</div></div>`;
   }
   return `
-    <table class="directory-table claims-table">
+    <table class="data-table claims-table clean-claims-table">
       <thead>
         <tr>
           <th>Subject</th>
           <th>Predicate</th>
           <th>Object</th>
           <th>Quote</th>
-          <th>Source citation</th>
+          <th>Source URL</th>
         </tr>
       </thead>
-      <tbody>${rows.map(systemClaimRow).join("")}</tbody>
+      <tbody>${rows.map(cleanClaimRow).join("")}</tbody>
     </table>
   `;
 }
 
-function systemClaimRow(row) {
-  const citation = {
-    source_name: row.source_name,
-    source_identifier: row.source_identifier,
-    document_url: row.document_url,
-    live_url: row.document_url,
-    url: row.url,
-    fetched_at: row.fetched_at,
-    raw_quote: row.raw_quote,
-    snippet: row.raw_quote,
-  };
+function cleanClaimRow(row) {
+  const sourceUrl = row.source_url || row.document_url || "";
   return `
-    <tr class="directory-table-row">
+    <tr>
       <td>${escapeHtml(row.subject_text || "")}</td>
       <td><span class="claim-predicate">${escapeHtml(row.predicate || "")}</span></td>
       <td>${escapeHtml(row.object_text || "")}</td>
-      <td>${escapeHtml(row.raw_quote || "")}</td>
-      <td>${claimAttribution([citation])}</td>
+      <td class="wrap-cell">${escapeHtml(row.raw_quote || "")}</td>
+      <td>${sourceUrl ? `<a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceUrl)}</a>` : ""}</td>
     </tr>
   `;
 }
 
-function systemExtractorRuns(rows) {
+async function renderRawData() {
+  setPageHeader({
+    title: "Raw data",
+    subtitle: "Undeduplicated claims_raw rows for debugging.",
+  });
+  byId("app").innerHTML = `
+    <section class="panel">
+      <div id="raw-data-root">
+        <div class="empty-state compact"><i class="ti ti-loader" aria-hidden="true"></i><div>Loading...</div></div>
+      </div>
+    </section>
+  `;
+  try {
+    const data = await getJSON("/api/claims/raw-data?page_size=5000");
+    byId("raw-data-root").innerHTML = rawDataTable(data.claims_raw || [], data.total || 0);
+  } catch (error) {
+    byId("raw-data-root").innerHTML = `<div class="empty-state"><i class="ti ti-alert-circle" aria-hidden="true"></i><div>Unable to load raw data: ${escapeHtml(error.message)}</div></div>`;
+  }
+}
+
+function rawDataTable(rows, total) {
   if (!rows.length) {
-    return `<div class="empty-state compact"><i class="ti ti-cpu-off" aria-hidden="true"></i><div>No extraction runs yet.</div></div>`;
+    return `<div class="empty-state compact"><i class="ti ti-file-off" aria-hidden="true"></i><div>No raw claim rows yet.</div></div>`;
   }
   return `
-    <table class="runs-table">
-      <thead><tr><th>Status</th><th>Model</th><th>Documents</th><th>Claims</th><th>Started</th><th>Finished</th></tr></thead>
-      <tbody>${rows.map((run) => `
-        <tr>
-          <td><span class="status-pill ${escapeAttr(run.status || "")}">${escapeHtml(run.status || "")}</span></td>
-          <td>${escapeHtml(run.model || "")}</td>
-          <td>${formatNumber(run.documents_processed || 0)}</td>
-          <td>${formatNumber(run.claims_emitted || 0)}</td>
-          <td>${escapeHtml(timeAgo(run.started_at))}</td>
-          <td>${run.finished_at ? escapeHtml(timeAgo(run.finished_at)) : ""}</td>
-        </tr>`).join("")}</tbody>
-    </table>
+    <div class="table-meta muted small">${formatNumber(rows.length)} of ${formatNumber(total)} raw rows</div>
+    <div class="table-scroll">
+      <table class="data-table raw-data-table">
+        <thead>
+          <tr>
+            <th>Subject</th>
+            <th>Subject type</th>
+            <th>Predicate</th>
+            <th>Object</th>
+            <th>Object type</th>
+            <th>Quote</th>
+            <th>Qualifiers</th>
+            <th>Span</th>
+            <th>Document ID</th>
+            <th>Run ID</th>
+            <th>Source URL</th>
+          </tr>
+        </thead>
+        <tbody>${rows.map(rawDataRow).join("")}</tbody>
+      </table>
+    </div>
   `;
 }
 
-function systemSourceRuns(rows) {
-  if (!rows.length) {
-    return `<div class="empty-state compact"><i class="ti ti-history-off" aria-hidden="true"></i><div>No source runs yet.</div></div>`;
-  }
+function rawDataRow(row) {
+  const sourceUrl = row.source_url || row.document_url || "";
+  const span = row.span_start == null && row.span_end == null ? "" : `${row.span_start ?? ""}-${row.span_end ?? ""}`;
   return `
-    <table class="runs-table">
-      <thead><tr><th>Kind</th><th>Status</th><th>Started</th><th>Finished</th><th>Stats</th><th>Error</th></tr></thead>
-      <tbody>${rows.map((run) => `
-        <tr>
-          <td>${escapeHtml(sourceRunKindLabel(run.kind))}</td>
-          <td><span class="status-pill ${escapeAttr(run.status || "")}">${escapeHtml(sourceRunStatusLabel(run.status))}</span></td>
-          <td>${escapeHtml(timeAgo(run.started_at))}</td>
-          <td>${run.finished_at ? escapeHtml(timeAgo(run.finished_at)) : ""}</td>
-          <td class="muted small">${run.stats ? escapeHtml(JSON.stringify(run.stats)) : ""}</td>
-          <td class="muted small">${escapeHtml(run.error_message || "")}</td>
-        </tr>`).join("")}</tbody>
-    </table>
+    <tr>
+      <td>${escapeHtml(row.subject_text || "")}</td>
+      <td>${escapeHtml(row.subject_type || "")}</td>
+      <td><span class="claim-predicate">${escapeHtml(row.predicate || "")}</span></td>
+      <td>${escapeHtml(row.object_text || "")}</td>
+      <td>${escapeHtml(row.object_type || "")}</td>
+      <td class="wrap-cell">${escapeHtml(row.raw_quote || "")}</td>
+      <td class="wrap-cell">${escapeHtml(row.qualifiers ? JSON.stringify(row.qualifiers) : "")}</td>
+      <td>${escapeHtml(span)}</td>
+      <td class="mono-cell">${escapeHtml(row.document_id || "")}</td>
+      <td class="mono-cell">${escapeHtml(row.extractor_run_id || "")}</td>
+      <td>${sourceUrl ? `<a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceUrl)}</a>` : ""}</td>
+    </tr>
   `;
 }
 
 /* ───── FAQ ───── */
 
 function renderFAQ() {
-  setPageHeader({ title: "FAQ", subtitle: "System terms and pipeline architecture." });
+  setPageHeader({ title: "FAQ", subtitle: "Graph terms and pipeline architecture." });
   const terms = [
     ["Source", "A website, file, or enrichment feed Pinegraf is allowed to ingest."],
     ["Crawl", "The exhaustive discovery step that finds URLs for a source."],
@@ -2821,7 +2833,7 @@ function renderSourceConfig(detail) {
         <div class="source-config-status">
           ${sourceConfigStatusMarkup(detail)}
         </div>
-        <a class="btn-ghost" href="#system"><i class="ti ti-file-search" aria-hidden="true"></i> View extracted claims in System</a>
+        <a class="btn-ghost" href="#raw-data"><i class="ti ti-file-search" aria-hidden="true"></i> View raw extracted claims</a>
         <label class="field">
           <span class="field-label">Display name</span>
           <input class="input" id="cfg-name" value="${escapeAttr(detail.display_name || "")}" ${adminOnly ? "disabled" : ""} />

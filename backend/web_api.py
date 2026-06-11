@@ -30,7 +30,6 @@ from backend.db.models import (
     EntityMention,
     EntityNeighborhood,
     EntitySummary,
-    ExtractorRun,
     Fetch,
     HumanSignal,
     Source,
@@ -110,86 +109,6 @@ def _paused_runs_payload(runs: list[SourceRun]) -> dict[str, dict[str, object]]:
 def stats(store: Store) -> dict[str, int]:
     with store.session() as session:
         return global_stats(session)
-
-
-def system_overview(store: Store, *, limit: int = 50) -> dict[str, object]:
-    limit = min(max(limit, 1), 100)
-    with store.session() as session:
-        counts = global_stats(session)
-        raw_rows = list(
-            session.execute(
-                select(ClaimRaw, Document, Fetch, Source)
-                .join(Document, Document.id == ClaimRaw.document_id)
-                .join(Fetch, Fetch.id == Document.first_seen_fetch_id)
-                .join(SourceRun, SourceRun.id == Fetch.source_run_id)
-                .join(Source, Source.id == SourceRun.source_id)
-                .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
-                .limit(limit)
-            ).all()
-        )
-        extractor_runs = list(
-            session.execute(
-                select(ExtractorRun).order_by(ExtractorRun.started_at.desc()).limit(10)
-            ).scalars()
-        )
-        source_runs = list(
-            session.execute(select(SourceRun).order_by(SourceRun.started_at.desc()).limit(10)).scalars()
-        )
-        return {
-            "health": {"ok": True},
-            "counts": counts,
-            "claims_raw": [
-                {
-                    "id": str(raw.id),
-                    "claim_raw_id": str(raw.id),
-                    "document_id": str(document.id),
-                    "source_id": str(source.id),
-                    "source_name": source.display_name or source.identifier,
-                    "source_identifier": source.identifier,
-                    "document_title": document.title,
-                    "document_url": document.canonical_url or fetch.url,
-                    "url": fetch.url,
-                    "fetched_at": fetch.fetched_at.isoformat(),
-                    "extracted_at": raw.extracted_at.isoformat(),
-                    "subject_text": raw.subject_text,
-                    "subject_type": raw.subject_type,
-                    "predicate": raw.predicate,
-                    "object_text": raw.object_text,
-                    "object_type": raw.object_type,
-                    "qualifiers": raw.qualifiers,
-                    "raw_quote": raw.raw_quote,
-                    "confidence_internal": raw.confidence_internal,
-                }
-                for raw, document, fetch, source in raw_rows
-            ],
-            "extractor_runs": [
-                {
-                    "id": str(run.id),
-                    "model": run.model,
-                    "prompt_version": run.prompt_version,
-                    "status": run.status,
-                    "documents_processed": run.chunks_processed or 0,
-                    "claims_emitted": run.claims_emitted or 0,
-                    "cost_usd": float(run.cost_usd or 0),
-                    "started_at": run.started_at.isoformat(),
-                    "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-                }
-                for run in extractor_runs
-            ],
-            "source_runs": [
-                {
-                    "id": str(run.id),
-                    "source_id": str(run.source_id),
-                    "kind": run.kind,
-                    "status": run.status,
-                    "stats": run.stats,
-                    "started_at": run.started_at.isoformat(),
-                    "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-                    "error_message": run.error_message,
-                }
-                for run in source_runs
-            ],
-        }
 
 
 def list_audit_log(store: Store, *, limit: int = 200) -> dict[str, object]:
@@ -410,6 +329,76 @@ def claim_predicates(store: Store) -> list[str]:
         )
 
 
+def list_raw_claims(
+    store: Store,
+    *,
+    page: int = 1,
+    page_size: int = 500,
+) -> dict[str, object]:
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 5000)
+    with store.session() as session:
+        base_query = (
+            select(ClaimRaw, Document, Fetch, Source)
+            .outerjoin(Document, Document.id == ClaimRaw.document_id)
+            .outerjoin(Fetch, Fetch.id == Document.first_seen_fetch_id)
+            .outerjoin(SourceRun, SourceRun.id == Fetch.source_run_id)
+            .outerjoin(Source, Source.id == SourceRun.source_id)
+            .order_by(ClaimRaw.extracted_at.desc(), ClaimRaw.id)
+        )
+        total = session.execute(select(func.count()).select_from(ClaimRaw)).scalar_one()
+        rows = list(
+            session.execute(base_query.offset((page - 1) * page_size).limit(page_size)).all()
+        )
+        return {
+            "claims_raw": [
+                _raw_claim_response(raw, document, fetch, source)
+                for raw, document, fetch, source in rows
+            ],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+
+def _raw_claim_response(
+    raw: ClaimRaw,
+    document: Document | None,
+    fetch: Fetch | None,
+    source: Source | None,
+) -> dict[str, object]:
+    source_url = document.canonical_url if document and document.canonical_url else None
+    if not source_url and fetch is not None:
+        source_url = fetch.url
+    return {
+        "id": str(raw.id),
+        "claim_raw_id": str(raw.id),
+        "chunk_id": str(raw.chunk_id) if raw.chunk_id else None,
+        "document_id": str(raw.document_id) if raw.document_id else None,
+        "extractor_run_id": str(raw.extractor_run_id),
+        "subject_text": raw.subject_text,
+        "subject_type": raw.subject_type,
+        "predicate": raw.predicate,
+        "object_text": raw.object_text,
+        "object_type": raw.object_type,
+        "qualifiers": raw.qualifiers,
+        "confidence_internal": raw.confidence_internal,
+        "raw_quote": raw.raw_quote,
+        "span_start": raw.span_start,
+        "span_end": raw.span_end,
+        "span": [raw.span_start, raw.span_end],
+        "extracted_at": raw.extracted_at.isoformat(),
+        "document_title": document.title if document else None,
+        "document_url": source_url,
+        "source_url": source_url,
+        "source_id": str(source.id) if source else None,
+        "source_name": (source.display_name or source.identifier) if source else None,
+        "source_identifier": source.identifier if source else None,
+        "fetched_at": fetch.fetched_at.isoformat() if fetch else None,
+        "url": fetch.url if fetch else None,
+    }
+
+
 async def ask_stream(
     store: Store,
     *,
@@ -442,7 +431,7 @@ async def ask_stream(
         answer = (
             "The current graph doesn't contain information about that topic. "
             "The demo graph indexes a curated subset of Tuck's alumni network; try exploring "
-            "alumni, companies, roles, or sources already present in the directory."
+            "alumni, companies, roles, or sources already present in the graph."
         )
         yield _sse({"kind": "token", "text": answer})
     elif settings.openai_api_key:

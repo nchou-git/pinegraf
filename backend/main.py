@@ -73,6 +73,7 @@ from backend.web_api import (
     list_claims,
     list_conflicts,
     list_identity_review,
+    list_raw_claims,
     list_source_documents,
     list_sources,
     resolve_conflict,
@@ -80,7 +81,6 @@ from backend.web_api import (
     search_entities,
     source_detail,
     stats,
-    system_overview,
     update_source,
     verify_entity,
 )
@@ -167,7 +167,7 @@ ACTIVE_SOURCE_RUN_STATUSES = ("queued", "running")
 ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
 EXPECTED_ALEMBIC_HEAD = "0026_doc_embeddings_claim_docs"
 LOGGER = logging.getLogger("uvicorn.error")
-OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims"}
+OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/claims/raw-data"}
 
 
 def _slugify(value: str) -> str:
@@ -420,10 +420,6 @@ def create_app(store: Store | None = None) -> FastAPI:
     async def api_stats(request: Request) -> dict[str, int]:
         return stats(_store(request))
 
-    @app.get("/api/system")
-    async def api_system(request: Request, limit: int = 50) -> dict[str, object]:
-        return system_overview(_store(request), limit=limit)
-
     @app.get("/api/sources")
     async def api_sources(request: Request) -> dict[str, object]:
         return {
@@ -532,6 +528,14 @@ def create_app(store: Store | None = None) -> FastAPI:
     @app.get("/api/claims/predicates")
     async def api_claim_predicates(request: Request) -> dict[str, object]:
         return {"predicates": claim_predicates(_store(request))}
+
+    @app.get("/api/claims/raw-data")
+    async def api_claims_raw_data(
+        request: Request,
+        page: int = 1,
+        page_size: int = 500,
+    ) -> dict[str, object]:
+        return list_raw_claims(_store(request), page=page, page_size=page_size)
 
     @app.get("/api/claims/{claim_id}")
     async def api_claim_detail(request: Request, claim_id: uuid.UUID) -> dict[str, object]:

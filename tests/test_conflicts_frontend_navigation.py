@@ -9,13 +9,24 @@ def _app_js() -> str:
     return APP_JS.read_text()
 
 
-def test_sidebar_uses_conflicts_parent_not_identity_review() -> None:
+def test_sidebar_uses_target_information_architecture() -> None:
     source = _app_js()
 
-    assert 'label: "Conflicts"' in source
+    assert '{ id: "ask", label: "Ask"' in source
+    assert '{ id: "graph", label: "Graph"' in source
+    assert '{ id: "sources", label: "Sources"' in source
+    assert '{ id: "claims", label: "Claims"' in source
+    assert '{ id: "faq", label: "FAQ"' in source
+    assert '{ id: "raw-data", label: "Raw data"' in source
+    assert 'label: "Conflicts"' not in source
+    assert 'label: "Archive"' not in source
+    assert 'label: "System"' not in source
+    assert source.index('label: "Ask"') < source.index('label: "Graph"')
+    assert source.index('label: "Graph"') < source.index('label: "Sources"')
+    assert source.index('label: "Sources"') < source.index('label: "Claims"')
+    assert source.index('label: "Claims"') < source.index('label: "Raw data"')
+    assert source.index('label: "FAQ"') < source.index('label: "Raw data"')
     assert 'label: "Identity Review"' not in source
-    assert "IDENTITY_REVIEW_TAB" not in source
-    assert "CONFLICTS_TAB" in source
 
 
 def test_conflicts_route_defaults_to_facts_tab() -> None:

@@ -6,14 +6,18 @@
 
 /* ─── Shared Tables ────────────────────────────────────────────────── */
 
-.directory-table {
+.data-table {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--fs-sm);
   table-layout: fixed;
 }
 
-.directory-table th {
+.data-table a {
+  color: var(--green);
+}
+
+.data-table th {
   height: var(--row-h-header);
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--line);
@@ -25,7 +29,7 @@
   text-transform: uppercase;
 }
 
-.directory-table td {
+.data-table td {
   height: var(--row-h-data);
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--line);
@@ -35,80 +39,52 @@
   color: var(--text-muted);
 }
 
-.directory-table-row {
+.data-table-row {
   cursor: pointer;
   transition: background-color var(--motion);
 }
 
-.directory-table-row:hover {
+.data-table-row:hover {
   background-color: var(--surface);
 }
 
-.directory-name-cell,
-.directory-source-cell {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
+.clean-claims-table th:nth-child(4),
+.clean-claims-table td:nth-child(4) {
+  width: 28%;
 }
 
-.directory-person-name {
-  color: var(--text);
-  font-weight: 500;
-  line-height: var(--lh-tight);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.clean-claims-table th:nth-child(5),
+.clean-claims-table td:nth-child(5) {
+  width: 24%;
 }
 
-.directory-person-sub {
-  color: var(--text-faint);
+.raw-data-table {
+  min-width: calc(var(--space-16) * 18);
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.data-table td.wrap-cell {
+  line-height: var(--lh-snug);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.data-table td.mono-cell {
+  font-family: var(--font-mono);
   font-size: var(--fs-xs);
-  line-height: var(--lh-tight);
-  margin-top: var(--space-1);
+}
+
+.table-meta {
+  padding: 0 var(--space-3) var(--space-2);
 }
 
 .muted-badge {
   background-color: var(--surface);
   color: var(--text-muted);
-}
-
-.directory-inline-empty {
-  padding: var(--space-3) 0;
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-}
-
-.directory-empty-panel {
-  min-height: calc(var(--space-16) * 6 + var(--space-8) + var(--space-1));
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  color: var(--text-muted);
-}
-
-.directory-empty-panel .ti {
-  font-size: var(--fs-2xl);
-  color: var(--text-faint);
-  margin-bottom: var(--space-3);
-}
-
-.directory-empty-panel h2 {
-  margin: 0 0 var(--space-2);
-  color: var(--text);
-  font-size: var(--fs-xl);
-  font-weight: 500;
-}
-
-.directory-empty-panel p {
-  margin: 0 0 var(--space-5);
-  max-width: calc(var(--space-16) * 5 + var(--space-10));
-}
-
-.directory-pagination {
-  margin-top: auto;
 }
 
 .pagination {
@@ -1325,7 +1301,7 @@ details[open] > summary .details-chevron {
 /* ─── Responsive ───────────────────────────────────────────────────── */
 
 @media (max-width: 820px) {
-  .directory-table {
+  .data-table {
     min-width: calc(var(--space-16) * 11 + var(--space-12) + var(--space-2));
   }
   .ask-page.is-empty {
