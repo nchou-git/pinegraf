@@ -1525,7 +1525,7 @@ function renderFAQ() {
 }
 
 function pipelineDiagram() {
-  const stages = ["Crawl", "Fetch", "Clean", "Hash", "Extract", "Store claims"];
+  const stages = ["Scrape", "Store raw", "Check hashes", "Parse", "Store claims", "Done"];
   const forthcoming = ["Resolution", "Entities", "Graph"];
   return `
     <svg class="pipeline-diagram" viewBox="0 0 980 220" role="img" aria-label="Pipeline architecture diagram">
