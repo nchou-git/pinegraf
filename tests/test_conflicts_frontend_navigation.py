@@ -21,8 +21,8 @@ def test_sidebar_uses_target_information_architecture() -> None:
     assert 'label: "Conflicts"' not in source
     assert 'label: "Archive"' not in source
     assert 'label: "System"' not in source
-    assert source.index('label: "Graph"') < source.index('label: "Ask"')
-    assert source.index('label: "Ask"') < source.index('label: "Claims"')
+    assert source.index('label: "Ask"') < source.index('label: "Graph"')
+    assert source.index('label: "Graph"') < source.index('label: "Claims"')
     assert source.index('label: "Claims"') < source.index('label: "Sources"')
     assert source.index('label: "Sources"') < source.index('label: "Raw data"')
     assert source.index('label: "Raw data"') < source.index('label: "FAQ"')
