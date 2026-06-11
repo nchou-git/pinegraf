@@ -1394,7 +1394,6 @@ details[open] > summary .details-chevron {
   font-size: 13px;
 }
 
-.pipeline-diagram .pipeline-note,
 .pipeline-diagram .pipeline-forthcoming-label {
   fill: var(--text-muted);
   font-size: 11px;

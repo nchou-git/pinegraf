@@ -24,12 +24,12 @@ let modalKeydownHandler = null;
 let logsViewStream = null;
 
 const TAB_DEFS = [
-  { id: "ask", label: "Ask", icon: "ti-message-question" },
   { id: "graph", label: "Graph", icon: "ti-vector-triangle" },
-  { id: "sources", label: "Sources", icon: "ti-database" },
+  { id: "ask", label: "Ask", icon: "ti-message-question" },
   { id: "claims", label: "Claims", icon: "ti-file-search" },
-  { id: "faq", label: "FAQ", icon: "ti-help-circle" },
+  { id: "sources", label: "Sources", icon: "ti-database" },
   { id: "raw-data", label: "Raw data", icon: "ti-table" },
+  { id: "faq", label: "FAQ", icon: "ti-help-circle" },
 ];
 
 const SOURCE_KINDS = [
@@ -1491,8 +1491,8 @@ function renderFAQ() {
     ["Cleaning", "Turning raw HTML into readable text with trafilatura."],
     ["Hash", "A content fingerprint used for deduplication and change detection."],
     ["Extraction", "One model call per document that turns text into typed claims."],
-    ["Claim", "A structured statement extracted from a document."],
-    ["claims_raw", "The database table holding model-extracted claim rows before resolution."],
+    ["Claim", "A subject-predicate-object statement with quote and source provenance."],
+    ["claims_raw", "The raw extractor output table before deduplication, resolution, or graph projection."],
     ["Predicate", "The relationship type, such as employed_by or founded."],
     ["Subject", "The claim's starting thing, usually a person or organization."],
     ["Object", "The claim's target value, person, organization, project, place, event, or date."],
@@ -1531,16 +1531,10 @@ function pipelineDiagram() {
     <svg class="pipeline-diagram" viewBox="0 0 980 220" role="img" aria-label="Pipeline architecture diagram">
       <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="currentColor"></path></marker></defs>
       ${stages.map((stage, index) => pipelineNode(stage, 30 + index * 150, 44, false)).join("")}
-      ${stages.slice(0, -1).map((_stage, index) => pipelineArrow(128 + index * 150, 84, 170 + index * 150, 84, false)).join("")}
-      <text x="30" y="150" class="pipeline-note">exhaustive</text>
-      <text x="180" y="150" class="pipeline-note">raw HTML</text>
-      <text x="330" y="150" class="pipeline-note">trafilatura</text>
-      <text x="480" y="150" class="pipeline-note">dedup / change-detect</text>
-      <text x="630" y="150" class="pipeline-note">one model call per document to typed claims</text>
-      <text x="780" y="150" class="pipeline-note">each claim has a source citation</text>
-      ${forthcoming.map((stage, index) => pipelineNode(stage, 350 + index * 150, 168, true)).join("")}
-      ${forthcoming.slice(0, -1).map((_stage, index) => pipelineArrow(448 + index * 150, 208, 490 + index * 150, 208, true)).join("")}
-      <text x="350" y="132" class="pipeline-forthcoming-label">Forthcoming</text>
+      ${stages.slice(0, -1).map((_stage, index) => pipelineArrow(146 + index * 150, 64, 180 + index * 150, 64, false)).join("")}
+      <text x="330" y="166" class="pipeline-forthcoming-label" text-anchor="end">Forthcoming</text>
+      ${forthcoming.map((stage, index) => pipelineNode(stage, 350 + index * 150, 142, true)).join("")}
+      ${forthcoming.slice(0, -1).map((_stage, index) => pipelineArrow(466 + index * 150, 162, 500 + index * 150, 162, true)).join("")}
     </svg>
   `;
 }
