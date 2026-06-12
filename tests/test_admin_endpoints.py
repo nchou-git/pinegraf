@@ -71,6 +71,55 @@ def test_admin_auth_required_and_happy_paths(
         assert store.get_source_run(run_id).status == "complete"
 
 
+def test_admin_create_source_accepts_depth_limited_and_full_crawl_sources(
+    store,
+    admin_headers,
+) -> None:
+    with TestClient(main_module.create_app(store)) as client:
+        first = client.post(
+            "/admin/sources",
+            headers=admin_headers,
+            json={
+                "kind": "domain",
+                "identifier": "https://tuck.dartmouth.edu/page-a",
+                "display_name": "Tuck",
+                "crawl_depth": 1,
+            },
+        )
+        second = client.post(
+            "/admin/sources",
+            headers=admin_headers,
+            json={
+                "kind": "domain",
+                "identifier": "https://tuck.dartmouth.edu/page-b",
+                "display_name": "Tuck",
+                "crawl_depth": 2,
+            },
+        )
+        full = client.post(
+            "/admin/sources",
+            headers=admin_headers,
+            json={
+                "kind": "domain",
+                "identifier": "tuck.dartmouth.edu",
+                "display_name": "Tuck",
+                "crawl_depth": None,
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert full.status_code == 200
+    assert first.json()["identifier"] == "https://tuck.dartmouth.edu/page-a"
+    assert second.json()["identifier"] == "https://tuck.dartmouth.edu/page-b"
+    assert full.json()["identifier"] == "tuck.dartmouth.edu"
+    assert first.json()["crawl_depth"] == 1
+    assert second.json()["crawl_depth"] == 2
+    assert full.json()["crawl_depth"] is None
+    assert first.json()["display_name"] == second.json()["display_name"] == "Tuck"
+    assert store.table_counts(["sources"])["sources"] == 3
+
+
 def test_crawl_rejects_existing_active_source_run(store, admin_headers, monkeypatch) -> None:
     called = False
 

@@ -89,6 +89,7 @@ from backend.web_api import (
 class SourceCreate(BaseModel):
     kind: Literal["domain", "file"]
     identifier: str
+    crawl_depth: int | None = Field(default=None, ge=1)
     trust_weight: float = Field(default=0.5, ge=0, le=1)
     respect_robots: bool = True
     display_name: str | None = None
@@ -96,7 +97,11 @@ class SourceCreate(BaseModel):
 
     @model_validator(mode="after")
     def normalize_source_identifier(self) -> "SourceCreate":
-        self.identifier = normalize_identifier(self.kind, self.identifier)
+        self.identifier = normalize_identifier(
+            self.kind,
+            self.identifier,
+            crawl_depth=self.crawl_depth,
+        )
         if not self.identifier:
             raise ValueError("identifier is required")
         return self

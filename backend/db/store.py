@@ -159,11 +159,12 @@ class Store:
         status: str = "active",
         display_name: str | None = None,
         notes: str | None = None,
+        crawl_depth: int | None = None,
         audit_actor: str | None = None,
         audit_request_ip: str | None = None,
         audit_payload: dict[str, object] | None = None,
     ) -> Source:
-        identifier = normalize_identifier(kind, identifier)
+        identifier = normalize_identifier(kind, identifier, crawl_depth=crawl_depth)
         if not identifier:
             raise ValueError("identifier is required")
         with self.session() as session:
@@ -177,6 +178,7 @@ class Store:
                 existing.status = status
                 existing.display_name = display_name
                 existing.notes = notes
+                existing.crawl_depth = crawl_depth
                 if audit_payload is not None:
                     session.add(
                         AuditLog(
@@ -198,6 +200,7 @@ class Store:
                 status=status,
                 display_name=display_name,
                 notes=notes,
+                crawl_depth=crawl_depth,
                 recrawl_interval_days=get_settings().recrawl_default_days,
             )
             session.add(source)
@@ -592,6 +595,7 @@ def source_to_dict(source: Source) -> dict[str, object]:
         "pages_fetched_total": source.pages_fetched_total,
         "urls_known_total": source.urls_known_total,
         "recrawl_interval_days": source.recrawl_interval_days,
+        "crawl_depth": source.crawl_depth,
         "last_full_recrawl_at": (
             source.last_full_recrawl_at.isoformat() if source.last_full_recrawl_at else None
         ),

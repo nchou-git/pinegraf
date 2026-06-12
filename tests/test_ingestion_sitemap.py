@@ -111,6 +111,133 @@ async def test_sitemap_runner_follows_links_on_retrieved_pages(store, fake_httpx
 
 
 @pytest.mark.asyncio
+async def test_sitemap_runner_depth_one_fetches_only_seed_url(store, fake_httpx) -> None:
+    source = store.upsert_source(
+        kind="domain",
+        identifier="https://example.com/seed",
+        crawl_depth=1,
+    )
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": source.identifier},
+        triggered_by="test",
+    )
+    fake_httpx.responses = {
+        "https://example.com/robots.txt": fake_httpx.Response(
+            "https://example.com/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
+        ),
+        "https://example.com/seed": fake_httpx.Response(
+            "https://example.com/seed",
+            200,
+            b'<html><a href="/next">next</a></html>',
+        ),
+        "https://example.com/next": fake_httpx.Response(
+            "https://example.com/next",
+            200,
+            b"<html>next</html>",
+        ),
+    }
+
+    stats = await run_sitemap(run.id, source.identifier, store=store)
+
+    assert stats["fetched"] == 1
+    with store.session() as session:
+        urls = sorted(session.execute(select(Fetch.url)).scalars())
+    assert urls == ["https://example.com/seed"]
+
+
+@pytest.mark.asyncio
+async def test_sitemap_runner_depth_two_fetches_one_link_level(store, fake_httpx) -> None:
+    source = store.upsert_source(
+        kind="domain",
+        identifier="https://example.com/seed",
+        crawl_depth=2,
+    )
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": source.identifier},
+        triggered_by="test",
+    )
+    fake_httpx.responses = {
+        "https://example.com/robots.txt": fake_httpx.Response(
+            "https://example.com/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
+        ),
+        "https://example.com/seed": fake_httpx.Response(
+            "https://example.com/seed",
+            200,
+            b'<html><a href="/next">next</a></html>',
+        ),
+        "https://example.com/next": fake_httpx.Response(
+            "https://example.com/next",
+            200,
+            b'<html><a href="/third">third</a></html>',
+        ),
+        "https://example.com/third": fake_httpx.Response(
+            "https://example.com/third",
+            200,
+            b"<html>third</html>",
+        ),
+    }
+
+    stats = await run_sitemap(run.id, source.identifier, store=store)
+
+    assert stats["fetched"] == 2
+    with store.session() as session:
+        urls = sorted(session.execute(select(Fetch.url)).scalars())
+    assert urls == ["https://example.com/next", "https://example.com/seed"]
+
+
+@pytest.mark.asyncio
+async def test_sitemap_runner_default_depth_still_crawls_fully(store, fake_httpx) -> None:
+    source = store.upsert_source(kind="domain", identifier="example.com")
+    run = store.create_source_run(
+        source_id=source.id,
+        kind="sitemap",
+        spec={"source_input": "https://example.com/seed"},
+        triggered_by="test",
+    )
+    fake_httpx.responses = {
+        "https://example.com/robots.txt": fake_httpx.Response(
+            "https://example.com/robots.txt",
+            200,
+            b"User-agent: *\nAllow: /\n",
+        ),
+        "https://example.com/seed": fake_httpx.Response(
+            "https://example.com/seed",
+            200,
+            b'<html><a href="/next">next</a></html>',
+        ),
+        "https://example.com/next": fake_httpx.Response(
+            "https://example.com/next",
+            200,
+            b'<html><a href="/third">third</a></html>',
+        ),
+        "https://example.com/third": fake_httpx.Response(
+            "https://example.com/third",
+            200,
+            b"<html>third</html>",
+        ),
+    }
+
+    stats = await run_sitemap(run.id, "https://example.com/seed", store=store)
+
+    assert stats["fetched"] == 3
+    with store.session() as session:
+        urls = sorted(session.execute(select(Fetch.url)).scalars())
+    assert urls == [
+        "https://example.com/next",
+        "https://example.com/seed",
+        "https://example.com/third",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sitemap_runner_follows_subdomain_links(store, fake_httpx) -> None:
     source = store.upsert_source(kind="domain", identifier="tuck.dartmouth.edu")
     run = store.create_source_run(

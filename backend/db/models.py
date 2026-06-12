@@ -56,6 +56,10 @@ class Source(Base):
             "status in ('active','archived')",
             name="ck_sources_status",
         ),
+        CheckConstraint(
+            "crawl_depth is null or crawl_depth >= 1",
+            name="ck_sources_crawl_depth",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -68,6 +72,7 @@ class Source(Base):
     urls_known_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recrawl_interval_days: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     last_full_recrawl_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    crawl_depth: Mapped[int | None] = mapped_column(Integer)
     display_name: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

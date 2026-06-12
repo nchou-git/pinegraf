@@ -155,6 +155,7 @@ async def run_sitemap(
         raise ValueError(f"source run not found: {run_id}")
     source_id = run.source_id
     source = store.get_source(source_id)
+    max_depth = source.crawl_depth if source else None
     baseline_fetched = int(source.pages_fetched_total or 0) if source else 0
     baseline_known = int(source.urls_known_total or 0) if source else 0
     stats: dict[str, int] = {"fetched": 0, "errors": 0}
@@ -187,7 +188,7 @@ async def run_sitemap(
         ),
     )
 
-    queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+    queue: asyncio.Queue[tuple[str, str, int]] = asyncio.Queue()
     seen: set[str] = set()
     settings = get_settings()
     cap = settings.max_pages
@@ -218,7 +219,7 @@ async def run_sitemap(
             stats["errors"] += 1
 
     for url in seed_urls:
-        _enqueue(url, seed_method, queue=queue, seen=seen, root_host=root_host)
+        _enqueue(url, seed_method, depth=1, queue=queue, seen=seen, root_host=root_host)
 
     async def reserve_fetch_slot() -> bool:
         nonlocal reserved
@@ -294,7 +295,7 @@ async def run_sitemap(
     async def worker() -> None:
         nonlocal highest_percent
         while True:
-            url, method = await queue.get()
+            url, method, depth = await queue.get()
             slot_reserved = False
             try:
                 if stop_requested.is_set():
@@ -366,12 +367,13 @@ async def run_sitemap(
                     continue
 
                 discovered_count = 0
-                if result.is_html:
+                if result.is_html and (max_depth is None or depth < max_depth):
                     for discovered in _discover_links(result.body, base_url=final_url):
                         async with seen_lock:
                             if _enqueue(
                                 discovered,
                                 "link_follow",
+                                depth=depth + 1,
                                 queue=queue,
                                 seen=seen,
                                 root_host=root_host,
@@ -787,7 +789,8 @@ def _enqueue(
     url: str,
     method: str,
     *,
-    queue: asyncio.Queue[tuple[str, str]],
+    depth: int,
+    queue: asyncio.Queue[tuple[str, str, int]],
     seen: set[str],
     root_host: str,
 ) -> bool:
@@ -822,7 +825,7 @@ def _enqueue(
         seen.add(canonical)
         return False
     seen.add(canonical)
-    queue.put_nowait((canonical, method))
+    queue.put_nowait((canonical, method, depth))
     return True
 
 

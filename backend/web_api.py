@@ -552,6 +552,7 @@ def list_sources(store: Store, *, include_archived: bool = False) -> list[dict[s
                     "pages_fetched_total": source.pages_fetched_total,
                     "urls_known_total": source.urls_known_total,
                     "recrawl_interval_days": source.recrawl_interval_days,
+                    "crawl_depth": source.crawl_depth,
                     "last_full_recrawl_at": (
                         source.last_full_recrawl_at.isoformat()
                         if source.last_full_recrawl_at
@@ -687,6 +688,7 @@ def source_detail(
             "pages_fetched_total": source.pages_fetched_total,
             "urls_known_total": source.urls_known_total,
             "recrawl_interval_days": source.recrawl_interval_days,
+            "crawl_depth": source.crawl_depth,
             "last_full_recrawl_at": (
                 source.last_full_recrawl_at.isoformat() if source.last_full_recrawl_at else None
             ),

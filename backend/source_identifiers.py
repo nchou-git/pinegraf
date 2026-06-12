@@ -8,7 +8,7 @@ def _looks_like_sitemap(path: str) -> bool:
     return lowered.endswith(".xml") or "sitemap" in lowered
 
 
-def normalize_identifier(kind: str, raw: str) -> str:
+def normalize_identifier(kind: str, raw: str, *, crawl_depth: int | None = None) -> str:
     value = str(raw or "").strip()
     if kind == "file":
         return value
@@ -25,12 +25,18 @@ def normalize_identifier(kind: str, raw: str) -> str:
         host = host[4:]
     host = host.rstrip("/")
 
-    # A sitemap URL keeps its path so the crawler ingests the listed pages
-    # instead of crawling the whole domain; every other website input collapses
-    # to a bare host so each site stays a single, de-duplicated source. Query
-    # strings and fragments are dropped to keep identifiers canonical.
     path = parsed.path if parsed.netloc else ""
+
+    # Website / page mode (bounded depth): keep the exact URL so distinct pages
+    # on one domain stay distinct sources. Always carries a scheme + path, so a
+    # depth-limited homepage source won't collide with a full-crawl source.
+    if crawl_depth is not None:
+        if not host:
+            return ""
+        return urlunparse(("https", host, path or "/", "", "", ""))
+
+    # Full-crawl (Sitemap) mode: keep a sitemap URL, else collapse to the bare
+    # host (one source per domain). Query/fragment dropped.
     if host and _looks_like_sitemap(path):
         return urlunparse(("https", host, path, "", "", ""))
-
     return host

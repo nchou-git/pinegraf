@@ -34,34 +34,27 @@ const TAB_DEFS = [
 
 const SOURCE_KINDS = [
   {
-    id: "domain",
+    id: "website",
     kind: "domain",
     label: "Website",
-    description: "Crawl a site by following links from a domain or page URL.",
+    multiUrl: true,
+    depth: true,
+    urlLabel: "Page URL",
+    placeholder: "https://example.com/article",
+    description:
+      "Add one or more page URLs. Depth 1 ingests only that page; higher follows links that many levels deep.",
     icon: "ti-world",
-    fields: [
-      {
-        name: "identifier",
-        label: "URL or domain",
-        placeholder: "tuck.dartmouth.edu",
-        required: true,
-      },
-    ],
   },
   {
     id: "sitemap",
     kind: "domain",
     label: "Sitemap",
-    description: "Fetch every page listed in a sitemap.xml or sitemap index URL.",
+    multiUrl: true,
+    depth: false,
+    urlLabel: "Sitemap URL or domain",
+    placeholder: "https://example.com/sitemap.xml",
+    description: "Crawl an entire site from a sitemap.xml or a domain.",
     icon: "ti-sitemap",
-    fields: [
-      {
-        name: "identifier",
-        label: "Sitemap URL",
-        placeholder: "https://tuck.dartmouth.edu/sitemap.xml",
-        required: true,
-      },
-    ],
   },
   {
     id: "file",
@@ -2943,12 +2936,66 @@ async function verifySourceIntegrity(sourceId) {
 
 /* ───── Add source modal ───── */
 
-let modalKind = "domain";
+let modalKind = "website";
+let modalUrlRowId = 0;
 
 function openAddSourceModal() {
   if (!isAdmin()) return;
-  modalKind = "domain";
+  modalKind = "website";
+  modalUrlRowId = 0;
   renderAddSourceModal();
+}
+
+function sourceUrlRowHtml(selected) {
+  modalUrlRowId += 1;
+  const columns = selected.depth ? "minmax(0, 1fr) 96px 40px" : "minmax(0, 1fr) 40px";
+  return `
+    <div class="field-row source-url-row" data-source-url-row style="grid-template-columns: ${columns}; align-items: end;">
+      <label class="field">
+        <span class="field-label">${escapeHtml(selected.urlLabel || "URL")}</span>
+        <input class="input source-url-input" data-source-url-input placeholder="${escapeAttr(selected.placeholder || "")}" />
+      </label>
+      ${
+        selected.depth
+          ? `<label class="field">
+              <span class="field-label">Depth</span>
+              <input class="input source-depth-input" data-source-depth-input type="number" min="1" value="1" />
+            </label>`
+          : ""
+      }
+      <button class="btn-icon-only" type="button" data-remove-source-url-row aria-label="Remove URL row" title="Remove URL row">
+        <i class="ti ti-trash" aria-hidden="true"></i>
+      </button>
+    </div>`;
+}
+
+function sourceFieldsHtml(selected) {
+  if (selected.multiUrl) {
+    return `
+      <div class="field">
+        <span class="field-label">${escapeHtml(selected.urlLabel || "URLs")}</span>
+        <div id="new-url-rows">
+          ${sourceUrlRowHtml(selected)}
+        </div>
+      </div>
+      <button class="btn-secondary" id="add-url-row" type="button">
+        <i class="ti ti-plus" aria-hidden="true"></i> Add another row
+      </button>`;
+  }
+  return selected.fields
+    .map((f) => {
+      if (f.type === "file") {
+        return `<label class="field">
+            <span class="field-label">${escapeHtml(f.label)}</span>
+            <input class="input" id="new-${f.name}" type="file" ${f.accept ? `accept="${escapeAttr(f.accept)}"` : ""} />
+          </label>`;
+      }
+      return `<label class="field">
+          <span class="field-label">${escapeHtml(f.label)}</span>
+          <input class="input" id="new-${f.name}" placeholder="${escapeAttr(f.placeholder || "")}" />
+        </label>`;
+    })
+    .join("");
 }
 
 function renderAddSourceModal() {
@@ -2980,20 +3027,7 @@ function renderAddSourceModal() {
         <span class="field-label">Label</span>
         <input class="input" id="new-name" placeholder="e.g. Tuck Website" />
       </label>
-      ${selected.fields
-        .map((f) => {
-          if (f.type === "file") {
-            return `<label class="field">
-                <span class="field-label">${escapeHtml(f.label)}</span>
-                <input class="input" id="new-${f.name}" type="file" ${f.accept ? `accept="${escapeAttr(f.accept)}"` : ""} />
-              </label>`;
-          }
-          return `<label class="field">
-              <span class="field-label">${escapeHtml(f.label)}</span>
-              <input class="input" id="new-${f.name}" placeholder="${escapeAttr(f.placeholder || "")}" />
-            </label>`;
-        })
-        .join("")}
+      ${sourceFieldsHtml(selected)}
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
@@ -3003,9 +3037,23 @@ function renderAddSourceModal() {
   document.querySelectorAll(".kind-card").forEach((card) => {
     card.onclick = () => {
       modalKind = card.dataset.kind;
+      modalUrlRowId = 0;
       renderAddSourceModal();
     };
   });
+  const addRow = byId("add-url-row");
+  if (addRow) {
+    addRow.onclick = () => {
+      byId("new-url-rows").insertAdjacentHTML("beforeend", sourceUrlRowHtml(selected));
+    };
+  }
+  const rows = byId("new-url-rows");
+  if (rows) {
+    rows.onclick = (event) => {
+      const button = event.target.closest("[data-remove-source-url-row]");
+      if (button) button.closest("[data-source-url-row]")?.remove();
+    };
+  }
   byId("new-submit").onclick = submitAddSource;
 }
 
@@ -3020,7 +3068,53 @@ async function submitAddSource() {
     return;
   }
   try {
-    if (kind === "file" || kind === "enrichment") {
+    if (selected.multiUrl) {
+      const rows = Array.from(document.querySelectorAll("[data-source-url-row]"));
+      const requests = rows
+        .map((row) => {
+          const input = row.querySelector("[data-source-url-input]");
+          const identifier = input.value.trim();
+          if (!identifier) return null;
+          const depthInput = row.querySelector("[data-source-depth-input]");
+          const parsedDepth = Math.max(1, Number.parseInt(depthInput?.value || "1", 10) || 1);
+          return {
+            kind: "domain",
+            identifier,
+            display_name,
+            crawl_depth: selected.depth ? parsedDepth : null,
+          };
+        })
+        .filter(Boolean);
+      if (!requests.length) {
+        toast("Add at least one URL.", { level: "warning" });
+        rows[0]?.querySelector("[data-source-url-input]")?.focus();
+        return;
+      }
+      const results = await Promise.allSettled(
+        requests.map(async (body) => {
+          const res = await fetch("/admin/sources", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || res.statusText);
+          }
+          return res.json();
+        }),
+      );
+      const added = results.filter((result) => result.status === "fulfilled").length;
+      const failed = results.length - added;
+      if (added && failed) {
+        toast(`Added ${added}, ${failed} failed.`, { level: "warning" });
+      } else if (added) {
+        toast(`Added ${added} ${added === 1 ? "source" : "sources"}.`, { level: "success" });
+      } else {
+        toast(`${failed} failed.`, { level: "error" });
+      }
+      if (!added) return;
+    } else if (kind === "file" || kind === "enrichment") {
       const input = byId("new-file");
       if (!input.files || !input.files[0]) {
         toast(`${selected.fields[0]?.label || "File"} is required.`, { level: "warning" });
