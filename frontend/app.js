@@ -3015,12 +3015,16 @@ async function submitAddSource() {
   const kind = selected.kind;
   const display_name = byId("new-name").value.trim();
   if (!display_name) {
+    toast("Label is required.", { level: "warning" });
+    byId("new-name").focus();
     return;
   }
   try {
     if (kind === "file" || kind === "enrichment") {
       const input = byId("new-file");
       if (!input.files || !input.files[0]) {
+        toast(`${selected.fields[0]?.label || "File"} is required.`, { level: "warning" });
+        input.focus();
         return;
       }
       const form = new FormData();
@@ -3036,6 +3040,8 @@ async function submitAddSource() {
     } else {
       const identifier = byId("new-identifier").value.trim();
       if (!identifier) {
+        toast(`${selected.fields[0]?.label || "URL"} is required.`, { level: "warning" });
+        byId("new-identifier").focus();
         return;
       }
       const body = {
