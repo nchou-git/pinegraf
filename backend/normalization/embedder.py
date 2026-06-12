@@ -7,6 +7,7 @@ from backend.config import get_settings
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMENSIONS = 1536
 
+
 async def embed_text(text: str) -> list[float]:
     return (await embed_texts([text]))[0]
 

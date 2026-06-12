@@ -37,13 +37,28 @@ const SOURCE_KINDS = [
     id: "domain",
     kind: "domain",
     label: "Website",
-    description: "Crawl a website by domain, sitemap URL, or any page URL.",
+    description: "Crawl a site by following links from a domain or page URL.",
     icon: "ti-world",
     fields: [
       {
         name: "identifier",
         label: "URL or domain",
         placeholder: "tuck.dartmouth.edu",
+        required: true,
+      },
+    ],
+  },
+  {
+    id: "sitemap",
+    kind: "domain",
+    label: "Sitemap",
+    description: "Fetch every page listed in a sitemap.xml or sitemap index URL.",
+    icon: "ti-sitemap",
+    fields: [
+      {
+        name: "identifier",
+        label: "Sitemap URL",
+        placeholder: "https://tuck.dartmouth.edu/sitemap.xml",
         required: true,
       },
     ],
@@ -2118,8 +2133,20 @@ function sourceDisplayName(source) {
   return source?.display_name || source?.identifier || "This source";
 }
 
+function isSitemapIdentifier(identifier) {
+  const value = String(identifier || "").trim();
+  if (!value) return false;
+  let path = "";
+  try {
+    path = new URL(value.includes("://") ? value : `https://${value}`).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return path.endsWith(".xml") || path.includes("sitemap");
+}
+
 function sourceKindLabel(source) {
-  if (source.kind === "domain") return "Website";
+  if (source.kind === "domain") return isSitemapIdentifier(source.identifier) ? "Sitemap" : "Website";
   if (source.kind === "file") return "File";
   return source.kind || "Source";
 }
@@ -2138,7 +2165,7 @@ function sourceRunStatusLabel(status) {
 }
 
 function sourceKindIcon(source) {
-  if (source.kind === "domain") return "ti-world";
+  if (source.kind === "domain") return isSitemapIdentifier(source.identifier) ? "ti-sitemap" : "ti-world";
   if (source.kind === "file") return "ti-file";
   return source.icon_hint || "ti-database";
 }

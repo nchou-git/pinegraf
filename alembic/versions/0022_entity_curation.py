@@ -8,8 +8,8 @@ Create Date: 2026-05-27
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision = "0022_entity_curation"
 down_revision = "0021_identity_review"
@@ -20,7 +20,9 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "entities",
-        sa.Column("needs_human_disambiguation", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column(
+            "needs_human_disambiguation", sa.Boolean(), nullable=False, server_default="false"
+        ),
     )
     op.add_column("entities", sa.Column("verified_by", sa.Text(), nullable=True))
     op.add_column("entities", sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True))

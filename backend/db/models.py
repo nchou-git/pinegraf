@@ -351,9 +351,7 @@ class Entity(Base):
         Uuid(as_uuid=True),
         ForeignKey("entities.id", ondelete="SET NULL"),
     )
-    needs_human_disambiguation: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
+    needs_human_disambiguation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     verified_by: Mapped[str | None] = mapped_column(Text)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, nullable=False, default="active")

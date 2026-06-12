@@ -8,8 +8,8 @@ Create Date: 2026-05-27
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision = "0019_pipeline_reliability"
 down_revision = "0018_temporal_storage"
@@ -25,7 +25,9 @@ def upgrade() -> None:
     op.add_column("sources", sa.Column("last_full_recrawl_at", sa.DateTime(timezone=True)))
 
     op.add_column("source_runs", sa.Column("stats_updated_at", sa.DateTime(timezone=True)))
-    op.execute("update source_runs set stats_updated_at = started_at where stats_updated_at is null")
+    op.execute(
+        "update source_runs set stats_updated_at = started_at where stats_updated_at is null"
+    )
 
     op.add_column(
         "fetches",

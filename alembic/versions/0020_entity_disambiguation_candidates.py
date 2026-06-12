@@ -8,8 +8,8 @@ Create Date: 2026-05-27
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 
+from alembic import op
 
 revision = "0020_entity_disambig"
 down_revision = "0019_pipeline_reliability"

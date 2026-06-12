@@ -8,8 +8,9 @@ Create Date: 2026-05-27 05:30:00.000000
 from __future__ import annotations
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "0018_temporal_storage"
 down_revision: str | None = "0017_stop_supersede"

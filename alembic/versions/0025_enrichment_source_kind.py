@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from alembic import op
 
-
 revision = "0025_enrichment_source_kind"
 down_revision = "0024_claim_raw_subject_type"
 branch_labels = None

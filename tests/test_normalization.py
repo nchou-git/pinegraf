@@ -33,6 +33,7 @@ async def test_content_hash_dedup_links_multiple_fetches(store, monkeypatch) -> 
 
     monkeypatch.setattr(normalizer, "clean_html", lambda raw: ("Same body.", "One"))
     monkeypatch.setattr(normalizer, "detect_language", lambda text: "en")
+
     async def fake_embed(text: str) -> list[float]:
         return [0.0] * 1536
 

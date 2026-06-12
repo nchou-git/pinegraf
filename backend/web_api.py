@@ -202,12 +202,18 @@ def search_entities(store: Store, *, q: str = "", limit: int = 8) -> dict[str, o
         if q:
             query = query.where(Entity.canonical_name.ilike(f"%{q}%"))
         rows = list(session.execute(query).scalars())
-        summaries = {
-            summary.entity_id: summary
-            for summary in session.execute(
-                select(EntitySummary).where(EntitySummary.entity_id.in_([row.id for row in rows]))
-            ).scalars()
-        } if rows else {}
+        summaries = (
+            {
+                summary.entity_id: summary
+                for summary in session.execute(
+                    select(EntitySummary).where(
+                        EntitySummary.entity_id.in_([row.id for row in rows])
+                    )
+                ).scalars()
+            }
+            if rows
+            else {}
+        )
         return {
             "results": [
                 {
@@ -793,10 +799,7 @@ def document_detail(store: Store, document_id: uuid.UUID) -> dict[str, object] |
                 .where(SourceRun.id == fetch.source_run_id)
             ).scalar_one_or_none()
         claims_raw = list(
-            session.execute(
-                select(ClaimRaw)
-                .where(ClaimRaw.document_id == document.id)
-            ).scalars()
+            session.execute(select(ClaimRaw).where(ClaimRaw.document_id == document.id)).scalars()
         )
         return {
             "document_id": str(document.id),

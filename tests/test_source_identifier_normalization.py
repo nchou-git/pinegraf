@@ -19,6 +19,34 @@ def test_normalize_domain_identifier_variants(raw: str, expected: str) -> None:
     assert normalize_identifier("domain", raw) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://tuck.dartmouth.edu/sitemap.xml", "https://tuck.dartmouth.edu/sitemap.xml"),
+        ("tuck.dartmouth.edu/sitemap.xml", "https://tuck.dartmouth.edu/sitemap.xml"),
+        (
+            "HTTPS://WWW.Tuck.Dartmouth.EDU/sitemap_index.xml#frag",
+            "https://tuck.dartmouth.edu/sitemap_index.xml",
+        ),
+        ("https://tuck.dartmouth.edu/news/sitemap", "https://tuck.dartmouth.edu/news/sitemap"),
+        (
+            "https://tuck.dartmouth.edu/feeds/posts.xml?utm_source=x",
+            "https://tuck.dartmouth.edu/feeds/posts.xml",
+        ),
+    ],
+)
+def test_normalize_domain_identifier_preserves_sitemap_urls(raw: str, expected: str) -> None:
+    assert normalize_identifier("domain", raw) == expected
+
+
+def test_website_and_sitemap_identifiers_for_same_host_are_distinct() -> None:
+    assert normalize_identifier("domain", "tuck.dartmouth.edu") == "tuck.dartmouth.edu"
+    assert (
+        normalize_identifier("domain", "https://tuck.dartmouth.edu/sitemap.xml")
+        == "https://tuck.dartmouth.edu/sitemap.xml"
+    )
+
+
 def test_source_create_normalizes_domain_identifier() -> None:
     payload = SourceCreate(kind="domain", identifier="HTTPS://WWW.TUCK.DARTMOUTH.EDU/path")
     assert payload.identifier == "tuck.dartmouth.edu"

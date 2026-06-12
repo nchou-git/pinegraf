@@ -27,7 +27,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_constraint("ck_source_runs_status", "source_runs", type_="check")
-    op.execute("UPDATE source_runs SET status = 'cancelled' WHERE status IN ('stopped','superseded')")
+    op.execute(
+        "UPDATE source_runs SET status = 'cancelled' WHERE status IN ('stopped','superseded')"
+    )
     op.create_check_constraint(
         "ck_source_runs_status",
         "source_runs",

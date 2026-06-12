@@ -12,7 +12,6 @@ from pgvector.sqlalchemy import Vector
 
 from alembic import op
 
-
 revision = "0026_doc_embeddings_claim_docs"
 down_revision = "0025_enrichment_source_kind"
 branch_labels = None
