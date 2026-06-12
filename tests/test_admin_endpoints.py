@@ -449,8 +449,8 @@ def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch
         get_settings.cache_clear()
 
 
-def test_demo_index_forces_login_only_for_anonymous_visitors(monkeypatch) -> None:
-    monkeypatch.setenv("PINEGRAF_DEMO_MODE", "true")
+def test_index_forces_login_only_for_anonymous_visitors(monkeypatch) -> None:
+    monkeypatch.setenv("PINEGRAF_DEMO_MODE", "false")
     get_settings.cache_clear()
     client = TestClient(main_module.create_app(object()))
     anonymous = client.get("/")
@@ -461,29 +461,3 @@ def test_demo_index_forces_login_only_for_anonymous_visitors(monkeypatch) -> Non
     admin = client.get("/")
     assert admin.status_code == 200
     assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in admin.text
-
-
-def test_prod_index_does_not_force_login(monkeypatch) -> None:
-    monkeypatch.setenv("PINEGRAF_DEMO_MODE", "false")
-    get_settings.cache_clear()
-    client = TestClient(main_module.create_app(object()))
-    anonymous = client.get("/")
-    assert anonymous.status_code == 200
-    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in anonymous.text
-
-    client.cookies.set(COOKIE_NAME, issue())
-    admin = client.get("/")
-    assert admin.status_code == 200
-    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in admin.text
-
-
-def test_demo_env_enables_demo_index_login_gate(monkeypatch) -> None:
-    monkeypatch.delenv("PINEGRAF_DEMO_MODE", raising=False)
-    monkeypatch.setenv("PINEGRAF_ENV", "demo")
-    get_settings.cache_clear()
-    client = TestClient(main_module.create_app(object()))
-
-    response = client.get("/")
-
-    assert response.status_code == 200
-    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" in response.text

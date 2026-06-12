@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=multi-source-files";
-@import "./styles/components.css?v=multi-source-files";
-@import "./styles/layout.css?v=multi-source-files";
+@import "./styles/tokens.css?v=admin-login-gate";
+@import "./styles/components.css?v=admin-login-gate";
+@import "./styles/layout.css?v=admin-login-gate";
 
 /* page-specific rules below */
 

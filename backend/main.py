@@ -262,8 +262,7 @@ def create_app(store: Store | None = None) -> FastAPI:
                 '<head>\n    <meta name="robots" content="noindex,nofollow">',
                 1,
             )
-        settings = get_settings()
-        if settings.demo_mode and not is_admin_request(request):
+        if not is_admin_request(request):
             html = html.replace(
                 "<head>",
                 "<head>\n    <script>window.__PINEGRAF_FORCE_LOGIN__ = true;</script>",

@@ -155,7 +155,6 @@ function renderLoginGate() {
           </svg>
           <div>
             <div class="wordmark">Pinegraf</div>
-            <div class="login-note">Demo environment</div>
           </div>
         </div>
         <div class="login-error" id="login-gate-error" hidden></div>
