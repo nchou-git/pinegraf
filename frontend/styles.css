@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=bulk-source-depth";
-@import "./styles/components.css?v=bulk-source-depth";
-@import "./styles/layout.css?v=bulk-source-depth";
+@import "./styles/tokens.css?v=multi-source-files";
+@import "./styles/components.css?v=multi-source-files";
+@import "./styles/layout.css?v=multi-source-files";
 
 /* page-specific rules below */
 

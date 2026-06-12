@@ -51,7 +51,7 @@ const SOURCE_KINDS = [
     label: "Sitemap",
     multiUrl: true,
     depth: false,
-    urlLabel: "Sitemap URL or domain",
+    urlLabel: "Sitemap URL or Domain",
     placeholder: "https://example.com/sitemap.xml",
     description: "Crawl an entire site from a sitemap.xml or a domain.",
     icon: "ti-sitemap",
@@ -59,7 +59,7 @@ const SOURCE_KINDS = [
   {
     id: "file",
     kind: "file",
-    label: "Upload a file",
+    label: "Upload a File",
     icon: "ti-file",
     fields: [
       {
@@ -73,7 +73,7 @@ const SOURCE_KINDS = [
   {
     id: "enrichment",
     kind: "enrichment",
-    label: "Alumni roster (PDL)",
+    label: "Alumni Roster",
     description: "Upload an XLSX/CSV with First Name, Last Name, and Class columns. Each row is enriched via People Data Labs.",
     icon: "ti-users",
     fields: [
@@ -81,7 +81,6 @@ const SOURCE_KINDS = [
         name: "file",
         label: "Alumni file (XLSX or CSV)",
         type: "file",
-        accept: ".xlsx,.csv,.xlsm",
         required: true,
       },
     ],
@@ -2937,33 +2936,52 @@ async function verifySourceIntegrity(sourceId) {
 /* ───── Add source modal ───── */
 
 let modalKind = "website";
-let modalUrlRowId = 0;
 
 function openAddSourceModal() {
   if (!isAdmin()) return;
   modalKind = "website";
-  modalUrlRowId = 0;
   renderAddSourceModal();
 }
 
 function sourceUrlRowHtml(selected) {
-  modalUrlRowId += 1;
-  const columns = selected.depth ? "minmax(0, 1fr) 96px 40px" : "minmax(0, 1fr) 40px";
   return `
-    <div class="field-row source-url-row" data-source-url-row style="grid-template-columns: ${columns}; align-items: end;">
-      <label class="field">
-        <span class="field-label">${escapeHtml(selected.urlLabel || "URL")}</span>
-        <input class="input source-url-input" data-source-url-input placeholder="${escapeAttr(selected.placeholder || "")}" />
-      </label>
+    <div class="source-entry-row ${selected.depth ? "has-depth" : ""}" data-source-url-row>
+      <input
+        class="input source-url-input"
+        data-source-url-input
+        aria-label="${escapeAttr(selected.urlLabel || "URL")}"
+        placeholder="${escapeAttr(selected.placeholder || "")}"
+      />
       ${
         selected.depth
-          ? `<label class="field">
-              <span class="field-label">Depth</span>
-              <input class="input source-depth-input" data-source-depth-input type="number" min="1" value="1" />
-            </label>`
+          ? `<input
+              class="input source-depth-input"
+              data-source-depth-input
+              aria-label="Depth"
+              type="number"
+              min="1"
+              value="1"
+            />`
           : ""
       }
       <button class="btn-icon-only" type="button" data-remove-source-url-row aria-label="Remove URL row" title="Remove URL row">
+        <i class="ti ti-trash" aria-hidden="true"></i>
+      </button>
+    </div>`;
+}
+
+function sourceFileRowHtml(selected) {
+  const field = selected.fields[0];
+  return `
+    <div class="source-entry-row" data-source-file-row>
+      <input
+        class="input"
+        data-source-file-input
+        aria-label="${escapeAttr(field.label)}"
+        type="file"
+        ${field.accept ? `accept="${escapeAttr(field.accept)}"` : ""}
+      />
+      <button class="btn-icon-only" type="button" data-remove-source-file-row aria-label="Remove file row" title="Remove file row">
         <i class="ti ti-trash" aria-hidden="true"></i>
       </button>
     </div>`;
@@ -2973,12 +2991,32 @@ function sourceFieldsHtml(selected) {
   if (selected.multiUrl) {
     return `
       <div class="field">
-        <span class="field-label">${escapeHtml(selected.urlLabel || "URLs")}</span>
-        <div id="new-url-rows">
+        <div class="source-entry-header ${selected.depth ? "has-depth" : ""}">
+          <span class="field-label">${escapeHtml(selected.urlLabel || "URLs")}</span>
+          ${selected.depth ? `<span class="field-label">Depth</span>` : ""}
+          <span aria-hidden="true"></span>
+        </div>
+        <div class="source-entry-list" id="new-source-rows">
           ${sourceUrlRowHtml(selected)}
         </div>
       </div>
-      <button class="btn-secondary" id="add-url-row" type="button">
+      <button class="btn-secondary" id="add-source-row" type="button">
+        <i class="ti ti-plus" aria-hidden="true"></i> Add another row
+      </button>`;
+  }
+  if (selected.kind === "file" || selected.kind === "enrichment") {
+    const field = selected.fields[0];
+    return `
+      <div class="field">
+        <div class="source-entry-header">
+          <span class="field-label">${escapeHtml(field.label)}</span>
+          <span aria-hidden="true"></span>
+        </div>
+        <div class="source-entry-list" id="new-source-rows">
+          ${sourceFileRowHtml(selected)}
+        </div>
+      </div>
+      <button class="btn-secondary" id="add-source-row" type="button">
         <i class="ti ti-plus" aria-hidden="true"></i> Add another row
       </button>`;
   }
@@ -3037,24 +3075,44 @@ function renderAddSourceModal() {
   document.querySelectorAll(".kind-card").forEach((card) => {
     card.onclick = () => {
       modalKind = card.dataset.kind;
-      modalUrlRowId = 0;
       renderAddSourceModal();
     };
   });
-  const addRow = byId("add-url-row");
+  const addRow = byId("add-source-row");
   if (addRow) {
     addRow.onclick = () => {
-      byId("new-url-rows").insertAdjacentHTML("beforeend", sourceUrlRowHtml(selected));
+      const rowHtml = selected.multiUrl
+        ? sourceUrlRowHtml(selected)
+        : sourceFileRowHtml(selected);
+      byId("new-source-rows").insertAdjacentHTML("beforeend", rowHtml);
     };
   }
-  const rows = byId("new-url-rows");
+  const rows = byId("new-source-rows");
   if (rows) {
     rows.onclick = (event) => {
-      const button = event.target.closest("[data-remove-source-url-row]");
-      if (button) button.closest("[data-source-url-row]")?.remove();
+      const urlButton = event.target.closest("[data-remove-source-url-row]");
+      if (urlButton) {
+        urlButton.closest("[data-source-url-row]")?.remove();
+        return;
+      }
+      const fileButton = event.target.closest("[data-remove-source-file-row]");
+      if (fileButton) fileButton.closest("[data-source-file-row]")?.remove();
     };
   }
   byId("new-submit").onclick = submitAddSource;
+}
+
+function toastBulkSourceSummary(results) {
+  const added = results.filter((result) => result.status === "fulfilled").length;
+  const failed = results.length - added;
+  if (added && failed) {
+    toast(`Added ${added}, ${failed} failed.`, { level: "warning" });
+  } else if (added) {
+    toast(`Added ${added} ${added === 1 ? "source" : "sources"}.`, { level: "success" });
+  } else {
+    toast(`${failed} failed.`, { level: "error" });
+  }
+  return added;
 }
 
 async function submitAddSource() {
@@ -3104,33 +3162,33 @@ async function submitAddSource() {
           return res.json();
         }),
       );
-      const added = results.filter((result) => result.status === "fulfilled").length;
-      const failed = results.length - added;
-      if (added && failed) {
-        toast(`Added ${added}, ${failed} failed.`, { level: "warning" });
-      } else if (added) {
-        toast(`Added ${added} ${added === 1 ? "source" : "sources"}.`, { level: "success" });
-      } else {
-        toast(`${failed} failed.`, { level: "error" });
-      }
+      const added = toastBulkSourceSummary(results);
       if (!added) return;
     } else if (kind === "file" || kind === "enrichment") {
-      const input = byId("new-file");
-      if (!input.files || !input.files[0]) {
-        toast(`${selected.fields[0]?.label || "File"} is required.`, { level: "warning" });
-        input.focus();
+      const inputs = Array.from(document.querySelectorAll("[data-source-file-input]"));
+      const files = inputs.map((input) => input.files?.[0]).filter(Boolean);
+      if (!files.length) {
+        toast("Add at least one file.", { level: "warning" });
+        inputs[0]?.focus();
         return;
       }
-      const form = new FormData();
-      form.append("display_name", display_name);
-      form.append("file", input.files[0]);
       const url =
         kind === "enrichment" ? "/admin/sources/upload-enrichment" : "/admin/sources/upload";
-      const res = await fetch(url, { method: "POST", body: form });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || res.statusText);
-      }
+      const results = await Promise.allSettled(
+        files.map(async (file) => {
+          const form = new FormData();
+          form.append("display_name", display_name);
+          form.append("file", file);
+          const res = await fetch(url, { method: "POST", body: form });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || res.statusText);
+          }
+          return res.json().catch(() => ({}));
+        }),
+      );
+      const added = toastBulkSourceSummary(results);
+      if (!added) return;
     } else {
       const identifier = byId("new-identifier").value.trim();
       if (!identifier) {
