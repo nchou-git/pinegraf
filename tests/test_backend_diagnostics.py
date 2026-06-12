@@ -19,15 +19,15 @@ class AmbiguousVector:
         return iter(self._values)
 
 
-def test_sources_endpoint_handles_empty_and_populated_stores(store) -> None:
+def test_sources_endpoint_handles_empty_and_populated_stores(store, admin_headers) -> None:
     with TestClient(main_module.create_app(store)) as client:
-        empty = client.get("/api/sources")
+        empty = client.get("/api/sources", headers=admin_headers)
         assert empty.status_code == 200
         assert empty.json() == {"sources": [], "archived_count": 0}
 
         store.upsert_source(kind="domain", identifier="example.edu", display_name="Example")
 
-        populated = client.get("/api/sources")
+        populated = client.get("/api/sources", headers=admin_headers)
         assert populated.status_code == 200
         payload = populated.json()
         assert payload["archived_count"] == 0

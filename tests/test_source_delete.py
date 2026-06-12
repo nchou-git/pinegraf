@@ -287,7 +287,7 @@ def test_delete_document_removes_derived_rows_but_keeps_entities(store, admin_he
 
     with TestClient(main_module.create_app(store)) as client:
         response = client.delete(f"/admin/documents/{document.id}", headers=admin_headers)
-        missing = client.get(f"/api/document/{document.id}")
+        missing = client.get(f"/api/document/{document.id}", headers=admin_headers)
 
     assert response.status_code == 200
     assert response.json() == {"status": "deleted"}
@@ -365,7 +365,7 @@ def test_archive_status_hides_source_without_deleting_data(
         assert archive.status_code == 200
         assert archive.json()["status"] == "archived"
 
-        main_sources = client.get("/api/sources").json()
+        main_sources = client.get("/api/sources", headers=admin_headers).json()
         archived_sources = client.get("/api/sources/archived", headers=admin_headers).json()
 
         restore = client.patch(
@@ -398,7 +398,7 @@ def test_source_status_does_not_parse_user_notes(store, admin_headers) -> None:
     )
 
     with TestClient(main_module.create_app(store)) as client:
-        listed = client.get("/api/sources").json()
+        listed = client.get("/api/sources", headers=admin_headers).json()
         update = client.patch(
             f"/admin/sources/{source.id}",
             headers=admin_headers,

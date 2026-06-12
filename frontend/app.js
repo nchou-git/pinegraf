@@ -3767,7 +3767,8 @@ async function errorFromResponse(res, url, { redirectOnAuth = true } = {}) {
 
 function isAdminEndpoint(url) {
   const pathname = new URL(url, location.origin).pathname;
-  return pathname.startsWith("/admin/") || pathname === "/api/sources/archived";
+  if (pathname === "/api/me") return false;
+  return pathname.startsWith("/admin/") || pathname.startsWith("/api/");
 }
 
 function byId(id) {

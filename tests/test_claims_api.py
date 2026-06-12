@@ -68,7 +68,7 @@ def test_claim_sources_are_deduped_and_capped(store) -> None:
     )
 
 
-def test_raw_claims_endpoint_returns_undeduped_source_cited_rows(store) -> None:
+def test_raw_claims_endpoint_returns_undeduped_source_cited_rows(store, admin_headers) -> None:
     graph = create_claim_graph(store)
     with store.session() as session:
         session.add(
@@ -98,6 +98,6 @@ def test_raw_claims_endpoint_returns_undeduped_source_cited_rows(store) -> None:
     assert "span" in row
 
     with TestClient(main_module.create_app(store)) as client:
-        response = client.get("/api/claims/raw-data?page_size=10")
+        response = client.get("/api/claims/raw-data?page_size=10", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["total"] == 2

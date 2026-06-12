@@ -422,10 +422,12 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/stats")
     async def api_stats(request: Request) -> dict[str, int]:
+        require_admin(request)
         return stats(_store(request))
 
     @app.get("/api/sources")
     async def api_sources(request: Request) -> dict[str, object]:
+        require_admin(request)
         return {
             "sources": list_sources(_store(request)),
             "archived_count": archived_source_count(_store(request)),
@@ -443,6 +445,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/sources/{source_id}")
     async def api_source_detail(request: Request, source_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
         detail = source_detail(_store(request), source_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="source not found")
@@ -455,6 +458,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         page: int = 1,
         page_size: int = 25,
     ) -> dict[str, object]:
+        require_admin(request)
         if _store(request).get_source(source_id) is None:
             raise HTTPException(status_code=404, detail="source not found")
         return list_source_documents(
@@ -466,6 +470,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/sources/{source_id}/download")
     async def api_source_download(request: Request, source_id: uuid.UUID) -> FileResponse:
+        require_admin(request)
         source = _store(request).get_source(source_id)
         if source is None:
             raise HTTPException(status_code=404, detail="source not found")
@@ -478,6 +483,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/document/{document_id}")
     async def api_document(request: Request, document_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
         detail = document_detail(_store(request), document_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="document not found")
@@ -492,6 +498,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/entity/{entity_id}")
     async def api_entity(request: Request, entity_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
         detail = entity_detail(_store(request), entity_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="entity not found")
@@ -503,6 +510,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         q: str = "",
         limit: int = 8,
     ) -> dict[str, object]:
+        require_admin(request)
         return search_entities(_store(request), q=q, limit=limit)
 
     @app.get("/api/claims")
@@ -517,6 +525,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, object]:
+        require_admin(request)
         return list_claims(
             _store(request),
             predicate=predicate,
@@ -531,6 +540,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/claims/predicates")
     async def api_claim_predicates(request: Request) -> dict[str, object]:
+        require_admin(request)
         return {"predicates": claim_predicates(_store(request))}
 
     @app.get("/api/claims/raw-data")
@@ -539,10 +549,12 @@ def create_app(store: Store | None = None) -> FastAPI:
         page: int = 1,
         page_size: int = 500,
     ) -> dict[str, object]:
+        require_admin(request)
         return list_raw_claims(_store(request), page=page, page_size=page_size)
 
     @app.get("/api/claims/{claim_id}")
     async def api_claim_detail(request: Request, claim_id: uuid.UUID) -> dict[str, object]:
+        require_admin(request)
         detail = claim_detail(_store(request), claim_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="claim not found")
@@ -550,6 +562,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.post("/api/ask")
     async def api_ask(request: Request, payload: AskRequest) -> StreamingResponse:
+        require_admin(request)
         return StreamingResponse(
             ask_stream(
                 _store(request),

@@ -1,6 +1,6 @@
-@import "./styles/tokens.css?v=admin-login-gate";
-@import "./styles/components.css?v=admin-login-gate";
-@import "./styles/layout.css?v=admin-login-gate";
+@import "./styles/tokens.css?v=private-data-api";
+@import "./styles/components.css?v=private-data-api";
+@import "./styles/layout.css?v=private-data-api";
 
 /* page-specific rules below */
 

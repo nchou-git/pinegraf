@@ -45,3 +45,10 @@ def test_conflicts_tab_counts_use_endpoint_totals() -> None:
     assert "conflictTabStrip(active, facts.total || 0, identity.total || 0)" in source
     assert "Contradicting Facts (${formatNumber(factsTotal)})" in source
     assert "Ambiguous Identity (${formatNumber(identityTotal)})" in source
+
+
+def test_data_api_unauthorized_responses_redirect_except_for_me() -> None:
+    source = _app_js()
+
+    assert 'if (pathname === "/api/me") return false;' in source
+    assert 'pathname.startsWith("/admin/") || pathname.startsWith("/api/")' in source
