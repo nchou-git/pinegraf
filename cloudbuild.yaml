@@ -83,7 +83,7 @@ steps:
         if [[ -n "${_SECRET_BASIC_AUTH}" ]]; then
           secrets="$${secrets},BASIC_AUTH_CREDENTIALS=${_SECRET_BASIC_AUTH}:latest"
         fi
-        env_vars="EXTRACTION_MODEL=gpt-5.5,PINEGRAF_ENV=${_ENVIRONMENT},PINEGRAF_SERVICE=${_SERVICE},PINEGRAF_REGION=us-east4"
+        env_vars="EXTRACTION_MODEL=gpt-5.4-mini,PINEGRAF_ENV=${_ENVIRONMENT},PINEGRAF_SERVICE=${_SERVICE},PINEGRAF_REGION=us-east4"
         if [[ "${_ENVIRONMENT}" == "demo" ]]; then
           env_vars="$${env_vars},PINEGRAF_DEMO_MODE=true"
         fi

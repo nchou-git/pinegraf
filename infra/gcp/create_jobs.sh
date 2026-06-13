@@ -37,7 +37,7 @@ upsert_job() {
   local pdl_secret="${PDL_API_KEY_SECRET:-PDL_API_KEY}"
   local admin_pw_secret="${PINEGRAF_ADMIN_PASSWORD_SECRET:-PINEGRAF_ADMIN_PASSWORD}"
   local session_secret="${ADMIN_SESSION_SECRET_NAME:-ADMIN_SESSION_SECRET}"
-  local env_vars="PINEGRAF_MODE=${mode},EXTRACTION_MODEL=gpt-5.5,PINEGRAF_SERVICE=${SERVICE},PINEGRAF_REGION=${REGION}"
+  local env_vars="PINEGRAF_MODE=${mode},EXTRACTION_MODEL=gpt-5.4-mini,PINEGRAF_SERVICE=${SERVICE},PINEGRAF_REGION=${REGION}"
   local secrets="DATABASE_URL=${db_secret}:latest,PINEGRAF_ADMIN_PASSWORD=${admin_pw_secret}:latest,ADMIN_SESSION_SECRET=${session_secret}:latest,OPENAI_API_KEY=${openai_secret}:latest"
 
   if gcloud secrets describe "${pdl_secret}" --project="${PROJECT_ID}" >/dev/null 2>&1; then

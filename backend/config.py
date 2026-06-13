@@ -34,7 +34,7 @@ class Settings(BaseModel):
     db_pool_pre_ping: bool = Field(default=True)
     use_mock_embeddings: bool = Field(default=False)
     demo_mode: bool = Field(default=False)
-    extraction_model: str = Field(default="gpt-5.5")
+    extraction_model: str = Field(default="gpt-5.4-mini")
 
     workspace_display_name: str = Field(default="Tuck School of Business")
     workspace_slug: str = Field(default="tuck")
@@ -86,7 +86,7 @@ def get_settings() -> Settings:
                 "PINEGRAF_DEMO_MODE",
                 "true" if os.getenv("PINEGRAF_ENV") == "demo" else "false",
             ),
-            extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.5"),
+            extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.4-mini"),
             workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),
             uploads_dir=os.getenv("UPLOADS_DIR", "/tmp/pinegraf_uploads"),
