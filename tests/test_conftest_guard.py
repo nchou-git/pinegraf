@@ -20,7 +20,7 @@ def test_conftest_refuses_prod_shaped_database_url(
     expected: str,
 ) -> None:
     env = os.environ.copy()
-    env.pop("TEST_DATABASE_URL", None)
+    env["TEST_DATABASE_URL"] = ""
     env["DATABASE_URL"] = database_url
 
     result = subprocess.run(
