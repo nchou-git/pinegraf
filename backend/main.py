@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -45,6 +46,7 @@ from backend.basic_auth import (
 )
 from backend.config import get_settings
 from backend.db.models import AuditLog, Fetch, Source, SourceRun
+from backend.db.schema import create_fresh_schema
 from backend.db.store import (
     Store,
     engine_pool_config,
@@ -209,6 +211,8 @@ def create_app(store: Store | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings = get_settings()
         os.makedirs(settings.uploads_dir, exist_ok=True)
+        if settings.auto_create_schema:
+            create_fresh_schema(app_store.engine)
         LOGGER.info("database pool startup config %s", engine_pool_config(app_store.engine))
         _warn_if_empty_database_since_deploy(app_store)
         if settings.demo_mode:
@@ -220,6 +224,17 @@ def create_app(store: Store | None = None) -> FastAPI:
         yield
 
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "https://espressochats.com",
+            "https://coffeechats.me",
+            "http://localhost",
+        ],
+        allow_origin_regex=r"^https://([A-Za-z0-9-]+\.)?coffeechats\.me$",
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
     install_basic_auth(app)
     app.state.store = app_store
 
@@ -498,8 +513,19 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/entity/{entity_id}")
     async def api_entity(request: Request, entity_id: uuid.UUID) -> dict[str, object]:
-        require_admin(request)
+        if not _is_public_graph_read(request):
+            require_admin(request)
         detail = entity_detail(_store(request), entity_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        return detail
+
+    @app.get("/api/graph")
+    async def api_graph(request: Request, focus: uuid.UUID, depth: int = 1) -> dict[str, object]:
+        del depth
+        if not _is_public_graph_read(request):
+            require_admin(request)
+        detail = entity_detail(_store(request), focus)
         if detail is None:
             raise HTTPException(status_code=404, detail="entity not found")
         return detail
@@ -510,7 +536,8 @@ def create_app(store: Store | None = None) -> FastAPI:
         q: str = "",
         limit: int = 8,
     ) -> dict[str, object]:
-        require_admin(request)
+        if not _is_public_graph_read(request):
+            require_admin(request)
         return search_entities(_store(request), q=q, limit=limit)
 
     @app.get("/api/claims")
@@ -1047,6 +1074,13 @@ def create_app(store: Store | None = None) -> FastAPI:
 
 def _store(request: Request) -> Store:
     return request.app.state.store
+
+
+def _is_public_graph_read(request: Request) -> bool:
+    if request.method != "GET":
+        return False
+    path = request.url.path
+    return path == "/api/entities/search" or path == "/api/graph" or path.startswith("/api/entity/")
 
 
 def _admin_actor(request: Request) -> str:

@@ -24,8 +24,18 @@ from backend.config import get_settings
 COOKIE_NAME = "demo_session"
 SALT = "pinegraf.demo.session.v1"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-EXEMPT_PATHS = frozenset({"/health", "/robots.txt", "/demo-login", "/favicon.svg", "/styles.css"})
-EXEMPT_PREFIXES = ("/styles/", "/assets/")
+EXEMPT_PATHS = frozenset(
+    {
+        "/health",
+        "/robots.txt",
+        "/demo-login",
+        "/favicon.svg",
+        "/styles.css",
+        "/api/entities/search",
+        "/api/graph",
+    }
+)
+EXEMPT_PREFIXES = ("/styles/", "/assets/", "/api/entity/")
 
 
 def _serializer() -> URLSafeTimedSerializer:
