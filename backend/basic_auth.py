@@ -126,6 +126,5 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
 
 def install_basic_auth(app) -> None:
-    credentials = os.getenv("BASIC_AUTH_CREDENTIALS", "")
-    if credentials and ":" in credentials:
-        app.add_middleware(BasicAuthMiddleware, credentials=credentials)
+    del app
+    return

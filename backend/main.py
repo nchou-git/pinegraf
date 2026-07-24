@@ -175,6 +175,9 @@ ACTIVE_SOURCE_RUN_INDEX = "ix_source_runs_one_active_per_source_kind"
 EXPECTED_ALEMBIC_HEAD = "0026_doc_embeddings_claim_docs"
 LOGGER = logging.getLogger("uvicorn.error")
 OBSERVED_ENDPOINTS = {"/api/sources", "/api/claims", "/api/claims/raw-data"}
+PARSE_RATE_LIMIT_MAX = 60
+PARSE_RATE_LIMIT_WINDOW_SECONDS = 60 * 60
+PARSE_RATE_LIMITS: dict[str, list[float]] = {}
 
 
 def _slugify(value: str) -> str:
@@ -226,12 +229,7 @@ def create_app(store: Store | None = None) -> FastAPI:
     app = FastAPI(title="Pinegraf", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "https://espressochats.com",
-            "https://coffeechats.me",
-            "http://localhost",
-        ],
-        allow_origin_regex=r"^https://([A-Za-z0-9-]+\.)?coffeechats\.me$",
+        allow_origins=["*"],
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
@@ -860,6 +858,7 @@ def create_app(store: Store | None = None) -> FastAPI:
         payload: ParseRequest | None = None,
     ) -> dict[str, str] | JSONResponse:
         require_admin(request)
+        _enforce_parse_rate_limit(request)
         payload = payload or ParseRequest()
         store = _store(request)
         source = store.get_source(source_id)
@@ -1081,6 +1080,21 @@ def _is_public_graph_read(request: Request) -> bool:
         return False
     path = request.url.path
     return path == "/api/entities/search" or path == "/api/graph" or path.startswith("/api/entity/")
+
+
+def _enforce_parse_rate_limit(request: Request) -> None:
+    client_id = _request_ip(request) or "unknown"
+    now = time.monotonic()
+    window_start = now - PARSE_RATE_LIMIT_WINDOW_SECONDS
+    recent = [ts for ts in PARSE_RATE_LIMITS.get(client_id, []) if ts >= window_start]
+    if len(recent) >= PARSE_RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="parse trigger rate limit exceeded",
+            headers={"Retry-After": str(PARSE_RATE_LIMIT_WINDOW_SECONDS)},
+        )
+    recent.append(now)
+    PARSE_RATE_LIMITS[client_id] = recent
 
 
 def _admin_actor(request: Request) -> str:

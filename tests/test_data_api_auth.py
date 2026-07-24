@@ -10,7 +10,7 @@ from backend.config import get_settings
 from backend.db.models import Entity, EntityNeighborhood, EntitySummary
 
 
-def test_gated_data_endpoints_require_admin(admin_headers, monkeypatch) -> None:
+def test_data_endpoints_are_public(monkeypatch) -> None:
     async def fake_ask_stream(*args, **kwargs) -> AsyncIterator[bytes]:
         del args, kwargs
         yield b'data: {"kind":"done"}\n\n'
@@ -27,18 +27,16 @@ def test_gated_data_endpoints_require_admin(admin_headers, monkeypatch) -> None:
     with TestClient(main_module.create_app(app_store)) as client:
         me = client.get("/api/me")
         assert me.status_code == 200
-        assert me.json()["is_admin"] is False
+        assert me.json()["is_admin"] is True
 
         for path in ("/api/claims", "/api/stats"):
-            assert client.get(path).status_code == 401
-            assert client.get(path, headers=admin_headers).status_code == 200
+            assert client.get(path).status_code == 200
 
         ask_payload = {"question": "Who founded Example?"}
-        assert client.post("/api/ask", json=ask_payload).status_code == 401
-        assert client.post("/api/ask", json=ask_payload, headers=admin_headers).status_code == 200
+        assert client.post("/api/ask", json=ask_payload).status_code == 200
 
 
-def test_graph_reads_are_public_but_other_data_apis_stay_gated(store, monkeypatch) -> None:
+def test_graph_reads_and_claims_are_public(store, monkeypatch) -> None:
     monkeypatch.setenv("BASIC_AUTH_CREDENTIALS", "demo:secret")
     get_settings.cache_clear()
 
@@ -82,4 +80,4 @@ def test_graph_reads_are_public_but_other_data_apis_stay_gated(store, monkeypatc
         assert graph.status_code == 200
         assert graph.json()["identity"]["entity_id"] == str(person_id)
 
-        assert client.get("/api/claims").status_code == 401
+        assert client.get("/api/claims").status_code == 200

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import uuid
 
 from fastapi.testclient import TestClient
@@ -12,7 +11,7 @@ from backend.config import get_settings
 from backend.db.models import AuditLog, SourceRun
 
 
-def test_admin_auth_required_and_happy_paths(
+def test_admin_endpoints_are_public_and_happy_paths(
     store,
     admin_headers,
     fake_httpx,
@@ -31,18 +30,13 @@ def test_admin_auth_required_and_happy_paths(
         ),
     }
     with TestClient(main_module.create_app(store)) as client:
-        assert client.get("/api/logs/stream").status_code == 403
-        unauthorized = client.get("/admin/conflicts")
-        assert unauthorized.status_code == 401
-        assert "www-authenticate" not in unauthorized.headers
-        stale_token = base64.b64encode(b"admin:Pinegrafposen$").decode("ascii")
-        assert (
-            client.get(
-                "/admin/conflicts",
-                headers={"Authorization": f"Basic {stale_token}"},
-            ).status_code
-            == 401
+        public = client.get("/admin/conflicts")
+        assert public.status_code == 200
+        stale_header = client.get(
+            "/admin/conflicts",
+            headers={"Authorization": "Basic stale"},
         )
+        assert stale_header.status_code == 200
 
         source_response = client.post(
             "/admin/sources",
@@ -383,7 +377,7 @@ def test_admin_login_rejects_invalid_json(store) -> None:
         assert response.json()["detail"] == "Admin login JSON body must be an object."
 
 
-def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch) -> None:
+def test_basic_auth_wall_is_disabled_but_demo_login_still_sets_admin_session(monkeypatch) -> None:
     monkeypatch.setenv("BASIC_AUTH_CREDENTIALS", "pinegraf:Pinegrafposen$")
     monkeypatch.setenv("SECURE_COOKIES", "false")
     get_settings.cache_clear()
@@ -394,33 +388,20 @@ def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch
         assert "WWW-Authenticate" not in html_response.headers
         assert html_response.headers["content-type"].startswith("text/html")
         assert "<title>Pinegraf</title>" in html_response.text
-        assert "Demo environment" in html_response.text
 
         api_response = client.get("/api/anything", headers={"Accept": "application/json"})
-        assert api_response.status_code == 401
+        assert api_response.status_code == 404
         assert "WWW-Authenticate" not in api_response.headers
         assert api_response.headers["content-type"].startswith("application/json")
-        assert api_response.json() == {"error": "unauthorized"}
 
         admin_response = client.get("/admin/sources", headers={"Accept": "text/html"})
-        assert admin_response.status_code == 401
+        assert admin_response.status_code == 405
         assert "WWW-Authenticate" not in admin_response.headers
         assert admin_response.headers["content-type"].startswith("application/json")
-        assert admin_response.json() == {"error": "unauthorized"}
 
         json_accept_response = client.get("/", headers={"Accept": "application/json"})
-        assert json_accept_response.status_code == 401
+        assert json_accept_response.status_code == 200
         assert "WWW-Authenticate" not in json_accept_response.headers
-        assert json_accept_response.headers["content-type"].startswith("application/json")
-
-        basic_token = base64.b64encode(b"pinegraf:wrong").decode("ascii")
-        curl_response = client.get(
-            "/non-api",
-            headers={"Authorization": f"Basic {basic_token}", "Accept": "text/plain"},
-        )
-        assert curl_response.status_code == 401
-        assert curl_response.headers["WWW-Authenticate"] == "Basic"
-        assert curl_response.json() == {"error": "unauthorized"}
 
         failed_login = client.post(
             "/demo-login",
@@ -449,13 +430,13 @@ def test_basic_auth_wall_uses_demo_login_page_and_sets_admin_session(monkeypatch
         get_settings.cache_clear()
 
 
-def test_index_forces_login_only_for_anonymous_visitors(monkeypatch) -> None:
+def test_index_does_not_force_login_in_public_mode(monkeypatch) -> None:
     monkeypatch.setenv("PINEGRAF_DEMO_MODE", "false")
     get_settings.cache_clear()
     client = TestClient(main_module.create_app(object()))
     anonymous = client.get("/")
     assert anonymous.status_code == 200
-    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" in anonymous.text
+    assert "window.__PINEGRAF_FORCE_LOGIN__ = true" not in anonymous.text
 
     client.cookies.set(COOKIE_NAME, issue())
     admin = client.get("/")

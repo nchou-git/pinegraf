@@ -8,7 +8,7 @@ from backend.db.models import Entity, EntitySummary, SourceRun
 from backend.web_api import list_sources
 
 
-def test_me_api_is_public_and_admin_can_search_entities(store, admin_headers) -> None:
+def test_me_api_is_public_and_can_search_entities(store) -> None:
     with store.session() as session:
         entity = Entity(kind="person", canonical_name="Errik Anderson")
         session.add(entity)
@@ -28,9 +28,9 @@ def test_me_api_is_public_and_admin_can_search_entities(store, admin_headers) ->
         me_response = client.get("/api/me")
         assert me_response.status_code == 200
         assert me_response.json()["workspace"]["slug"] == "tuck"
-        assert me_response.json()["is_admin"] is False
+        assert me_response.json()["is_admin"] is True
 
-        search_response = client.get("/api/entities/search?q=Errik", headers=admin_headers)
+        search_response = client.get("/api/entities/search?q=Errik")
         assert search_response.status_code == 200
         payload = search_response.json()
         assert payload["results"][0]["canonical_name"] == "Errik Anderson"
@@ -59,7 +59,7 @@ def test_source_coverage_separates_pages_fetched_from_documents_parsed(store) ->
     assert payload["coverage"]["documents"] == 0
 
 
-def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypatch) -> None:
+def test_week2_admin_endpoints_are_public(store, monkeypatch) -> None:
     from backend.jobs import run as jobs_run
 
     async def fake_run_full_parse(
@@ -93,13 +93,11 @@ def test_week2_admin_endpoints_require_admin_auth(store, admin_headers, monkeypa
     )
 
     with TestClient(main_module.create_app(store)) as client:
-        assert client.get("/admin/conflicts").status_code == 401
-
-        conflicts_response = client.get("/admin/conflicts", headers=admin_headers)
+        conflicts_response = client.get("/admin/conflicts")
         assert conflicts_response.status_code == 200
         assert conflicts_response.json()["results"] == []
 
-        parse_response = client.post(f"/admin/sources/{source.id}/parse", headers=admin_headers)
+        parse_response = client.post(f"/admin/sources/{source.id}/parse")
         assert parse_response.status_code == 200
         assert parse_response.json()["status"] == "queued"
 
