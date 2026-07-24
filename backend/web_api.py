@@ -175,7 +175,12 @@ def entity_detail(store: Store, entity_id: uuid.UUID) -> dict[str, object] | Non
                     "neighbor_kind": neighbor.kind,
                     "predicates": row.predicates,
                     "evidence_count": row.evidence_count,
-                    "is_resolved": True,
+                    "is_resolved": _connection_is_resolved(
+                        session,
+                        entity_id,
+                        neighbor.id,
+                        row.predicates or [],
+                    ),
                     "claims": _connection_claims(
                         session,
                         entity_id,
@@ -1687,6 +1692,26 @@ def _connection_claims(
         query = query.where(Claim.predicate.in_(predicates))
     claims = list(session.execute(query.order_by(Claim.first_seen_at.desc()).limit(10)).scalars())
     return [claim for claim in (_claim_to_dict(session, row.id) for row in claims) if claim]
+
+
+def _connection_is_resolved(
+    session,
+    entity_id: uuid.UUID,
+    neighbor_id: uuid.UUID,
+    predicates: list[str],
+) -> bool:
+    query = select(Claim).where(
+        or_(
+            (Claim.subject_entity_id == entity_id) & (Claim.object_entity_id == neighbor_id),
+            (Claim.subject_entity_id == neighbor_id) & (Claim.object_entity_id == entity_id),
+        )
+    )
+    if predicates:
+        query = query.where(Claim.predicate.in_(predicates))
+    for claim in session.execute(query.limit(10)).scalars():
+        if (claim.qualifiers or {}).get("is_resolved") is False:
+            return False
+    return True
 
 
 def _claim_to_dict(session, claim_id: uuid.UUID) -> dict[str, object] | None:
