@@ -116,6 +116,7 @@ class FakeAsyncClient:
 def isolated_settings(monkeypatch) -> Iterator[None]:
     monkeypatch.setenv("PINEGRAF_ADMIN_PASSWORD", "Pinegrafposen$")
     monkeypatch.setenv("ADMIN_SESSION_SECRET", "test-session-secret")
+    monkeypatch.setenv("PUBLIC_MODE", "true")
     monkeypatch.setenv("USE_MOCK_EMBEDDINGS", "true")
     get_settings.cache_clear()
     yield

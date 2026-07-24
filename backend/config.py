@@ -35,6 +35,7 @@ class Settings(BaseModel):
     use_mock_embeddings: bool = Field(default=False)
     demo_mode: bool = Field(default=False)
     auto_create_schema: bool = Field(default=False)
+    public_mode: bool = Field(default=False)
     extraction_model: str = Field(default="gpt-5.4-mini")
 
     workspace_display_name: str = Field(default="Tuck School of Business")
@@ -47,6 +48,7 @@ class Settings(BaseModel):
         "secure_cookies",
         "demo_mode",
         "auto_create_schema",
+        "public_mode",
         mode="before",
     )
     @classmethod
@@ -94,6 +96,7 @@ def get_settings() -> Settings:
                 "true" if os.getenv("PINEGRAF_ENV") == "demo" else "false",
             ),
             auto_create_schema=os.getenv("PINEGRAF_AUTO_CREATE_SCHEMA", "false"),
+            public_mode=os.getenv("PUBLIC_MODE", "false"),
             extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.4-mini"),
             workspace_display_name=os.getenv("WORKSPACE_DISPLAY_NAME", "Tuck School of Business"),
             workspace_slug=os.getenv("WORKSPACE_SLUG", "tuck"),

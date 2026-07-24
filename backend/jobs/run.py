@@ -18,12 +18,18 @@ JOB_BY_MODE = {
     "parse": f"{SERVICE}-parse",
     "maintenance": f"{SERVICE}-maintenance",
 }
+INLINE_TASKS: dict[uuid.UUID, asyncio.Task[None]] = {}
 
 
 async def execute_cloud_run_job(run_id: uuid.UUID | str, mode: str) -> None:
     if mode not in JOB_BY_MODE:
         raise ValueError(f"unsupported PINEGRAF_MODE: {mode}")
     run_uuid = uuid.UUID(str(run_id))
+    if os.getenv("PINEGRAF_JOB_BACKEND", "cloud_run").lower() == "inline":
+        task = asyncio.create_task(_run_inline_job(run_uuid, mode))
+        INLINE_TASKS[run_uuid] = task
+        task.add_done_callback(lambda _task: INLINE_TASKS.pop(run_uuid, None))
+        return
     metadata = await asyncio.to_thread(_execute_cloud_run_job, run_uuid, mode)
     if metadata:
         try:
@@ -75,6 +81,58 @@ async def run_from_env(*, store: Store | None = None) -> None:
     raise ValueError(f"unsupported PINEGRAF_MODE: {mode}")
 
 
+async def _run_inline_job(run_id: uuid.UUID, mode: str) -> None:
+    db = Store()
+    try:
+        if mode == "crawl":
+            await run_source_run(run_id, store=db)
+            return
+        if mode == "parse":
+            await _run_parse_job(run_id, store=db)
+            return
+        if mode == "maintenance":
+            reconcile_all_sources(db)
+            return
+        raise ValueError(f"unsupported PINEGRAF_MODE: {mode}")
+    except asyncio.CancelledError:
+        db.update_source_run(run_id, status="stopped", finished=True)
+        raise
+    except Exception:
+        logging.exception("Inline Pinegraf %s job failed for run %s", mode, run_id)
+        db.update_source_run(run_id, status="failed", finished=True)
+
+
+async def _run_parse_job(run_id: uuid.UUID, *, store: Store) -> None:
+    run = store.get_source_run(run_id)
+    if run is None:
+        raise ValueError(f"source run not found: {run_id}")
+    store.update_source_run(run_id, status="running", clear_finished=True)
+    spec = dict(run.spec or {})
+    snapshot_at = spec.get("snapshot_at")
+    if not snapshot_at:
+        snapshot_at = utc_now().isoformat()
+        store.patch_source_run_spec(run_id, {"snapshot_at": snapshot_at})
+    try:
+        await run_full_parse(
+            spec.get("source_id") or run.source_id,
+            store=store,
+            progress_run_id=run_id,
+            scope=str(spec.get("scope") or "unparsed"),
+            fetch_ids=list(spec.get("fetch_ids") or []),
+            snapshot_at=snapshot_at,
+        )
+    except Exception:
+        current = store.get_source_run(run_id)
+        if current is not None and current.status == "stopped":
+            return
+        store.update_source_run(run_id, status="failed", finished=True)
+        raise
+    current = store.get_source_run(run_id)
+    if current is None or current.status == "stopped":
+        return
+    store.update_source_run(run_id, status="complete", finished=True)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO)
     try:
@@ -86,6 +144,13 @@ def main() -> int:
 
 
 def cancel_cloud_run_execution(run) -> str:
+    if os.getenv("PINEGRAF_JOB_BACKEND", "cloud_run").lower() == "inline":
+        task = INLINE_TASKS.get(run.id)
+        if task is None:
+            raise RuntimeError("inline task is not running in this process")
+        task.cancel()
+        return f"inline:{run.id}"
+
     from google.cloud import run_v2
 
     mode = "crawl" if run.kind in {"sitemap", "seed"} else run.kind
