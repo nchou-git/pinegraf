@@ -34,6 +34,7 @@ class Settings(BaseModel):
     db_pool_pre_ping: bool = Field(default=True)
     use_mock_embeddings: bool = Field(default=False)
     demo_mode: bool = Field(default=False)
+    seed_test_data: bool = Field(default=False)
     auto_create_schema: bool = Field(default=False)
     public_mode: bool = Field(default=False)
     extraction_model: str = Field(default="gpt-5.4-mini")
@@ -47,6 +48,7 @@ class Settings(BaseModel):
         "use_mock_embeddings",
         "secure_cookies",
         "demo_mode",
+        "seed_test_data",
         "auto_create_schema",
         "public_mode",
         mode="before",
@@ -95,6 +97,7 @@ def get_settings() -> Settings:
                 "PINEGRAF_DEMO_MODE",
                 "true" if os.getenv("PINEGRAF_ENV") == "demo" else "false",
             ),
+            seed_test_data=os.getenv("PINEGRAF_SEED_TEST_DATA", "false"),
             auto_create_schema=os.getenv("PINEGRAF_AUTO_CREATE_SCHEMA", "false"),
             public_mode=os.getenv("PUBLIC_MODE", "false"),
             extraction_model=os.getenv("EXTRACTION_MODEL", "gpt-5.4-mini"),

@@ -61,6 +61,7 @@ from backend.live_logs import append_log, install_log_handler, subscribe_logs
 from backend.maintenance.integrity import verify_source_integrity
 from backend.progress import subscribe as subscribe_progress
 from backend.source_identifiers import normalize_identifier
+from backend.test_seed import seed_synthetic_test_data
 from backend.web_api import (
     ActiveSourceRunError,
     add_entity_alias,
@@ -223,6 +224,11 @@ def create_app(store: Store | None = None) -> FastAPI:
                 await run_demo_seed_if_needed(app_store)
             except Exception:  # noqa: BLE001
                 LOGGER.exception("demo seed failed")
+        if settings.seed_test_data:
+            try:
+                seed_synthetic_test_data(app_store)
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("synthetic test seed failed")
         append_log("info", "Pinegraf started", store=app_store)
         yield
 
