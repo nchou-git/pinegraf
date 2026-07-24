@@ -22,3 +22,15 @@ def test_synthetic_test_seed_is_idempotent(store) -> None:
     assert graph is not None
     assert len(graph["connections"]) == 3
     assert any(connection["is_resolved"] is False for connection in graph["connections"])
+
+
+def test_test_seed_endpoint_seeds_fixture(store) -> None:
+    from fastapi.testclient import TestClient
+
+    from backend.main import create_app
+
+    with TestClient(create_app(store)) as client:
+        response = client.post("/api/test-seed")
+
+    assert response.status_code == 200
+    assert response.json() == {"entities": 10, "claims_inserted": 13}

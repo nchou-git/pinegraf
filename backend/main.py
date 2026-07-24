@@ -544,6 +544,10 @@ def create_app(store: Store | None = None) -> FastAPI:
             require_admin(request)
         return search_entities(_store(request), q=q, limit=limit)
 
+    @app.post("/api/test-seed")
+    async def api_test_seed(request: Request) -> dict[str, int]:
+        return seed_synthetic_test_data(_store(request))
+
     @app.get("/api/claims")
     async def api_claims(
         request: Request,
